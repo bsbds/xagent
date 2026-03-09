@@ -1,7 +1,10 @@
 """Service to fetch available models from various providers using their SDKs."""
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
+
+import httpx
 
 from ...core.model.providers import (
     curated_models_for_provider,
@@ -9,6 +12,7 @@ from ...core.model.providers import (
     get_supported_provider_metadata,
 )
 from ...core.utils.security import redact_sensitive_text
+from .. import __version__ as WEB_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,13 @@ _MINIMAX_CODING_PLAN_MODELS = (
 
 def _static_model_list(models: tuple[str, ...], owned_by: str) -> List[Dict[str, Any]]:
     return [{"id": model_id, "created": 0, "owned_by": owned_by} for model_id in models]
+
+
+def _whole_client_version(version: str) -> str:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version or "")
+    if match:
+        return ".".join(match.groups())
+    return "0.0.0"
 
 
 async def fetch_openai_models(
@@ -38,6 +49,78 @@ async def fetch_openai_models(
     from ...core.model.chat.basic.openai import OpenAILLM
 
     return await OpenAILLM.list_available_models(api_key, base_url)
+
+
+async def fetch_openai_responses_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Fetch available models for the OpenAI Responses API provider."""
+    from ...core.model.chat.basic.openai import OpenAILLM
+
+    return await OpenAILLM.list_available_models(api_key, base_url)
+
+
+async def fetch_openai_codex_oauth_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Fetch available models from the ChatGPT Codex backend."""
+    from .openai_codex_oauth import _normalize_codex_base_url
+
+    client_version = _whole_client_version(WEB_VERSION)
+    url = (
+        _normalize_codex_base_url(base_url) + f"/models?client_version={client_version}"
+    )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "originator": "xagent",
+        "User-Agent": "xagent",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+            raw_models = data.get("models", data.get("data", data))
+            if not isinstance(raw_models, list):
+                return []
+
+            models = []
+            for model in raw_models:
+                if not isinstance(model, dict):
+                    continue
+                model_id = model.get("slug") or model.get("id")
+                if not isinstance(model_id, str) or not model_id:
+                    continue
+                models.append(
+                    {
+                        "id": model_id,
+                        "created": int(model.get("created") or 0),
+                        "owned_by": model.get("owned_by") or "openai-codex-oauth",
+                        "display_name": model.get("display_name"),
+                        "description": model.get("description"),
+                        "priority": int(model.get("priority") or 0),
+                        "supported_in_api": bool(model.get("supported_in_api", True)),
+                    }
+                )
+
+            models.sort(
+                key=lambda x: (x.get("created", 0), x.get("priority", 0)),
+                reverse=True,
+            )
+            return models
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"HTTP error fetching Codex OAuth models: {e.response.status_code}"
+        )
+        if e.response.status_code == 401:
+            raise ValueError("Invalid API key") from e
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch Codex OAuth models: {e}")
+        return []
 
 
 async def fetch_zhipu_models(
@@ -163,6 +246,8 @@ async def fetch_kimi_for_coding_models(
 # Provider registry mapping provider names to their fetch functions
 PROVIDER_FETCHERS: Dict[str, Any] = {
     "openai": fetch_openai_models,
+    "openai-responses": fetch_openai_responses_models,
+    "openai-codex-oauth": fetch_openai_codex_oauth_models,
     "zhipu": fetch_zhipu_models,
     "claude": fetch_claude_models,
     "anthropic": fetch_claude_models,

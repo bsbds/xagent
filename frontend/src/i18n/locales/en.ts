@@ -1269,6 +1269,12 @@ Build when you need.`
       openai: {
         description: "Access GPT-4o, GPT-4 Turbo, and DALL-E 3 models. Industry standard for reasoning and creativity.",
       },
+      "openai-responses": {
+        description: "OpenAI Responses API models using standard API keys.",
+      },
+      "openai-codex-oauth": {
+        description: "Codex models via ChatGPT Plus/Pro OAuth (no API key).",
+      },
       "minimax-coding-plan": {
         description: "MiniMax Coding Plan endpoint (Anthropic-compatible, minimax.io).",
       },

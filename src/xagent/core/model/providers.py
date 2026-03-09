@@ -8,11 +8,15 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "minimax_coding_plan": "minimax-coding-plan",
     "minimax_cn_coding_plan": "minimax-cn-coding-plan",
     "kimi_for_coding": "kimi-for-coding",
+    "openai_responses": "openai-responses",
+    "openai_codex_oauth": "openai-codex-oauth",
 }
 
 # Provider default base URLs used when callers omit an explicit base URL.
 _DEFAULT_BASE_URL_BY_PROVIDER: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
+    "openai-responses": "https://api.openai.com/v1",
+    "openai-codex-oauth": "https://chatgpt.com/backend-api/codex",
     "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "zhipu": "https://open.bigmodel.cn/api/paas/v4",
     # Opencode / models.dev naming
@@ -62,6 +66,20 @@ _SUPPORTED_PROVIDER_METADATA: tuple[dict[str, Any], ...] = (
         "description": "OpenAI API compatible models",
         "requires_base_url": False,
         "compatibility": "openai_compatible",
+    },
+    {
+        "id": "openai-responses",
+        "name": "OpenAI Responses",
+        "description": "OpenAI Responses API models using API keys",
+        "requires_base_url": False,
+        "default_base_url": "https://api.openai.com/v1",
+    },
+    {
+        "id": "openai-codex-oauth",
+        "name": "OpenAI Codex (ChatGPT OAuth)",
+        "description": "Use Codex models via ChatGPT Plus/Pro OAuth",
+        "requires_base_url": False,
+        "default_base_url": "https://chatgpt.com/backend-api/codex",
     },
     {
         "id": "claude",

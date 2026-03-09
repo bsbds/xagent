@@ -127,6 +127,16 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
     category: ["llm", "embedding"],
     defaultBaseUrl: "https://api.openai.com/v1"
   },
+  "openai-responses": {
+    icon: <img src="/openai.svg" alt="OpenAI" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://api.openai.com/v1"
+  },
+  "openai-codex-oauth": {
+    icon: <img src="/openai.svg" alt="OpenAI" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://chatgpt.com/backend-api/codex"
+  },
   "minimax-coding-plan": {
     icon: <img src="/minimax.svg" alt="MiniMax" className="w-6 h-6" />,
     category: ["llm"],
@@ -218,6 +228,16 @@ export function ModelsPage() {
   const [pendingModels, setPendingModels] = useState<string[]>([])
   const [selectedDefaultModel, setSelectedDefaultModel] = useState<string>("")
   const [modelSearchQuery, setModelSearchQuery] = useState<string>("")
+  const [fetchModelsError, setFetchModelsError] = useState<string | null>(null)
+  const [codexOauthConnected, setCodexOauthConnected] = useState(false)
+  const [codexOauthLoading, setCodexOauthLoading] = useState(false)
+  const [codexOauthError, setCodexOauthError] = useState<string | null>(null)
+  const [codexDevice, setCodexDevice] = useState<{
+    device_auth_id: string
+    user_code: string
+    verification_url: string
+    interval: number
+  } | null>(null)
 
   // Default models state
   const [defaultModels, setDefaultModels] = useState<{
@@ -268,6 +288,71 @@ export function ModelsPage() {
     loadDefaultModels()
     fetchProviders()
   }, [])
+
+  useEffect(() => {
+    if (viewMode !== "connect") return
+    if (formData.model_provider !== "openai-codex-oauth") return
+    ;(async () => {
+      try {
+        const apiUrl = getApiUrl()
+        const res = await apiRequest(`${apiUrl}/api/models/providers/openai-codex-oauth/oauth/status`)
+        if (!res.ok) return
+        const data = await res.json()
+        setCodexOauthConnected(!!data?.connected)
+      } catch {}
+    })()
+  }, [viewMode, formData.model_provider])
+
+  const startCodexOauth = async () => {
+    try {
+      setCodexOauthLoading(true)
+      setCodexOauthError(null)
+      setCodexDevice(null)
+      const apiUrl = getApiUrl()
+      const res = await apiRequest(`${apiUrl}/api/models/providers/openai-codex-oauth/oauth/device/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      })
+      if (!res.ok) throw new Error("Failed to start OAuth")
+      const data = await res.json()
+      if (!data?.device_auth_id || !data?.user_code || !data?.verification_url) {
+        throw new Error("Invalid device auth response")
+      }
+      const intervalSec = Math.max(Number(data.interval || 5), 1)
+      setCodexDevice({
+        device_auth_id: data.device_auth_id,
+        user_code: data.user_code,
+        verification_url: data.verification_url,
+        interval: intervalSec,
+      })
+
+      // Poll status until connected
+      const pollDelayMs = intervalSec * 1000 + 3000
+      const timeoutMs = 10 * 60 * 1000
+      for (let elapsed = 0; elapsed < timeoutMs; elapsed += pollDelayMs) {
+        await new Promise((r) => setTimeout(r, pollDelayMs))
+        const s = await apiRequest(`${apiUrl}/api/models/providers/openai-codex-oauth/oauth/device/poll`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_auth_id: data.device_auth_id }),
+        })
+        if (!s.ok) {
+          if (s.status === 400) throw new Error("Invalid or expired authorization attempt")
+          continue
+        }
+        const st = await s.json()
+        if (st?.status === "success") {
+          setCodexOauthConnected(true)
+          return
+        }
+      }
+      throw new Error("Authorization timed out")
+    } catch (err) {
+      setCodexOauthError(err instanceof Error ? err.message : "OAuth failed")
+    } finally {
+      setCodexOauthLoading(false)
+    }
+  }
 
   const fetchProviders = async () => {
     try {
@@ -803,7 +888,7 @@ export function ModelsPage() {
       category: activeTab,
       model_provider: provider.id,
       model_name: "",
-      api_key: "",
+      api_key: provider.id === "openai-codex-oauth" ? "__oauth__" : "",
       base_url: provider.defaultBaseUrl || "",
       temperature: activeTab === 'llm' ? undefined : undefined,
       dimension: activeTab === 'embedding' ? undefined : undefined,
@@ -1135,16 +1220,50 @@ export function ModelsPage() {
 
             <div className="flex flex-col gap-4 mt-4">
                <div className="grid grid-cols-1 gap-4">
-                 <div>
-                   <Label htmlFor="api_key">{t('models.form.apiKey')}</Label>
-                   <Input
-                     id="api_key"
-                     type="password"
-                     value={formData.api_key}
-                     onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
-                     placeholder={t('models.form.apiKeyPlaceholder')}
-                   />
-                 </div>
+                 {formData.model_provider === "openai-codex-oauth" ? (
+                   <div>
+                     <Label>{t('models.form.apiKey')}</Label>
+                     <div className="flex items-center gap-2 mt-2">
+                       <Button onClick={startCodexOauth} disabled={codexOauthLoading}>
+                         {codexOauthLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                         {codexOauthConnected ? "Re-authorize" : "Start device authorization"}
+                       </Button>
+                       <span className="text-sm text-muted-foreground">
+                         {codexOauthConnected ? "Connected" : "Not connected"}
+                       </span>
+                     </div>
+                     {codexDevice && !codexOauthConnected && (
+                       <div className="mt-3 text-sm">
+                         <div>
+                           1) Open{" "}
+                           <a className="underline" href={codexDevice.verification_url} target="_blank" rel="noreferrer">
+                             {codexDevice.verification_url}
+                           </a>
+                         </div>
+                         <div className="mt-1">
+                           2) Enter code:{" "}
+                           <span className="font-mono">{codexDevice.user_code}</span>
+                         </div>
+                       </div>
+                     )}
+                     <div className="text-xs text-muted-foreground mt-2">
+                       API key is not required; Xagent links your ChatGPT account via OAuth.
+                     </div>
+                   </div>
+                 ) : (
+                   <div>
+                     <Label htmlFor="api_key">{t('models.form.apiKey')}</Label>
+                     <Input
+                       id="api_key"
+                       type="password"
+                       value={formData.api_key}
+                       onChange={(e) =>
+                         setFormData({ ...formData, api_key: e.target.value })
+                       }
+                       placeholder={t('models.form.apiKeyPlaceholder')}
+                     />
+                   </div>
+                 )}
                  <div>
                    <Label htmlFor="base_url">{t('models.form.baseUrl')}</Label>
                    <Input
@@ -1152,9 +1271,22 @@ export function ModelsPage() {
                      value={formData.base_url}
                      onChange={(e) => setFormData({ ...formData, base_url: e.target.value })}
                      placeholder={t('models.form.baseUrlPlaceholder')}
+                     readOnly={formData.model_provider === "openai-codex-oauth"}
                    />
                  </div>
                </div>
+
+               {codexOauthError && formData.model_provider === "openai-codex-oauth" && (
+                 <Alert variant="destructive">
+                   <AlertDescription>{codexOauthError}</AlertDescription>
+                 </Alert>
+               )}
+
+               {fetchModelsError && (
+                 <Alert variant="destructive">
+                   <AlertDescription>{fetchModelsError}</AlertDescription>
+                 </Alert>
+               )}
 
                <div className="mt-4">
                  <div className="flex items-center justify-between mb-2">
@@ -1225,7 +1357,15 @@ export function ModelsPage() {
               <Button variant="outline" onClick={closeDialog}>
                 {t('models.dialog.cancel')}
               </Button>
-              <Button onClick={handleSaveSelectedModels} disabled={selectedFetchedModels.length === 0 || loading}>
+              <Button
+                onClick={handleSaveSelectedModels}
+                disabled={
+                  selectedFetchedModels.length === 0 ||
+                  loading ||
+                  (formData.model_provider === "openai-codex-oauth" &&
+                    !codexOauthConnected)
+                }
+              >
                 {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {t('models.dialog.add')}
               </Button>

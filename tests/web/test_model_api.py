@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from xagent.web.api.auth import auth_router
 from xagent.web.api.model import model_router
 from xagent.web.models.database import Base, get_db, get_engine
+from xagent.web.models.provider_auth import UserProviderAuth
 
 # Create temporary directory for database
 
@@ -505,3 +506,42 @@ class TestModelAPI:
         assert response.status_code == 200
         data = response.json()
         assert data["abilities"] == ["chat", "tool_calling", "vision"]
+
+    def test_fetch_codex_oauth_models_uses_connected_oauth_token(
+        self, test_db, regular_user, regular_headers
+    ):
+        db = next(get_db())
+        try:
+            db.add(
+                UserProviderAuth(
+                    user_id=regular_user["id"],
+                    provider_id="openai-codex-oauth",
+                    access_token="oauth-access-token",
+                    refresh_token="oauth-refresh-token",
+                    account_id="acct_123",
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        with patch(
+            "xagent.web.services.model_list_service.fetch_models_from_provider"
+        ) as mock_fetch:
+            mock_fetch.return_value = [{"id": "gpt-5.3-codex"}]
+
+            response = client.post(
+                "/api/models/providers/openai-codex-oauth/models",
+                json={"api_key": "dummy-key", "base_url": None},
+                headers=regular_headers,
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["models"][0]["id"] == "gpt-5.3-codex"
+        mock_fetch.assert_called_once_with(
+            "openai-codex-oauth",
+            "oauth-access-token",
+            None,
+        )

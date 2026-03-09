@@ -3,6 +3,7 @@ from .chat_message import TaskChatMessage
 from .database import Base, get_db, get_engine, get_session_local
 from .mcp import MCPServer, UserMCPServer
 from .model import Model
+from .provider_auth import OAuthState, UserProviderAuth
 from .sandbox import SandboxInfo
 from .system_setting import SystemSetting
 from .task import DAGExecution, Task
@@ -36,4 +37,6 @@ __all__ = [
     "TaskChatMessage",
     "UploadedFile",
     "SandboxInfo",
+    "UserProviderAuth",
+    "OAuthState",
 ]
