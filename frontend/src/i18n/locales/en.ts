@@ -1242,6 +1242,18 @@ Build when you need.`
       openai: {
         description: "Access GPT-4o, GPT-4 Turbo, and DALL-E 3 models. Industry standard for reasoning and creativity.",
       },
+      "zai-coding-plan": {
+        description: "GLM Coding Plan endpoints via Z.AI.",
+      },
+      "zhipuai-coding-plan": {
+        description: "GLM Coding Plan endpoints via Zhipu AI.",
+      },
+      "alibaba-coding-plan": {
+        description: "Alibaba Bailian Coding Plan endpoint.",
+      },
+      "alibaba-coding-plan-cn": {
+        description: "Alibaba Bailian Coding Plan endpoint (China).",
+      },
       azure_openai: {
         description: "Enterprise-grade OpenAI models hosted on Azure.",
       },

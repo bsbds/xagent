@@ -334,6 +334,8 @@ class ProviderInfo(BaseModel):
     name: str
     description: str
     requires_base_url: bool
+    default_base_url: Optional[str] = None
+    compatibility: Optional[str] = None
 
 
 class SupportedProvidersResponse(BaseModel):

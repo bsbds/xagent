@@ -110,6 +110,26 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
     category: ["llm", "embedding"],
     defaultBaseUrl: "https://api.openai.com/v1"
   },
+  "zai-coding-plan": {
+    icon: <img src="/zhipu.svg" alt="Z.AI" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://api.z.ai/api/coding/paas/v4"
+  },
+  "zhipuai-coding-plan": {
+    icon: <img src="/zhipu.svg" alt="Zhipu" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
+  },
+  "alibaba-coding-plan": {
+    icon: <img src="/dashscope.png" alt="Alibaba Bailian" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1"
+  },
+  "alibaba-coding-plan-cn": {
+    icon: <img src="/dashscope.png" alt="Alibaba Bailian" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://coding.dashscope.aliyuncs.com/v1"
+  },
   azure_openai: {
     icon: <Zap className="w-6 h-6 text-blue-500" />,
     category: ["llm"]

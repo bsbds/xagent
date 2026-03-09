@@ -13,6 +13,7 @@ from xagent.core.model.model import (
     ImageModelConfig,
     ModelConfig,
 )
+from xagent.core.model.providers import default_base_url_for_provider
 from xagent.core.utils.security import redact_sensitive_text
 
 from ..auth_dependencies import get_current_user
@@ -59,12 +60,14 @@ async def create_model(
             detail="Only administrators can share models with all users",
         )
 
+    base_url = model.base_url or default_base_url_for_provider(model.model_provider)
+
     if model.category == "llm":
         config: ModelConfig = ChatModelConfig(
             id=model.model_id,
             model_name=model.model_name,
             model_provider=model.model_provider,
-            base_url=model.base_url,
+            base_url=base_url,
             api_key=model.api_key,
             default_temperature=model.temperature,
             timeout=180.0,
@@ -76,7 +79,7 @@ async def create_model(
             id=model.model_id,
             model_name=model.model_name,
             model_provider=model.model_provider,
-            base_url=model.base_url,
+            base_url=base_url,
             api_key=model.api_key,
             timeout=180.0,
             abilities=model.abilities,
@@ -88,7 +91,7 @@ async def create_model(
             id=model.model_id,
             model_name=model.model_name,
             model_provider=model.model_provider,
-            base_url=model.base_url,
+            base_url=base_url,
             api_key=model.api_key,
             default_temperature=model.temperature,
             timeout=180.0,

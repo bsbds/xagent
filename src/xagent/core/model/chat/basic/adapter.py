@@ -1,6 +1,10 @@
 import os
 
 from ....model import ChatModelConfig, ModelConfig
+from ....model.providers import (
+    default_base_url_for_provider,
+    provider_compatibility_for_provider,
+)
 from ....retry import create_retry_wrapper
 from ..error import retry_on
 from .azure_openai import AzureOpenAILLM
@@ -19,11 +23,25 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
     if not isinstance(model, ChatModelConfig):
         raise TypeError(f"Invalid model type: {type(model).__name__}")
 
-    if model.model_provider == "openai":
+    compatibility = provider_compatibility_for_provider(model.model_provider)
+
+    if compatibility == "openai_compatible":
         llm: BaseLLM = OpenAILLM(
             model_name=model.model_name,
             api_key=model.api_key,
-            base_url=model.base_url,
+            base_url=model.base_url
+            or default_base_url_for_provider(model.model_provider),
+            default_temperature=model.default_temperature,
+            default_max_tokens=model.default_max_tokens,
+            timeout=model.timeout,
+            abilities=model.abilities,
+        )
+    elif compatibility == "claude_compatible":
+        llm = ClaudeLLM(
+            model_name=model.model_name,
+            api_key=model.api_key,
+            base_url=model.base_url
+            or default_base_url_for_provider(model.model_provider),
             default_temperature=model.default_temperature,
             default_max_tokens=model.default_max_tokens,
             timeout=model.timeout,
@@ -52,16 +70,6 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
         )
     elif model.model_provider == "gemini":
         llm = GeminiLLM(
-            model_name=model.model_name,
-            api_key=model.api_key,
-            base_url=model.base_url,
-            default_temperature=model.default_temperature,
-            default_max_tokens=model.default_max_tokens,
-            timeout=model.timeout,
-            abilities=model.abilities,
-        )
-    elif model.model_provider == "claude":
-        llm = ClaudeLLM(
             model_name=model.model_name,
             api_key=model.api_key,
             base_url=model.base_url,

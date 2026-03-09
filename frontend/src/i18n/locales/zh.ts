@@ -1242,6 +1242,18 @@ Build when you need.`
       openai: {
         description: "访问 GPT-4o、GPT-4 Turbo 和 DALL-E 3 模型。推理和创造力的行业标准。",
       },
+      "zai-coding-plan": {
+        description: "Z.AI GLM Coding Plan 端点。",
+      },
+      "zhipuai-coding-plan": {
+        description: "智谱 GLM Coding Plan 端点（中国区）。",
+      },
+      "alibaba-coding-plan": {
+        description: "阿里云百炼 Coding Plan 端点。",
+      },
+      "alibaba-coding-plan-cn": {
+        description: "阿里云百炼 Coding Plan 端点（中国区）。",
+      },
       azure_openai: {
         description: "Azure 托管的企业级 OpenAI 模型。",
       },

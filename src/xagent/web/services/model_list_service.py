@@ -3,9 +3,18 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from ...core.model.providers import (
+    curated_models_for_provider,
+    default_base_url_for_provider,
+    get_supported_provider_metadata,
+)
 from ...core.utils.security import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+
+def _static_model_list(models: tuple[str, ...], owned_by: str) -> List[Dict[str, Any]]:
+    return [{"id": model_id, "created": 0, "owned_by": owned_by} for model_id in models]
 
 
 async def fetch_openai_models(
@@ -96,6 +105,28 @@ async def fetch_xinference_models(
     return await XinferenceLLM.list_available_models(base_url=base_url, api_key=api_key)
 
 
+async def fetch_alibaba_coding_plan_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return curated Alibaba Bailian coding plan models."""
+    _ = api_key, base_url
+    return _static_model_list(
+        curated_models_for_provider("alibaba-coding-plan"),
+        owned_by="alibaba-coding-plan",
+    )
+
+
+async def fetch_alibaba_coding_plan_cn_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return curated Alibaba Bailian coding plan models (China)."""
+    _ = api_key, base_url
+    return _static_model_list(
+        curated_models_for_provider("alibaba-coding-plan-cn"),
+        owned_by="alibaba-coding-plan-cn",
+    )
+
+
 # Provider registry mapping provider names to their fetch functions
 PROVIDER_FETCHERS: Dict[str, Any] = {
     "openai": fetch_openai_models,
@@ -105,6 +136,10 @@ PROVIDER_FETCHERS: Dict[str, Any] = {
     "gemini": fetch_gemini_models,
     "google": fetch_gemini_models,
     "xinference": fetch_xinference_models,
+    "zai-coding-plan": fetch_openai_models,
+    "zhipuai-coding-plan": fetch_openai_models,
+    "alibaba-coding-plan": fetch_alibaba_coding_plan_models,
+    "alibaba-coding-plan-cn": fetch_alibaba_coding_plan_cn_models,
 }
 
 
@@ -123,14 +158,16 @@ async def fetch_models_from_provider(
     Returns:
         List of available models
     """
-    fetcher = PROVIDER_FETCHERS.get(provider.lower())
+    provider_id = provider.lower()
+    fetcher = PROVIDER_FETCHERS.get(provider_id)
 
     if not fetcher:
         logger.warning(f"Unknown provider: {provider}")
         return []
 
     try:
-        result: List[Dict[str, Any]] = await fetcher(api_key, base_url)
+        resolved_base_url = base_url or default_base_url_for_provider(provider_id)
+        result: List[Dict[str, Any]] = await fetcher(api_key, resolved_base_url)
         return result
     except Exception as e:
         logger.error(
@@ -147,42 +184,4 @@ def get_supported_providers() -> List[Dict[str, Any]]:
     Returns:
         List of provider information
     """
-    return [
-        {
-            "id": "openai",
-            "name": "OpenAI",
-            "description": "OpenAI API compatible models",
-            "requires_base_url": False,
-        },
-        {
-            "id": "claude",
-            "name": "Anthropic Claude",
-            "description": "Anthropic's Claude models",
-            "requires_base_url": False,
-        },
-        {
-            "id": "gemini",
-            "name": "Google Gemini",
-            "description": "Google's Gemini models",
-            "requires_base_url": False,
-        },
-        {
-            "id": "xinference",
-            "name": "Xinference",
-            "description": "Xinference models for local inference",
-            "requires_base_url": True,
-        },
-        {
-            "id": "zhipu",
-            "name": "Zhipu AI",
-            "description": "Zhipu AI models (GLM series) using zai SDK",
-            "requires_base_url": False,
-        },
-        {
-            "id": "dashscope",
-            "name": "DashScope",
-            "description": "Alibaba Cloud's DashScope models",
-            "requires_base_url": False,
-            "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        },
-    ]
+    return get_supported_provider_metadata()
