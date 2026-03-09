@@ -3,9 +3,11 @@
 import logging
 import time
 import urllib.parse
+from datetime import UTC, datetime, timedelta
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from xagent.core.model.model import (
@@ -20,6 +22,7 @@ from xagent.core.utils.security import redact_sensitive_text
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
 from ..models.model import Model as DBModel
+from ..models.provider_auth import OAuthState, UserProviderAuth
 from ..models.user import User, UserDefaultModel, UserModel
 from ..schemas.model import (
     ModelCreate,
@@ -37,6 +40,64 @@ logger = logging.getLogger(__name__)
 
 # Create router
 model_router = APIRouter(prefix="/api/models", tags=["models"])
+
+_CODEX_OAUTH_PROVIDER_ID = "openai-codex-oauth"
+
+
+def _ensure_utc_aware(value: datetime) -> datetime:
+    # SQLite commonly returns timezone-naive datetimes even when DateTime(timezone=True)
+    # is requested; treat naive values as UTC since we always write UTC timestamps.
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+async def _resolve_codex_oauth_access_token(
+    db: Session,
+    user: User,
+) -> str:
+    auth = (
+        db.query(UserProviderAuth)
+        .filter(
+            UserProviderAuth.user_id == user.id,
+            UserProviderAuth.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+        )
+        .first()
+    )
+    if not auth or not auth.refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAI Codex OAuth is not connected; please authorize first.",
+        )
+
+    should_refresh = not auth.access_token
+    if auth.expires_at is not None:
+        should_refresh = should_refresh or (
+            _ensure_utc_aware(auth.expires_at)
+            <= datetime.now(tz=UTC) + timedelta(seconds=60)
+        )
+
+    if should_refresh:
+        from ..services.openai_codex_oauth import (
+            compute_expires_at,
+            extract_account_id,
+            refresh_access_token,
+        )
+
+        tokens = await refresh_access_token(str(auth.refresh_token))
+        auth.access_token = tokens.access_token
+        auth.refresh_token = tokens.refresh_token
+        auth.expires_at = compute_expires_at(tokens.expires_in)
+        auth.account_id = extract_account_id(tokens) or auth.account_id
+        db.add(auth)
+        db.commit()
+        db.refresh(auth)
+
+    return str(auth.access_token or "")
+
+
+class CodexDevicePollRequest(BaseModel):
+    device_auth_id: str
 
 
 def _decode_model_identifier(model_id: str) -> str:
@@ -121,6 +182,23 @@ async def create_model(
             status_code=403,
             detail="Only administrators can share models with all users",
         )
+
+    if model.model_provider == _CODEX_OAUTH_PROVIDER_ID:
+        has_auth = (
+            db.query(UserProviderAuth)
+            .filter(
+                UserProviderAuth.user_id == user.id,
+                UserProviderAuth.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+                UserProviderAuth.refresh_token.isnot(None),
+            )
+            .first()
+            is not None
+        )
+        if not has_auth:
+            raise HTTPException(
+                status_code=400,
+                detail="OpenAI Codex OAuth is not connected; please authorize first.",
+            )
 
     base_url = model.base_url or default_base_url_for_provider(model.model_provider)
 
@@ -617,7 +695,9 @@ async def test_models(
     user: User = Depends(get_current_user),
 ) -> List[ModelTestResponse]:
     """Test model configurations"""
-    model_storage = CoreStorage(db, DBModel)
+    from ..services.llm_utils import UserAwareModelStorage
+
+    model_storage = UserAwareModelStorage(db)
 
     if test_request and test_request.model_ids:
         # Test specific models that user has access to
@@ -650,7 +730,9 @@ async def test_models(
         start_time = time.time()
 
         try:
-            llm = model_storage.get_llm_by_id(str(model.model_id))
+            llm = model_storage.get_llm_by_name_with_access(
+                str(model.model_id), user.id
+            )
             if not llm:
                 test_results.append(
                     ModelTestResponse(
@@ -710,6 +792,12 @@ async def get_available_model_providers() -> dict:
                 "name": "OpenAI",
                 "description": "OpenAI API compatible models",
                 "examples": ["gpt-4", "gpt-4o", "gpt-3.5-turbo"],
+            },
+            {
+                "type": "openai-responses",
+                "name": "OpenAI Responses",
+                "description": "OpenAI Responses API models via API key",
+                "examples": ["gpt-4.1", "gpt-4o", "gpt-5"],
             },
             {
                 "type": "zhipu",
@@ -1448,7 +1536,7 @@ async def list_supported_providers() -> dict:
 @model_router.post("/providers/{provider}/models")
 async def fetch_provider_models(
     provider: str,
-    api_key: str = Body(...),
+    api_key: Optional[str] = Body(None),
     base_url: Optional[str] = Body(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -1478,8 +1566,21 @@ async def fetch_provider_models(
             detail="base_url is required for Azure OpenAI provider",
         )
 
+    resolved_api_key = api_key
+    if provider.lower() == _CODEX_OAUTH_PROVIDER_ID:
+        resolved_api_key = await _resolve_codex_oauth_access_token(db, user)
+    elif not resolved_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"api_key is required for provider: {provider}",
+        )
+
     try:
-        models = await fetch_models_from_provider(provider, api_key, base_url)
+        models = await fetch_models_from_provider(
+            provider,
+            str(resolved_api_key),
+            base_url,
+        )
 
         return {
             "provider": provider,
@@ -1523,7 +1624,6 @@ async def fetch_multiple_providers_models(
         .join(UserModel, DBModel.id == UserModel.model_id)
         .filter(UserModel.user_id == user.id)
         .filter(DBModel.is_active)
-        .filter(DBModel.api_key.isnot(None))
         .all()
     )
 
@@ -1533,11 +1633,35 @@ async def fetch_multiple_providers_models(
 
     for model in user_models:
         provider = str(model.model_provider).lower()
+        if provider == _CODEX_OAUTH_PROVIDER_ID:
+            if provider not in provider_base_urls and model.base_url:
+                provider_base_urls[provider] = str(model.base_url)
+            continue
         # Use first available API key for each provider
         if provider not in provider_keys and model.api_key:
             provider_keys[provider] = str(model.api_key)
             if model.base_url:
                 provider_base_urls[provider] = str(model.base_url)
+
+    if not providers or _CODEX_OAUTH_PROVIDER_ID in [
+        provider.lower() for provider in providers
+    ]:
+        auth = (
+            db.query(UserProviderAuth)
+            .filter(
+                UserProviderAuth.user_id == user.id,
+                UserProviderAuth.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+                UserProviderAuth.refresh_token.isnot(None),
+            )
+            .first()
+        )
+        if auth:
+            provider_keys[
+                _CODEX_OAUTH_PROVIDER_ID
+            ] = await _resolve_codex_oauth_access_token(
+                db,
+                user,
+            )
 
     # Filter to requested providers
     if providers:
@@ -1635,3 +1759,139 @@ async def list_xinference_tts_models(
             status_code=500,
             detail=f"Failed to fetch TTS models from Xinference: {str(e)}",
         )
+
+
+# OpenAI Codex OAuth endpoints
+
+
+@model_router.get("/providers/openai-codex-oauth/oauth/status")
+async def codex_oauth_status(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    auth = (
+        db.query(UserProviderAuth)
+        .filter(
+            UserProviderAuth.user_id == user.id,
+            UserProviderAuth.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+        )
+        .first()
+    )
+    return {
+        "connected": bool(auth and auth.refresh_token),
+        "expires_at": auth.expires_at.isoformat() if auth and auth.expires_at else None,
+        "account_id": auth.account_id if auth else None,
+    }
+
+
+@model_router.post("/providers/openai-codex-oauth/oauth/disconnect")
+async def codex_oauth_disconnect(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    db.query(UserProviderAuth).filter(
+        UserProviderAuth.user_id == user.id,
+        UserProviderAuth.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+    ).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@model_router.post("/providers/openai-codex-oauth/oauth/device/start")
+async def codex_device_start(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    from datetime import UTC, datetime, timedelta
+
+    from ..services.openai_codex_oauth import start_device_auth
+
+    data = await start_device_auth()
+    device_auth_id = str(data.get("device_auth_id") or "")
+    user_code = str(data.get("user_code") or "")
+    if not device_auth_id or not user_code:
+        raise HTTPException(status_code=500, detail="Failed to start device auth")
+
+    db.query(OAuthState).filter(
+        OAuthState.user_id == user.id,
+        OAuthState.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+    ).delete()
+
+    db.add(
+        OAuthState(
+            user_id=user.id,
+            provider_id=_CODEX_OAUTH_PROVIDER_ID,
+            state=device_auth_id,
+            code_verifier=user_code,
+            expires_at=datetime.now(tz=UTC) + timedelta(minutes=10),
+        )
+    )
+    db.commit()
+
+    return {
+        "device_auth_id": device_auth_id,
+        "user_code": user_code,
+        "interval": int(data.get("interval") or 5),
+        "verification_url": str(
+            data.get("verification_url") or "https://auth.openai.com/codex/device"
+        ),
+    }
+
+
+@model_router.post("/providers/openai-codex-oauth/oauth/device/poll")
+async def codex_device_poll(
+    payload: CodexDevicePollRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    device_auth_id = payload.device_auth_id
+
+    pending = (
+        db.query(OAuthState)
+        .filter(
+            OAuthState.user_id == user.id,
+            OAuthState.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+            OAuthState.state == device_auth_id,
+        )
+        .first()
+    )
+    if not pending or _ensure_utc_aware(pending.expires_at) <= datetime.now(tz=UTC):
+        raise HTTPException(status_code=400, detail="Invalid or expired device auth")
+
+    from ..services.openai_codex_oauth import (
+        TokenResponse,
+        compute_expires_at,
+        extract_account_id,
+        poll_device_auth,
+    )
+
+    user_code = str(pending.code_verifier)
+    res = await poll_device_auth(device_auth_id=device_auth_id, user_code=user_code)
+    if res.get("status") != "success":
+        return {"status": "pending"}
+
+    tokens: TokenResponse = res["tokens"]
+    expires_at = compute_expires_at(tokens.expires_in)
+    account_id = extract_account_id(tokens)
+
+    auth = (
+        db.query(UserProviderAuth)
+        .filter(
+            UserProviderAuth.user_id == user.id,
+            UserProviderAuth.provider_id == _CODEX_OAUTH_PROVIDER_ID,
+        )
+        .first()
+    )
+    if not auth:
+        auth = UserProviderAuth(user_id=user.id, provider_id=_CODEX_OAUTH_PROVIDER_ID)
+        db.add(auth)
+
+    auth.access_token = tokens.access_token
+    auth.refresh_token = tokens.refresh_token
+    auth.expires_at = expires_at
+    auth.account_id = account_id
+
+    db.delete(pending)
+    db.commit()
+
+    return {"status": "success", "account_id": account_id}

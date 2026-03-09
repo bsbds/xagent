@@ -1269,6 +1269,12 @@ Build when you need.`
       openai: {
         description: "访问 GPT-4o、GPT-4 Turbo 和 DALL-E 3 模型。推理和创造力的行业标准。",
       },
+      "openai-responses": {
+        description: "使用标准 API Key 访问 OpenAI Responses API 模型。",
+      },
+      "openai-codex-oauth": {
+        description: "通过 ChatGPT Plus/Pro OAuth 使用 Codex 模型（无需 API Key）。",
+      },
       "minimax-coding-plan": {
         description: "MiniMax Coding Plan 端点（Anthropic 兼容，minimax.io）。",
       },

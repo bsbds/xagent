@@ -49,6 +49,7 @@ def init_db(db_url: str | None = None) -> None:
     from . import (  # noqa: F401
         MCPServer,
         Model,
+        OAuthState,
         SystemSetting,
         Task,
         TaskChatMessage,
@@ -59,6 +60,7 @@ def init_db(db_url: str | None = None) -> None:
         User,
         UserDefaultModel,
         UserModel,
+        UserProviderAuth,
     )
     from .agent import Agent  # noqa: F401
     from .sandbox import SandboxInfo  # noqa: F401

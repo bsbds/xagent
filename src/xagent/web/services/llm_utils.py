@@ -19,6 +19,7 @@ from ...core.model.model import (
     RerankModelConfig,
 )
 from ..models.model import Model
+from ..models.provider_auth import UserProviderAuth
 from ..models.user import UserDefaultModel, UserModel
 
 logger = logging.getLogger(__name__)
@@ -478,6 +479,81 @@ class UserAwareModelStorage:
                 else:
                     logger.info(f"User {user_id} has access to model '{model_name}'")
 
+            if str(db_model.model_provider).lower() == "openai-codex-oauth":
+                if user_id is None:
+                    logger.warning("Codex OAuth model resolution requires user_id")
+                    return None
+                auth = (
+                    self.db.query(UserProviderAuth)
+                    .filter(
+                        UserProviderAuth.user_id == user_id,
+                        UserProviderAuth.provider_id == "openai-codex-oauth",
+                        UserProviderAuth.refresh_token.isnot(None),
+                    )
+                    .first()
+                )
+                if not auth or not auth.refresh_token:
+                    logger.warning(
+                        "No Codex OAuth credentials found for user_id=%s", user_id
+                    )
+                    return None
+
+                from ..models.database import get_session_local
+                from .openai_codex_oauth import (
+                    CodexOAuthResponsesLLM,
+                    CodexOAuthTokenManager,
+                )
+
+                def _persist(
+                    access_token: str,
+                    refresh_token: str,
+                    expires_at: Any,
+                    account_id: Any,
+                ) -> None:
+                    try:
+                        SessionLocal = get_session_local()
+                    except Exception:
+                        return
+                    session = SessionLocal()
+                    try:
+                        rec = (
+                            session.query(UserProviderAuth)
+                            .filter(
+                                UserProviderAuth.user_id == user_id,
+                                UserProviderAuth.provider_id == "openai-codex-oauth",
+                            )
+                            .first()
+                        )
+                        if not rec:
+                            rec = UserProviderAuth(
+                                user_id=user_id,
+                                provider_id="openai-codex-oauth",
+                            )
+                            session.add(rec)
+                        rec.access_token = access_token
+                        rec.refresh_token = refresh_token
+                        rec.expires_at = expires_at
+                        rec.account_id = account_id
+                        session.commit()
+                    finally:
+                        session.close()
+
+                token_manager = CodexOAuthTokenManager(
+                    access_token=str(auth.access_token or ""),
+                    refresh_token=str(auth.refresh_token),
+                    expires_at=auth.expires_at,
+                    account_id=auth.account_id,
+                    on_refresh=_persist,
+                )
+
+                return CodexOAuthResponsesLLM(
+                    model_name=model_config.model_name,
+                    base_url=model_config.base_url,
+                    token_manager=token_manager,
+                    timeout=model_config.timeout,
+                    abilities=model_config.abilities,
+                )
+
             return self.core_storage.create_llm_instance(model_config)
         except Exception as e:
             logger.error(f"Error getting LLM instance for model '{model_name}': {e}")
@@ -524,10 +600,9 @@ class UserAwareModelStorage:
                 )
 
                 if general_default and general_default.model:
-                    model_config = self.core_storage.load(
-                        general_default.model.model_id
+                    default_llm = self.get_llm_by_name_with_access(
+                        general_default.model.model_id, user_id
                     )
-                    default_llm = self.core_storage.create_llm_instance(model_config)
 
                 # Get small/fast model
                 fast_default = (
@@ -545,8 +620,9 @@ class UserAwareModelStorage:
                 )
 
                 if fast_default and fast_default.model:
-                    model_config = self.core_storage.load(fast_default.model.model_id)
-                    fast_llm = self.core_storage.create_llm_instance(model_config)
+                    fast_llm = self.get_llm_by_name_with_access(
+                        fast_default.model.model_id, user_id
+                    )
 
                 # Get vision model
                 vision_default = (
@@ -564,8 +640,9 @@ class UserAwareModelStorage:
                 )
 
                 if vision_default and vision_default.model:
-                    model_config = self.core_storage.load(vision_default.model.model_id)
-                    vision_llm = self.core_storage.create_llm_instance(model_config)
+                    vision_llm = self.get_llm_by_name_with_access(
+                        vision_default.model.model_id, user_id
+                    )
 
                 # Get compact model
                 compact_default = (
@@ -583,10 +660,9 @@ class UserAwareModelStorage:
                 )
 
                 if compact_default and compact_default.model:
-                    model_config = self.core_storage.load(
-                        compact_default.model.model_id
+                    compact_llm = self.get_llm_by_name_with_access(
+                        compact_default.model.model_id, user_id
                     )
-                    compact_llm = self.core_storage.create_llm_instance(model_config)
 
             # If user-specific defaults are not complete, try admin shared defaults
             if not default_llm or not fast_llm or not vision_llm or not compact_llm:
