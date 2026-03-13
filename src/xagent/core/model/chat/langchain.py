@@ -107,6 +107,20 @@ def create_base_chat_model(
             base_url=model.base_url,
             timeout=model.timeout,
         )
+    elif model.model_provider in (
+        "alibaba-coding-plan",
+        "alibaba-coding-plan-cn",
+        "zai-coding-plan",
+        "zhipuai-coding-plan",
+    ):
+        return ChatOpenAI(
+            model=model.model_name,
+            temperature=temp,
+            max_tokens=model.default_max_tokens,
+            api_key=model.api_key,
+            base_url=model.base_url,
+            timeout=model.timeout,
+        )
     elif model.model_provider == "zhipu":
         return ChatZhipuAI(
             model=model.model_name,

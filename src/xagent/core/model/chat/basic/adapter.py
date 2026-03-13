@@ -29,6 +29,21 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
             timeout=model.timeout,
             abilities=model.abilities,
         )
+    elif model.model_provider in (
+        "alibaba-coding-plan",
+        "alibaba-coding-plan-cn",
+        "zai-coding-plan",
+        "zhipuai-coding-plan",
+    ):
+        llm = OpenAILLM(
+            model_name=model.model_name,
+            api_key=model.api_key,
+            base_url=model.base_url,
+            default_temperature=model.default_temperature,
+            default_max_tokens=model.default_max_tokens,
+            timeout=model.timeout,
+            abilities=model.abilities,
+        )
     elif model.model_provider == "azure_openai":
         llm = AzureOpenAILLM(
             model_name=model.model_name,
