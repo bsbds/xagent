@@ -12,6 +12,12 @@ from ...core.utils.security import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+_MINIMAX_CODING_PLAN_MODELS = (
+    "MiniMax-M2",
+    "MiniMax-M2.1",
+    "MiniMax-M2.5",
+)
+
 
 def _static_model_list(models: tuple[str, ...], owned_by: str) -> List[Dict[str, Any]]:
     return [{"id": model_id, "created": 0, "owned_by": owned_by} for model_id in models]
@@ -127,6 +133,26 @@ async def fetch_alibaba_coding_plan_cn_models(
     )
 
 
+async def fetch_minimax_coding_plan_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return curated MiniMax coding plan models (minimax.io)."""
+    _ = api_key, base_url
+    return _static_model_list(
+        _MINIMAX_CODING_PLAN_MODELS, owned_by="minimax-coding-plan"
+    )
+
+
+async def fetch_minimax_cn_coding_plan_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return curated MiniMax coding plan models (minimaxi.com)."""
+    _ = api_key, base_url
+    return _static_model_list(
+        _MINIMAX_CODING_PLAN_MODELS, owned_by="minimax-cn-coding-plan"
+    )
+
+
 # Provider registry mapping provider names to their fetch functions
 PROVIDER_FETCHERS: Dict[str, Any] = {
     "openai": fetch_openai_models,
@@ -140,6 +166,8 @@ PROVIDER_FETCHERS: Dict[str, Any] = {
     "zhipuai-coding-plan": fetch_openai_models,
     "alibaba-coding-plan": fetch_alibaba_coding_plan_models,
     "alibaba-coding-plan-cn": fetch_alibaba_coding_plan_cn_models,
+    "minimax-coding-plan": fetch_minimax_coding_plan_models,
+    "minimax-cn-coding-plan": fetch_minimax_cn_coding_plan_models,
 }
 
 

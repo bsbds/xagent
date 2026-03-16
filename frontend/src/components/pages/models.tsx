@@ -110,6 +110,16 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
     category: ["llm", "embedding"],
     defaultBaseUrl: "https://api.openai.com/v1"
   },
+  "minimax-coding-plan": {
+    icon: <img src="/minimax.svg" alt="MiniMax" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://api.minimax.io/anthropic"
+  },
+  "minimax-cn-coding-plan": {
+    icon: <img src="/minimax.svg" alt="MiniMax" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://api.minimaxi.com/anthropic"
+  },
   "zai-coding-plan": {
     icon: <img src="/zhipu.svg" alt="Z.AI" className="w-6 h-6" />,
     category: ["llm"],

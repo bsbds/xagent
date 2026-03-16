@@ -1244,6 +1244,12 @@ Build when you need.`
       openai: {
         description: "Access GPT-4o, GPT-4 Turbo, and DALL-E 3 models. Industry standard for reasoning and creativity.",
       },
+      "minimax-coding-plan": {
+        description: "MiniMax Coding Plan endpoint (Anthropic-compatible, minimax.io).",
+      },
+      "minimax-cn-coding-plan": {
+        description: "MiniMax Coding Plan endpoint (Anthropic-compatible, minimaxi.com).",
+      },
       "zai-coding-plan": {
         description: "GLM Coding Plan endpoints via Z.AI.",
       },

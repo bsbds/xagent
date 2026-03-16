@@ -5,6 +5,8 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "zhipuai_coding_plan": "zhipuai-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
     "alibaba_coding_plan_cn": "alibaba-coding-plan-cn",
+    "minimax_coding_plan": "minimax-coding-plan",
+    "minimax_cn_coding_plan": "minimax-cn-coding-plan",
 }
 
 # Provider default base URLs used when callers omit an explicit base URL.
@@ -18,6 +20,8 @@ _DEFAULT_BASE_URL_BY_PROVIDER: dict[str, str] = {
     # Alibaba Bailian (Model Studio) coding plan
     "alibaba-coding-plan": "https://coding-intl.dashscope.aliyuncs.com/v1",
     "alibaba-coding-plan-cn": "https://coding.dashscope.aliyuncs.com/v1",
+    "minimax-coding-plan": "https://api.minimax.io/anthropic",
+    "minimax-cn-coding-plan": "https://api.minimaxi.com/anthropic",
 }
 
 _CURATED_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
@@ -36,6 +40,16 @@ _CURATED_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
         "qwen3-coder-plus",
         "qwen3-max-2026-01-23",
         "qwen3.5-plus",
+    ),
+    "minimax-coding-plan": (
+        "MiniMax-M2",
+        "MiniMax-M2.1",
+        "MiniMax-M2.5",
+    ),
+    "minimax-cn-coding-plan": (
+        "MiniMax-M2",
+        "MiniMax-M2.1",
+        "MiniMax-M2.5",
     ),
 }
 
@@ -105,6 +119,20 @@ _SUPPORTED_PROVIDER_METADATA: tuple[dict[str, Any], ...] = (
         "description": "GLM coding plan via Zhipu AI",
         "requires_base_url": False,
         "compatibility": "openai_compatible",
+    },
+    {
+        "id": "minimax-coding-plan",
+        "name": "MiniMax Coding Plan",
+        "description": "MiniMax coding plan",
+        "requires_base_url": False,
+        "default_base_url": "https://api.minimax.io/anthropic",
+    },
+    {
+        "id": "minimax-cn-coding-plan",
+        "name": "MiniMax Coding Plan",
+        "description": "MiniMax coding plan (China)",
+        "requires_base_url": False,
+        "default_base_url": "https://api.minimaxi.com/anthropic",
     },
 )
 
