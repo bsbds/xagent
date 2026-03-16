@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ..core.tracing.langfuse import flush_langfuse, initialize_langfuse
 from .api.admin_users import router as admin_users_router
 from .api.agents import router as agents_router
 from .api.auth import auth_router
@@ -136,6 +137,9 @@ async def startup_event() -> None:
     init_db()
     logger.info("Database initialized successfully")
 
+    if initialize_langfuse():
+        logger.info("Langfuse tracing is enabled for web task execution")
+
     # Start timeout manager
     from .timeout_manager import timeout_manager
 
@@ -191,6 +195,8 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    flush_langfuse()
+
     # Stop timeout manager
     from .timeout_manager import timeout_manager
 

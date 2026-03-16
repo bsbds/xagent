@@ -4,40 +4,6 @@ import json
 from typing import Any, Dict, List, Optional
 
 
-def create_langfuse_mock(mocker) -> tuple:
-    """Create standard Langfuse mock with common setup.
-
-    Returns:
-        tuple: (mock_langfuse_class, mock_langfuse_instance)
-    """
-    mock_langfuse_class = mocker.patch(
-        "xagent.core.observability.langfuse_tracer.Langfuse"
-    )
-    mock_langfuse_instance = mocker.Mock()
-    mock_langfuse_class.return_value = mock_langfuse_instance
-    return mock_langfuse_class, mock_langfuse_instance
-
-
-def create_langfuse_span_mock(mocker, langfuse_instance) -> object:
-    """Create a mock span for Langfuse tracing tests.
-
-    Args:
-        mocker: pytest mocker fixture
-        langfuse_instance: Mock langfuse instance
-
-    Returns:
-        Mock span object
-    """
-    mock_span = mocker.Mock()
-    # Support both v3 (start_span) and v4 (start_observation) APIs
-    langfuse_instance.start_span.return_value = mock_span
-    langfuse_instance.start_observation.return_value = mock_span
-    # Also add start_observation to the mock span for nested spans
-    mock_span.start_span.return_value = mocker.Mock()
-    mock_span.start_observation.return_value = mocker.Mock()
-    return mock_span
-
-
 def create_http_client_mock(
     mocker, response_data: Dict[str, Any], status_code: int = 200
 ):
@@ -146,22 +112,3 @@ def create_mock_tool_calls(
         {"name": name, "args": args, "id": f"call_{i + 1}"}
         for i, (name, args) in enumerate(zip(tool_names, args_list))
     ]
-
-
-def create_temp_config_file(
-    temp_dir: str, config_data: Dict[str, Any], filename: str = "langfuse_config.json"
-) -> str:
-    """Create a temporary configuration file.
-
-    Args:
-        temp_dir: Temporary directory path
-        config_data: Configuration data to write
-        filename: Name of the config file
-
-    Returns:
-        Path to the created config file
-    """
-    config_path = f"{temp_dir}/{filename}"
-    with open(config_path, "w") as f:
-        json.dump(config_data, f)
-    return config_path

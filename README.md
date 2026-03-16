@@ -93,6 +93,20 @@ cd xagent
 cp example.env .env
 ```
 
+To enable Langfuse tracing, edit `.env` and set the Langfuse variables with your own values:
+
+```env
+LANGFUSE_HOST="http://127.0.0.1:3000"
+LANGFUSE_PUBLIC_KEY="your-public-key"
+LANGFUSE_SECRET_KEY="your-secret-key"
+```
+
+To disable tracing explicitly, set:
+
+```env
+LANGFUSE_TRACING_ENABLED="false"
+```
+
 ### 2️⃣ Start with Docker
 
 ```bash

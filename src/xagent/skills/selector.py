@@ -5,6 +5,9 @@ Skill Selector - Use LLM to select the most appropriate skill
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from xagent.core.agent.trace import trace_task_llm_call_end, trace_task_llm_call_start
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +57,71 @@ class SkillSelector:
 
 If no skill is directly relevant, return selected: false."""
 
-    def __init__(self, llm: Any) -> None:
+    def __init__(
+        self, llm: Any, tracer: Optional[Any] = None, task_id: Optional[str] = None
+    ) -> None:
         """
         Args:
             llm: BaseLLM instance
         """
         self.llm = llm
+        self.tracer = tracer
+        self.task_id = task_id
+
+    async def _chat_with_trace(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        task_type: str,
+        llm_params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if not self.tracer or not self.task_id:
+            return await self.llm.chat(messages=messages, **(llm_params or {}))
+
+        trace_task_id = f"{task_type}_{uuid4().hex[:8]}"
+        trace_data = {
+            "task_type": task_type,
+            "model_name": getattr(self.llm, "model_name", type(self.llm).__name__),
+            "messages": messages,
+        }
+
+        await trace_task_llm_call_start(
+            self.tracer,
+            trace_task_id,
+            data=trace_data,
+        )
+
+        try:
+            response = await self.llm.chat(messages=messages, **(llm_params or {}))
+            content = (
+                response.get("content", response)
+                if isinstance(response, dict)
+                else response
+            )
+            usage = response.get("usage") if isinstance(response, dict) else None
+            await trace_task_llm_call_end(
+                self.tracer,
+                trace_task_id,
+                data={
+                    **trace_data,
+                    "content": content,
+                    "response": content,
+                    "usage": usage,
+                    "success": True,
+                },
+            )
+            return response
+        except Exception as exc:
+            await trace_task_llm_call_end(
+                self.tracer,
+                trace_task_id,
+                data={
+                    **trace_data,
+                    "success": False,
+                    "error": str(exc),
+                },
+            )
+            raise
 
     async def select(self, task: str, candidates: List[Dict]) -> Optional[Dict]:
         """
@@ -85,20 +147,22 @@ If no skill is directly relevant, return selected: false."""
 
         # First try JSON mode, fall back to normal mode if not supported
         try:
-            response = await self.llm.chat(
+            response = await self._chat_with_trace(
                 messages=[
                     {"role": "system", "content": self.SELECTOR_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
+                task_type="skill_selection_primary",
+                llm_params={"response_format": {"type": "json_object"}},
             )
         except Exception as e:
             logger.warning(f"JSON mode not supported, falling back to normal mode: {e}")
-            response = await self.llm.chat(
+            response = await self._chat_with_trace(
                 messages=[
                     {"role": "system", "content": self.SELECTOR_SYSTEM},
                     {"role": "user", "content": prompt},
-                ]
+                ],
+                task_type="skill_selection_fallback",
             )
 
         # Handle different return types

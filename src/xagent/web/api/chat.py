@@ -26,10 +26,9 @@ from ..models.user import User
 from ..schemas.chat import TaskCreateRequest, TaskCreateResponse
 from ..services.llm_utils import resolve_llms_from_names
 from ..tools.config import WebToolConfig
+from ..tracing import create_task_tracer
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import format_datetime_for_api, safe_timestamp_to_unix
-from .trace_handlers import DatabaseTraceHandler
-from .ws_trace_handlers import WebSocketTraceHandler
 
 logger = logging.getLogger(__name__)
 
@@ -414,15 +413,7 @@ class AgentServiceManager:
                         # Continue with normal agent creation
 
             # Create tracer with all necessary handlers
-            tracer = Tracer()
-            # Add console handler for logging
-            from ...core.agent.trace import ConsoleTraceHandler
-
-            tracer.add_handler(ConsoleTraceHandler())
-            # Add database handler for persistence
-            tracer.add_handler(DatabaseTraceHandler(task_id))
-            # Add WebSocket handler for real-time updates
-            tracer.add_handler(WebSocketTraceHandler(task_id))
+            tracer = create_task_tracer(task_id, user=user)
 
             # Get LLM configuration from task database record
             logger.info(f"Loading LLM configuration for task {task_id} from database")
@@ -1142,12 +1133,7 @@ class AgentServiceManager:
 
             if tracer_events or plan_state:
                 # Create a minimal agent first
-                tracer = Tracer()
-                from ...core.agent.trace import ConsoleTraceHandler
-
-                tracer.add_handler(ConsoleTraceHandler())
-                tracer.add_handler(DatabaseTraceHandler(task_id))
-                tracer.add_handler(WebSocketTraceHandler(task_id))
+                tracer = create_task_tracer(task_id, user=task.user if task else None)
 
                 # Get LLM configuration from task database record
                 try:

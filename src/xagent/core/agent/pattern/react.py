@@ -43,6 +43,8 @@ from ..trace import (
     trace_memory_store_start,
     trace_task_completion,
     trace_task_end,
+    trace_task_llm_call_end,
+    trace_task_llm_call_start,
     trace_task_start,
     trace_tool_execution_start,
     trace_user_message,
@@ -251,6 +253,8 @@ class ReActPattern(AgentPattern):
             f"ReAct context ({original_tokens} tokens) exceeds threshold ({self.compact_config.threshold}) at iteration {iteration}, compacting with {self.compact_llm.model_name}..."
         )
 
+        compact_trace_id = f"react_context_compaction_{uuid4().hex[:8]}"
+
         try:
             # Format messages for compaction
             conversation_text = CompactUtils.format_messages_for_compact(messages)
@@ -285,11 +289,43 @@ class ReActPattern(AgentPattern):
             cleaned_compact_prompt = clean_messages(compact_prompt)
 
             # Get compacted response
+            await trace_task_llm_call_start(
+                self.tracer,
+                compact_trace_id,
+                data={
+                    "task_type": "react_context_compaction",
+                    "model_name": getattr(
+                        self.compact_llm, "model_name", type(self.compact_llm).__name__
+                    ),
+                    "messages": cleaned_compact_prompt,
+                    "iteration": iteration,
+                    "step_id": getattr(self, "_current_step_id", None),
+                    "step_name": getattr(self, "_current_step_name", "main"),
+                },
+            )
             response = await self.compact_llm.chat(messages=cleaned_compact_prompt)
             content = (
                 response
                 if isinstance(response, str)
                 else response.get("content", str(response))
+            )
+            usage = response.get("usage") if isinstance(response, dict) else None
+            await trace_task_llm_call_end(
+                self.tracer,
+                compact_trace_id,
+                data={
+                    "task_type": "react_context_compaction",
+                    "model_name": getattr(
+                        self.compact_llm, "model_name", type(self.compact_llm).__name__
+                    ),
+                    "content": content,
+                    "response": content,
+                    "usage": usage,
+                    "success": True,
+                    "iteration": iteration,
+                    "step_id": getattr(self, "_current_step_id", None),
+                    "step_name": getattr(self, "_current_step_name", "main"),
+                },
             )
 
             # Parse back to messages format
@@ -328,6 +364,21 @@ class ReActPattern(AgentPattern):
             return compacted_messages
 
         except Exception as e:
+            await trace_task_llm_call_end(
+                self.tracer,
+                compact_trace_id,
+                data={
+                    "task_type": "react_context_compaction",
+                    "model_name": getattr(
+                        self.compact_llm, "model_name", type(self.compact_llm).__name__
+                    ),
+                    "success": False,
+                    "error": str(e),
+                    "iteration": iteration,
+                    "step_id": getattr(self, "_current_step_id", None),
+                    "step_name": getattr(self, "_current_step_name", "main"),
+                },
+            )
             logger.error(f"ReAct compact failed: {e}, using fallback truncation")
             # Fallback: truncate to last N messages
             truncated_messages = CompactUtils.truncate_messages(
@@ -2040,6 +2091,7 @@ Failed final answer:
         Returns:
             Dictionary with comprehensive insights or None if generation fails
         """
+        insights_trace_id = f"react_memory_insights_{uuid4().hex[:8]}"
         try:
             # Analyze tool usage from conversation
             tool_calls = []
@@ -2109,11 +2161,43 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
             cleaned_working_messages = clean_messages(working_messages)
 
             # Get comprehensive insights from LLM using the existing context
+            await trace_task_llm_call_start(
+                self.tracer,
+                insights_trace_id,
+                data={
+                    "task_type": "react_memory_insights",
+                    "model_name": getattr(
+                        self.llm, "model_name", type(self.llm).__name__
+                    ),
+                    "messages": cleaned_working_messages,
+                    "iterations": iterations,
+                    "step_id": getattr(self, "_current_step_id", None),
+                    "step_name": getattr(self, "_current_step_name", "main"),
+                },
+            )
             response = await self.llm.chat(messages=cleaned_working_messages)
             if isinstance(response, dict):
                 response_text = response.get("content", str(response))
             else:
                 response_text = str(response)
+            usage = response.get("usage") if isinstance(response, dict) else None
+            await trace_task_llm_call_end(
+                self.tracer,
+                insights_trace_id,
+                data={
+                    "task_type": "react_memory_insights",
+                    "model_name": getattr(
+                        self.llm, "model_name", type(self.llm).__name__
+                    ),
+                    "content": response_text,
+                    "response": response_text,
+                    "usage": usage,
+                    "success": True,
+                    "iterations": iterations,
+                    "step_id": getattr(self, "_current_step_id", None),
+                    "step_name": getattr(self, "_current_step_name", "main"),
+                },
+            )
 
             # Parse JSON response
             insights_data = json.loads(response_text)
@@ -2125,6 +2209,21 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
             return insights_data
 
         except Exception as e:
+            await trace_task_llm_call_end(
+                self.tracer,
+                insights_trace_id,
+                data={
+                    "task_type": "react_memory_insights",
+                    "model_name": getattr(
+                        self.llm, "model_name", type(self.llm).__name__
+                    ),
+                    "success": False,
+                    "error": str(e),
+                    "iterations": iterations,
+                    "step_id": getattr(self, "_current_step_id", None),
+                    "step_name": getattr(self, "_current_step_name", "main"),
+                },
+            )
             logger.error(f"Failed to generate ReAct insights: {e}")
             return None
 

@@ -13,7 +13,12 @@ from ....model.chat.token_context import add_token_usage
 from ....tools.adapters.vibe import Tool
 from ...context import AgentContext
 from ...exceptions import DAGPlanGenerationError, LLMResponseError
-from ...trace import trace_dag_plan_end, trace_dag_plan_start
+from ...trace import (
+    trace_dag_plan_end,
+    trace_dag_plan_start,
+    trace_task_llm_call_end,
+    trace_task_llm_call_start,
+)
 from ...utils.compact import CompactConfig, CompactUtils
 from ...utils.llm_utils import clean_messages, extract_json_from_markdown
 from .models import (
@@ -80,6 +85,138 @@ class PlanGenerator:
         except (ValueError, TypeError):
             logger.warning(f"Invalid timeout value from LLM: {timeout}")
             return None
+
+    async def _trace_stream_llm_call(
+        self,
+        *,
+        tracer: Any,
+        task_type: str,
+        messages: List[Dict[str, str]],
+        llm_params: Dict[str, Any],
+        trace_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        trace_task_id = f"{task_type}_{uuid4().hex[:8]}"
+        trace_data = {
+            "task_type": task_type,
+            "model_name": getattr(self.llm, "model_name", type(self.llm).__name__),
+            "messages": messages,
+            **(trace_metadata or {}),
+        }
+
+        await trace_task_llm_call_start(
+            tracer,
+            trace_task_id,
+            data=trace_data,
+        )
+
+        try:
+            full_content = ""
+            usage = {}
+            tool_calls = []
+
+            async for chunk in self.llm.stream_chat(
+                messages=messages,
+                **llm_params,
+            ):
+                if chunk.is_token():
+                    full_content += chunk.delta
+                elif chunk.is_tool_call():
+                    tool_calls = chunk.tool_calls
+                elif chunk.is_usage():
+                    usage = chunk.usage
+                elif chunk.is_error():
+                    raise RuntimeError(f"LLM stream error: {chunk.content}")
+
+            await trace_task_llm_call_end(
+                tracer,
+                trace_task_id,
+                data={
+                    **trace_data,
+                    "content": full_content,
+                    "response": full_content,
+                    "usage": usage,
+                    "tool_calls": tool_calls,
+                    "success": True,
+                },
+            )
+
+            if tool_calls:
+                return {
+                    "content": full_content,
+                    "tool_calls": tool_calls,
+                    "usage": usage,
+                }
+
+            return {"content": full_content, "usage": usage}
+        except Exception as exc:
+            await trace_task_llm_call_end(
+                tracer,
+                trace_task_id,
+                data={
+                    **trace_data,
+                    "success": False,
+                    "error": str(exc),
+                },
+            )
+            raise
+
+    async def _trace_chat_llm_call(
+        self,
+        *,
+        tracer: Any,
+        task_type: str,
+        messages: List[Dict[str, str]],
+        llm_params: Optional[Dict[str, Any]] = None,
+        trace_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if tracer is None:
+            return await self.llm.chat(messages=messages, **(llm_params or {}))
+
+        trace_task_id = f"{task_type}_{uuid4().hex[:8]}"
+        trace_data = {
+            "task_type": task_type,
+            "model_name": getattr(self.llm, "model_name", type(self.llm).__name__),
+            "messages": messages,
+            **(trace_metadata or {}),
+        }
+
+        await trace_task_llm_call_start(
+            tracer,
+            trace_task_id,
+            data=trace_data,
+        )
+
+        try:
+            response = await self.llm.chat(messages=messages, **(llm_params or {}))
+            content = (
+                response.get("content", response)
+                if isinstance(response, dict)
+                else response
+            )
+            usage = response.get("usage") if isinstance(response, dict) else None
+            await trace_task_llm_call_end(
+                tracer,
+                trace_task_id,
+                data={
+                    **trace_data,
+                    "content": content,
+                    "response": content,
+                    "usage": usage,
+                    "success": True,
+                },
+            )
+            return response
+        except Exception as exc:
+            await trace_task_llm_call_end(
+                tracer,
+                trace_task_id,
+                data={
+                    **trace_data,
+                    "success": False,
+                    "error": str(exc),
+                },
+            )
+            raise
 
     async def _generate_plan_with_flow(
         self,
@@ -156,7 +293,19 @@ class PlanGenerator:
             logger.info(
                 f"Calling LLM for {'plan extension' if is_extension else 'planning'}, prompt: {prompt}"
             )
-            response = await self._call_llm_with_retry(messages=prompt)
+            response = await self._call_llm_with_retry(
+                messages=prompt,
+                tracer=tracer,
+                task_type="plan_extension_generation"
+                if is_extension
+                else "plan_generation",
+                trace_metadata={
+                    "goal": goal[:200],
+                    "iteration": iteration,
+                    "tools_count": len(tools),
+                    "history_length": len(history),
+                },
+            )
 
             content = response["content"] if isinstance(response, dict) else response
             logger.info(f"LLM response received, length: {len(str(content))}")
@@ -170,11 +319,17 @@ class PlanGenerator:
                     # For first attempt, use normal parsing. For retries, parse with error context.
                     if validation_attempt == 0:
                         parsed_data = await self._parse_plan_response_with_retry(
-                            content, prompt, error_context=None
+                            content,
+                            prompt,
+                            tracer=tracer,
+                            error_context=None,
                         )
                     else:
                         parsed_data = await self._parse_plan_response_with_retry(
-                            content, prompt, error_context=error_context
+                            content,
+                            prompt,
+                            tracer=tracer,
+                            error_context=error_context,
                         )
 
                     steps_data = parsed_data.get("steps", [])
@@ -549,7 +704,16 @@ class PlanGenerator:
             }
 
             response = await self._call_llm_with_retry(
-                messages=messages, output_config=output_config
+                messages=messages,
+                output_config=output_config,
+                tracer=tracer,
+                task_type="plan_classification",
+                trace_metadata={
+                    "goal": goal[:200],
+                    "iteration": iteration,
+                    "tools_count": len(tools),
+                    "history_length": len(history),
+                },
             )
 
             content = response["content"] if isinstance(response, dict) else response
@@ -1420,7 +1584,12 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             )
 
     async def _call_llm_with_retry(
-        self, messages: List[Dict[str, str]], **kwargs: Any
+        self,
+        messages: List[Dict[str, str]],
+        tracer: Optional[Any] = None,
+        task_type: str = "plan_generation",
+        trace_metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> Any:
         """Call LLM with retry mechanism: JSON mode first, then fallback to normal mode."""
         try:
@@ -1442,19 +1611,31 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
                 # Fall back to simple JSON object mode
                 llm_params["response_format"] = {"type": "json_object"}
 
-            async for chunk in self.llm.stream_chat(
-                messages=cleaned_messages,
-                **llm_params,
-                **kwargs,
-            ):
-                if chunk.is_token():
-                    full_content += chunk.delta
-                elif chunk.is_tool_call():
-                    tool_calls = chunk.tool_calls
-                elif chunk.is_usage():
-                    usage = chunk.usage
-                elif chunk.is_error():
-                    raise RuntimeError(f"LLM stream error: {chunk.content}")
+            if tracer:
+                response = await self._trace_stream_llm_call(
+                    tracer=tracer,
+                    task_type=f"{task_type}_primary",
+                    messages=cleaned_messages,
+                    llm_params={**llm_params, **kwargs},
+                    trace_metadata=trace_metadata,
+                )
+                full_content = response["content"]
+                usage = response.get("usage", {})
+                tool_calls = response.get("tool_calls", [])
+            else:
+                async for chunk in self.llm.stream_chat(
+                    messages=cleaned_messages,
+                    **llm_params,
+                    **kwargs,
+                ):
+                    if chunk.is_token():
+                        full_content += chunk.delta
+                    elif chunk.is_tool_call():
+                        tool_calls = chunk.tool_calls
+                    elif chunk.is_usage():
+                        usage = chunk.usage
+                    elif chunk.is_error():
+                        raise RuntimeError(f"LLM stream error: {chunk.content}")
 
             # Record token usage
             if usage:
@@ -1489,16 +1670,27 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
                 full_content = ""
                 usage = {}
 
-                async for chunk in self.llm.stream_chat(
-                    messages=cleaned_messages,
-                    **kwargs,
-                ):
-                    if chunk.is_token():
-                        full_content += chunk.delta
-                    elif chunk.is_usage():
-                        usage = chunk.usage
-                    elif chunk.is_error():
-                        raise RuntimeError(f"LLM stream error: {chunk.content}")
+                if tracer:
+                    response = await self._trace_stream_llm_call(
+                        tracer=tracer,
+                        task_type=f"{task_type}_fallback",
+                        messages=cleaned_messages,
+                        llm_params=kwargs,
+                        trace_metadata=trace_metadata,
+                    )
+                    full_content = response["content"]
+                    usage = response.get("usage", {})
+                else:
+                    async for chunk in self.llm.stream_chat(
+                        messages=cleaned_messages,
+                        **kwargs,
+                    ):
+                        if chunk.is_token():
+                            full_content += chunk.delta
+                        elif chunk.is_usage():
+                            usage = chunk.usage
+                        elif chunk.is_error():
+                            raise RuntimeError(f"LLM stream error: {chunk.content}")
 
                 # Record token usage for fallback
                 if usage:
@@ -1518,6 +1710,7 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
         self,
         content: str,
         messages: List[Dict[str, str]],
+        tracer: Optional[Any] = None,
         error_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Parse plan response with retry mechanism."""
@@ -1575,7 +1768,19 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             }
         ]
 
-        new_response = await self.llm.chat(messages=retry_messages)
+        new_response = await self._trace_chat_llm_call(
+            tracer=tracer,
+            task_type="plan_repair_retry",
+            messages=retry_messages,
+            trace_metadata={
+                "error_type": error_context.get("error_type")
+                if error_context
+                else None,
+                "error_message": error_context.get("error_message")
+                if error_context
+                else None,
+            },
+        )
         new_content = (
             new_response.get("content", "")
             if isinstance(new_response, dict)

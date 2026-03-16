@@ -6,9 +6,16 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from ...model.chat.basic.base import BaseLLM
-from ..trace import Tracer, trace_compact_end, trace_compact_start
+from ..trace import (
+    Tracer,
+    trace_compact_end,
+    trace_compact_start,
+    trace_task_llm_call_end,
+    trace_task_llm_call_start,
+)
 from .compact import CompactConfig, CompactUtils
 
 logger = logging.getLogger(__name__)
@@ -56,6 +63,68 @@ class ContextBuilder:
         self.compact_config = CompactConfig(
             enabled=True, threshold=compact_threshold or CompactConfig().threshold
         )
+
+    async def _compact_llm_chat(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        task_type: str,
+        trace_task_id: Optional[str] = None,
+        step_name: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        llm_trace_id = f"{task_type}_{uuid4().hex[:8]}"
+        trace_data = {
+            "task_type": task_type,
+            "model_name": getattr(
+                self.compact_llm, "model_name", type(self.compact_llm).__name__
+            ),
+            "messages": messages,
+            "step_id": trace_task_id,
+            "step_name": step_name,
+            **(extra_metadata or {}),
+        }
+
+        if self.tracer:
+            await trace_task_llm_call_start(
+                self.tracer,
+                llm_trace_id,
+                data=trace_data,
+            )
+
+        try:
+            response = await self.compact_llm.chat(messages=messages)
+            content = (
+                response
+                if isinstance(response, str)
+                else response.get("content", str(response))
+            )
+            usage = response.get("usage") if isinstance(response, dict) else None
+            if self.tracer:
+                await trace_task_llm_call_end(
+                    self.tracer,
+                    llm_trace_id,
+                    data={
+                        **trace_data,
+                        "content": content,
+                        "response": content,
+                        "usage": usage,
+                        "success": True,
+                    },
+                )
+            return response
+        except Exception as exc:
+            if self.tracer:
+                await trace_task_llm_call_end(
+                    self.tracer,
+                    llm_trace_id,
+                    data={
+                        **trace_data,
+                        "success": False,
+                        "error": str(exc),
+                    },
+                )
+            raise
 
     async def build_context_for_step(
         self,
@@ -157,7 +226,11 @@ class ContextBuilder:
                         # Compact this dependency individually
                         compacted_dep_messages = (
                             await self._compact_individual_dependency(
-                                dep_result.messages, dep_id, step_name, step_description
+                                dep_result.messages,
+                                dep_id,
+                                step_name,
+                                step_description,
+                                task_id,
                             )
                         )
 
@@ -242,7 +315,10 @@ class ContextBuilder:
                     )
 
                 compact_messages = await self._compact_dependency_messages(
-                    processed_dependency_messages, step_name, step_description
+                    processed_dependency_messages,
+                    step_name,
+                    step_description,
+                    task_id,
                 )
 
                 # Trace compact end for entire context
@@ -293,6 +369,7 @@ class ContextBuilder:
         dependency_id: str,
         target_step_name: str,
         target_step_description: str,
+        parent_step_id: Optional[str],
     ) -> List[Dict[str, str]]:
         """Compact a single dependency's messages using custom compact logic."""
 
@@ -340,7 +417,17 @@ class ContextBuilder:
             ]
 
             # Get compacted response
-            response = await self.compact_llm.chat(messages=compact_prompt)
+            response = await self._compact_llm_chat(
+                messages=compact_prompt,
+                task_type="context_individual_dependency_compaction",
+                trace_task_id=parent_step_id,
+                step_name=target_step_name,
+                extra_metadata={
+                    "compact_type": "individual_dependency",
+                    "dependency_id": dependency_id,
+                    "target_step_description": target_step_description,
+                },
+            )
             content = (
                 response
                 if isinstance(response, str)
@@ -391,6 +478,7 @@ class ContextBuilder:
         messages: List[Dict[str, str]],
         target_step_name: str,
         target_step_description: str,
+        parent_step_id: Optional[str],
     ) -> List[Dict[str, str]]:
         """Compact dependency messages using custom compact logic."""
 
@@ -433,7 +521,16 @@ class ContextBuilder:
             ]
 
             # Get compacted response
-            response = await self.compact_llm.chat(messages=compact_prompt)
+            response = await self._compact_llm_chat(
+                messages=compact_prompt,
+                task_type="context_total_dependency_compaction",
+                trace_task_id=parent_step_id,
+                step_name=target_step_name,
+                extra_metadata={
+                    "compact_type": "entire_context",
+                    "target_step_description": target_step_description,
+                },
+            )
             content = (
                 response
                 if isinstance(response, str)
