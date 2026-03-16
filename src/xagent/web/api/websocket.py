@@ -22,6 +22,7 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from ...core.tracing.langfuse import create_langfuse_trace_handler
 from ..auth_dependencies import get_user_from_websocket_token
 from ..config import UPLOADS_DIR
 from ..models.database import get_db
@@ -2491,6 +2492,16 @@ async def handle_build_preview_execution(
     # Create Tracer instance with WebSocket handler
     preview_tracer = Tracer()
     preview_tracer.add_handler(WebSocketTracer(websocket, preview_task_id))
+    langfuse_handler = create_langfuse_trace_handler(
+        task_id=preview_task_id,
+        user_id=int(user.id) if getattr(user, "id", None) is not None else None,
+        trace_name=f"xagent-web-preview-{preview_task_id}",
+        session_id=f"preview:{preview_task_id}",
+        tags=["xagent", "web", "preview"],
+        metadata={"task_id": preview_task_id, "is_preview": True},
+    )
+    if langfuse_handler is not None:
+        preview_tracer.add_handler(langfuse_handler)
 
     # Get database session
     db_gen = get_db()

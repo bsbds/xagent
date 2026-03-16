@@ -159,7 +159,7 @@ class SkillManager:
                 },
             )
 
-        selector = SkillSelector(llm)
+        selector = SkillSelector(llm, tracer=tracer, task_id=task_id)
 
         try:
             selected_skill = await selector.select(task=task, candidates=candidates)
