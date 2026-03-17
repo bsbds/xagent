@@ -47,6 +47,7 @@ from ..trace import (
     trace_tool_execution_start,
     trace_user_message,
 )
+from ..transcript import normalize_transcript_messages
 from ..utils.compact import CompactConfig, CompactUtils
 from ..utils.llm_utils import clean_messages
 from .base import AgentPattern
@@ -207,6 +208,7 @@ class ReActPattern(AgentPattern):
             asyncio.Event()
         )  # For immediate interruption (continuation)
         self._context: Optional[AgentContext] = None
+        self._conversation_history: List[Dict[str, str]] = []
 
         # Context compaction configuration
         self.compact_config = CompactConfig(
@@ -226,6 +228,10 @@ class ReActPattern(AgentPattern):
             Estimated token count
         """
         return CompactUtils.estimate_tokens(messages)
+
+    def set_conversation_history(self, messages: List[Dict[str, Any]]) -> None:
+        """Replace the persisted top-level conversation transcript for a new run."""
+        self._conversation_history = normalize_transcript_messages(messages)
 
     async def _compact_react_context(
         self, messages: List[Dict[str, str]], iteration: int
@@ -704,8 +710,10 @@ class ReActPattern(AgentPattern):
         # Build initial messages
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": enhanced_task},
         ]
+        if self._conversation_history:
+            messages.extend(self._conversation_history)
+        messages.append({"role": "user", "content": enhanced_task})
 
         # Use the shared execution loop
         return await self._execute_react_loop(

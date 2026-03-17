@@ -51,6 +51,9 @@ class User(Base):  # type: ignore
     uploaded_files = relationship(
         "UploadedFile", back_populates="user", cascade="all, delete-orphan"
     )
+    chat_messages = relationship(
+        "TaskChatMessage", back_populates="user", cascade="all, delete-orphan"
+    )
     user_default_models = relationship(
         "UserDefaultModel", back_populates="user", cascade="all, delete-orphan"
     )

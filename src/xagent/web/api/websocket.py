@@ -468,6 +468,7 @@ async def execute_task_background(
 ) -> None:
     """Execute task in background without blocking WebSocket message loop"""
     from ..models.task import Task, TaskStatus
+    from ..services.chat_history_service import persist_assistant_message
 
     # Wait for previous background task to complete
     await background_task_manager.wait_for_previous(task_id)
@@ -553,6 +554,21 @@ async def execute_task_background(
                     logger.info(
                         f"Task {task_id} is paused, not updating status to {result.get('success')}"
                     )
+
+                persist_assistant_message(
+                    db_new,
+                    task_id=task_id,
+                    user_id=int(task.user_id),
+                    content=chat_response.get("message", ai_response)
+                    if isinstance(chat_response, dict)
+                    else ai_response,
+                    message_type="chat_response"
+                    if isinstance(chat_response, dict)
+                    else "final_answer",
+                    interactions=chat_response.get("interactions")
+                    if isinstance(chat_response, dict)
+                    else None,
+                )
         finally:
             db_new.close()
 
@@ -615,6 +631,7 @@ async def execute_continuation_background(
 ) -> None:
     """Execute continuation in background without blocking WebSocket message loop"""
     from ..models.task import Task, TaskStatus
+    from ..services.chat_history_service import persist_assistant_message
 
     # Get current task reference and register immediately
     current_task = asyncio.current_task()
@@ -678,6 +695,21 @@ async def execute_continuation_background(
                     )
                 else:
                     logger.info(f"Task {task_id} is paused, not updating status")
+
+                persist_assistant_message(
+                    db_new,
+                    task_id=task_id,
+                    user_id=int(task.user_id),
+                    content=chat_response.get("message", ai_response)
+                    if isinstance(chat_response, dict)
+                    else ai_response,
+                    message_type="chat_response"
+                    if isinstance(chat_response, dict)
+                    else "final_answer",
+                    interactions=chat_response.get("interactions")
+                    if isinstance(chat_response, dict)
+                    else None,
+                )
         finally:
             db_new.close()
 
@@ -735,6 +767,9 @@ class BackgroundTaskManager:
         """Wait for previous background task of this task to complete"""
         if task_id in self.running_tasks:
             old_task = self.running_tasks[task_id]
+            current_task = asyncio.current_task()
+            if current_task is not None and old_task is current_task:
+                return
             if not old_task.done():
                 logger.info(
                     f"Waiting for previous background task {task_id} to complete..."
@@ -1085,6 +1120,10 @@ async def handle_chat_message(
 
             from ..models.database import get_db
             from ..models.task import Task, TaskStatus
+            from ..services.chat_history_service import (
+                load_task_transcript,
+                persist_user_message,
+            )
             from .chat import get_agent_manager
 
             # Get database session
@@ -1195,6 +1234,13 @@ async def handle_chat_message(
                         )
                         await manager.broadcast_to_task(task_event, task_id)
                         logger.info(f"task_info event sent for task {task_id}")
+
+                persisted_user_message = persist_user_message(
+                    db,
+                    task_id=task_id,
+                    user_id=int(user.id),
+                    content=user_message,
+                )
 
                 # Handle file upload if files present
                 uploaded_file_paths = []
@@ -1326,6 +1372,14 @@ async def handle_chat_message(
                     logger.info(
                         f"Task {task_id} is not running (status: {task.status.value}), starting new execution"
                     )
+
+                    if persisted_user_message is not None:
+                        conversation_history = load_task_transcript(
+                            db,
+                            task_id,
+                            before_message_id=int(persisted_user_message.id),
+                        )
+                        agent_service.set_conversation_history(conversation_history)
 
                     # IMPORTANT: Check if task was completed/failed BEFORE updating status
                     # This is needed to force fresh execution instead of continuation

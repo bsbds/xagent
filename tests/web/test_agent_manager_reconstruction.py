@@ -214,6 +214,7 @@ class TestAgentServiceManagerReconstruction:
         mock_user,
     ):
         """测试获取已存在任务的agent，并进行重建"""
+        sample_task.status = TaskStatus.RUNNING
         # 使用更高级的方法直接patch AgentService创建
         with (
             patch("xagent.web.api.chat.AgentService") as mock_agent_service_class,

@@ -145,6 +145,12 @@ class Task(Base):  # type: ignore
     # Relationships
     user = relationship("User", back_populates="tasks")
     dag_executions = relationship("DAGExecution", back_populates="task")
+    chat_messages = relationship(
+        "TaskChatMessage",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="TaskChatMessage.id",
+    )
     uploaded_files = relationship("UploadedFile", back_populates="task")
 
     def __repr__(self) -> str:

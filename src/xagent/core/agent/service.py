@@ -576,6 +576,12 @@ class AgentService:
                     return pattern
         return None
 
+    def set_conversation_history(self, messages: List[Dict[str, Any]]) -> None:
+        """Load a persisted transcript into patterns that support top-level chat history."""
+        for pattern in self.patterns:
+            if hasattr(pattern, "set_conversation_history"):
+                pattern.set_conversation_history(messages)
+
     def get_task_info(self) -> Optional[Dict[str, Any]]:
         """Get task information including generated task_name.
 
@@ -644,6 +650,12 @@ class AgentService:
                 task_id
             )  # Always store as string for consistency
         else:
+            if self.use_dag_pattern and self.patterns:
+                dag_pattern = self.patterns[0]
+                if isinstance(dag_pattern, DAGPlanExecutePattern):
+                    dag_pattern.reset_execution_state(
+                        preserve_conversation_history=True
+                    )
             # Generate a task_id for this execution to enable future continuation
             from uuid import uuid4
 

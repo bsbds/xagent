@@ -17,6 +17,7 @@ from xagent.core.storage import get_default_db_url
 # Import all models to ensure they are registered with Base.metadata
 # Type checking is disabled for these imports as they are dynamically loaded by Alembic
 # flake8: noqa: E402
+from xagent.web import models as web_models  # noqa: F401
 from xagent.web.models.database import Base
 
 # this is the Alembic Config object, which provides

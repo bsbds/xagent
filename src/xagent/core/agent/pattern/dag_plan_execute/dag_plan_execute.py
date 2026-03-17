@@ -39,6 +39,10 @@ from ...trace import (
     trace_task_start,
     trace_user_message,
 )
+from ...transcript import (
+    build_assistant_transcript_content,
+    normalize_transcript_messages,
+)
 from ..memory_utils import enhance_goal_with_memory
 
 if TYPE_CHECKING:
@@ -226,93 +230,29 @@ class DAGPlanExecutePattern(AgentPattern):
         content: str,
         interactions: Optional[List] = None,
     ) -> None:
-        """Add assistant message to conversation history with optional interactions.
-
-        Interactions are converted to natural language and merged into content.
-        The original interactions are stored separately for frontend use.
-        """
-        content_parts = [content]
-
-        # Convert interactions to natural language description
-        if interactions:
-            content_parts.append("\n\nPlease answer the following questions:")
-            for interaction in interactions:
-                from .models import InteractionType
-
-                def get_attr(obj: Any, key: str, default: Any = None) -> Any:
-                    if isinstance(obj, dict):
-                        return obj.get(key, default)
-                    return getattr(obj, key, default)
-
-                i_type = get_attr(interaction, "type")
-                i_options = get_attr(interaction, "options")
-                i_label = get_attr(interaction, "label")
-                i_placeholder = get_attr(interaction, "placeholder")
-                i_accept = get_attr(interaction, "accept")
-                i_multiple = get_attr(interaction, "multiple")
-                i_default = get_attr(interaction, "default")
-                i_min = get_attr(interaction, "min")
-                i_max = get_attr(interaction, "max")
-
-                interaction_type = (
-                    i_type
-                    if isinstance(i_type, InteractionType)
-                    else InteractionType(i_type)
-                )
-
-                if interaction_type == InteractionType.SELECT_ONE:
-                    options_desc = ", ".join(
-                        [
-                            f"{opt.get('value')}: {opt.get('label')}"
-                            for opt in (i_options or [])
-                        ]
-                    )
-                    label = i_label or "Select"
-                    content_parts.append(f"- {label}: {options_desc}")
-
-                elif interaction_type == InteractionType.SELECT_MULTIPLE:
-                    options_desc = ", ".join(
-                        [
-                            f"{opt.get('value')}: {opt.get('label')}"
-                            for opt in (i_options or [])
-                        ]
-                    )
-                    label = i_label or "Select multiple options"
-                    content_parts.append(f"- {label}: {options_desc}")
-
-                elif interaction_type == InteractionType.TEXT_INPUT:
-                    label = i_label or "Enter text"
-                    placeholder = i_placeholder or "text input"
-                    content_parts.append(f"- {label}: {placeholder}")
-
-                elif interaction_type == InteractionType.FILE_UPLOAD:
-                    label = i_label or "Upload file"
-                    accept_desc = ", ".join(i_accept) if i_accept else "any file"
-                    multiple_desc = (
-                        "multiple files allowed" if i_multiple else "single file"
-                    )
-                    content_parts.append(f"- {label}: {accept_desc} ({multiple_desc})")
-
-                elif interaction_type == InteractionType.CONFIRM:
-                    label = i_label or "Confirm"
-                    default_desc = "Default: yes" if i_default else "Default: no"
-                    content_parts.append(f"- {label} ({default_desc})")
-
-                elif interaction_type == InteractionType.NUMBER_INPUT:
-                    label = i_label or "Enter number"
-                    range_desc = ""
-                    if i_min is not None and i_max is not None:
-                        range_desc = f" (range: {i_min}-{i_max})"
-                    content_parts.append(f"- {label}{range_desc}")
-
-        # Store with natural language content + original interactions
+        """Add assistant message to conversation history with optional interactions."""
+        transcript_content = build_assistant_transcript_content(content, interactions)
+        if self._conversation_history:
+            last_message = self._conversation_history[-1]
+            if (
+                last_message.get("role") == "assistant"
+                and last_message.get("content") == transcript_content
+            ):
+                return
         self._conversation_history.append(
             {
                 "role": "assistant",
-                "content": "\n".join(content_parts),
+                "content": transcript_content,
                 "_interactions": interactions,  # Internal use, not sent to LLM
             }
         )
+
+    def set_conversation_history(self, messages: List[Dict[str, Any]]) -> None:
+        """Replace in-memory conversation history with a normalized transcript."""
+        self._conversation_history = [
+            {"role": message["role"], "content": message["content"]}
+            for message in normalize_transcript_messages(messages)
+        ]
 
     def _get_messages_for_llm(self) -> List[Dict[str, str]]:
         """Get conversation history in standard format for LLM.
@@ -1141,6 +1081,7 @@ class DAGPlanExecutePattern(AgentPattern):
                         final_answer = goal_check_result.get("final_answer", "")
                         if final_answer:
                             self._final_answer = final_answer
+                            self._add_assistant_message(final_answer)
                             logger.info(
                                 f"Final answer ready (length: {len(final_answer)})"
                             )
@@ -1161,6 +1102,9 @@ class DAGPlanExecutePattern(AgentPattern):
 
             # Final result compilation
             final_result = self._compile_final_result(task, execution_history)
+            final_output = final_result.get("output")
+            if isinstance(final_output, str) and final_output.strip():
+                self._add_assistant_message(final_output)
 
             # Check for agent-specific completion trace data in the final result
             if isinstance(final_result, dict) and "agent_trace_data" in final_result:
@@ -1232,6 +1176,8 @@ class DAGPlanExecutePattern(AgentPattern):
                             )
                     if detailed_errors:
                         error_result["error_details"] = detailed_errors
+
+                self._add_assistant_message(error_result["output"])
 
                 return error_result
 
@@ -1336,6 +1282,8 @@ class DAGPlanExecutePattern(AgentPattern):
     ) -> None:
         """请求 continuation，由旧任务在适当时机自己处理"""
         logger.info(f"Continuation requested: {additional_task[:50]}...")
+
+        self._add_user_message(additional_task)
 
         self._pending_continuation = {
             "additional_task": additional_task,
@@ -1759,7 +1707,7 @@ class DAGPlanExecutePattern(AgentPattern):
                 return True
         return False
 
-    def reset_execution_state(self) -> None:
+    def reset_execution_state(self, preserve_conversation_history: bool = False) -> None:
         """Reset the execution state to allow a fresh execution of the task.
 
         This method clears the current plan and execution-related flags while
@@ -1770,18 +1718,30 @@ class DAGPlanExecutePattern(AgentPattern):
 
         # Clear the current plan
         self.current_plan = None
+        self.phase = ExecutionPhase.PLANNING
+        self._final_answer = None
+        self._context = None
+        self._skill_context = None
 
         # Reset execution flags
         self._execution_interrupted = False
         self._new_user_input = None
+        self._pending_continuation = None
         self._pause_reason = None
+        self._pause_timestamp = None
+        self.skipped_steps.clear()
+        self.step_agents.clear()
+        self.step_patterns.clear()
+        self.step_execution_results = {}
 
         # Clear pause event if it exists
         if hasattr(self, "_pause_event") and self._pause_event:
             self._pause_event.clear()
 
-        # Clear conversation history for fresh task
-        if hasattr(self, "_conversation_history"):
+        # Clear conversation history only when explicitly requested
+        if not preserve_conversation_history and hasattr(
+            self, "_conversation_history"
+        ):
             self._conversation_history.clear()
 
         # Reset plan executor state if it has a reset method

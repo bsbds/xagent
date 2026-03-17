@@ -50,6 +50,7 @@ def init_db(db_url: str | None = None) -> None:
         Model,
         SystemSetting,
         Task,
+        TaskChatMessage,
         TemplateStats,
         ToolConfig,
         ToolUsage,

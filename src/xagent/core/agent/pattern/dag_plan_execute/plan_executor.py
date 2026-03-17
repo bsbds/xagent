@@ -77,6 +77,14 @@ class PlanExecutor:
         self.skipped_steps: Set[str] = set()
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
+    def reset(self) -> None:
+        """Reset execution-specific state before starting a fresh task."""
+        self.step_execution_results = {}
+        self.skipped_steps.clear()
+        self._execution_interrupted = False
+        if self._pause_event.is_set():
+            self._pause_event.clear()
+
     async def execute_plan(
         self,
         plan: ExecutionPlan,
