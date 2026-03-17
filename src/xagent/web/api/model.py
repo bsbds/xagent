@@ -731,7 +731,8 @@ async def test_models(
 
         try:
             llm = model_storage.get_llm_by_name_with_access(
-                str(model.model_id), user.id
+                str(model.model_id),
+                user.id,  # type: ignore
             )
             if not llm:
                 test_results.append(

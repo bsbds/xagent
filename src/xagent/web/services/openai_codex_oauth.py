@@ -6,7 +6,7 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, cast
 
 import httpx
 import openai
@@ -124,7 +124,10 @@ def _parse_jwt_claims(token: str) -> Optional[dict[str, Any]]:
         payload = parts[1]
         payload += "=" * (-len(payload) % 4)
         raw = base64.urlsafe_b64decode(payload.encode("ascii"))
-        return json.loads(raw.decode("utf-8"))
+        decoded = json.loads(raw.decode("utf-8"))
+        if isinstance(decoded, dict):
+            return cast(dict[str, Any], decoded)
+        return None
     except Exception:
         return None
 

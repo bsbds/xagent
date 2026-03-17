@@ -37,7 +37,7 @@ class OpenAIResponsesLLM(BaseLLM):
     def __init__(
         self,
         model_name: str,
-        api_key: str,
+        api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         default_temperature: Optional[float] = None,
         default_max_tokens: Optional[int] = None,
