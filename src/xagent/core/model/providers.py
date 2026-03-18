@@ -7,6 +7,7 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "alibaba_coding_plan_cn": "alibaba-coding-plan-cn",
     "minimax_coding_plan": "minimax-coding-plan",
     "minimax_cn_coding_plan": "minimax-cn-coding-plan",
+    "kimi_for_coding": "kimi-for-coding",
 }
 
 # Provider default base URLs used when callers omit an explicit base URL.
@@ -22,6 +23,7 @@ _DEFAULT_BASE_URL_BY_PROVIDER: dict[str, str] = {
     "alibaba-coding-plan-cn": "https://coding.dashscope.aliyuncs.com/v1",
     "minimax-coding-plan": "https://api.minimax.io/anthropic",
     "minimax-cn-coding-plan": "https://api.minimaxi.com/anthropic",
+    "kimi-for-coding": "https://api.kimi.com/coding",
 }
 
 _CURATED_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
@@ -133,6 +135,14 @@ _SUPPORTED_PROVIDER_METADATA: tuple[dict[str, Any], ...] = (
         "description": "MiniMax coding plan via api.minimaxi.com",
         "requires_base_url": False,
         "default_base_url": "https://api.minimaxi.com/anthropic",
+    },
+    {
+        "id": "kimi-for-coding",
+        "name": "Kimi For Coding",
+        "description": "Kimi coding endpoint",
+        "requires_base_url": False,
+        "compatibility": "claude_compatible",
+        "default_base_url": "https://api.kimi.com/coding",
     },
 )
 

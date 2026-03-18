@@ -120,6 +120,11 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
     category: ["llm"],
     defaultBaseUrl: "https://api.minimaxi.com/anthropic"
   },
+  "kimi-for-coding": {
+    icon: <img src="/kimi.svg" alt="Kimi" className="w-6 h-6" />,
+    category: ["llm"],
+    defaultBaseUrl: "https://api.kimi.com/coding"
+  },
   "zai-coding-plan": {
     icon: <img src="/zhipu.svg" alt="Z.AI" className="w-6 h-6" />,
     category: ["llm"],

@@ -1261,6 +1261,9 @@ Build when you need.`
       "minimax-cn-coding-plan": {
         description: "MiniMax Coding Plan endpoint (Anthropic-compatible, minimaxi.com).",
       },
+      "kimi-for-coding": {
+        description: "Kimi For Coding endpoint.",
+      },
       "zai-coding-plan": {
         description: "GLM Coding Plan endpoints via Z.AI.",
       },

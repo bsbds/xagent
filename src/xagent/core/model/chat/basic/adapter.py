@@ -47,6 +47,7 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
     elif model.model_provider in (
         "minimax-coding-plan",
         "minimax-cn-coding-plan",
+        "kimi-for-coding",
     ):
         llm = ClaudeLLM(
             model_name=model.model_name,

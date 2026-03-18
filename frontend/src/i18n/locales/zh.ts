@@ -1261,6 +1261,9 @@ Build when you need.`
       "minimax-cn-coding-plan": {
         description: "MiniMax Coding Plan 端点（Anthropic 兼容，minimaxi.com）。",
       },
+      "kimi-for-coding": {
+        description: "Kimi For Coding 端点。",
+      },
       "zai-coding-plan": {
         description: "Z.AI GLM Coding Plan 端点。",
       },

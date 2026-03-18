@@ -149,6 +149,13 @@ async def fetch_minimax_cn_coding_plan_models(
     )
 
 
+async def fetch_kimi_for_coding_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Fetch available Kimi For Coding models via the Claude-compatible API."""
+    return await fetch_claude_models(api_key, base_url)
+
+
 # Provider registry mapping provider names to their fetch functions
 PROVIDER_FETCHERS: Dict[str, Any] = {
     "openai": fetch_openai_models,
@@ -164,6 +171,7 @@ PROVIDER_FETCHERS: Dict[str, Any] = {
     "alibaba-coding-plan-cn": fetch_alibaba_coding_plan_cn_models,
     "minimax-coding-plan": fetch_minimax_coding_plan_models,
     "minimax-cn-coding-plan": fetch_minimax_cn_coding_plan_models,
+    "kimi-for-coding": fetch_kimi_for_coding_models,
 }
 
 
