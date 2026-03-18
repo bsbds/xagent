@@ -47,7 +47,9 @@ def build_assistant_transcript_content(
                     f"- {label or 'Enter text'}: {placeholder or 'text input'}"
                 )
             elif interaction_type == "file_upload":
-                accept_desc = ", ".join(str(item) for item in accept) if accept else "any file"
+                accept_desc = (
+                    ", ".join(str(item) for item in accept) if accept else "any file"
+                )
                 multiple_desc = "multiple files allowed" if multiple else "single file"
                 content_parts.append(
                     f"- {label or 'Upload file'}: {accept_desc} ({multiple_desc})"

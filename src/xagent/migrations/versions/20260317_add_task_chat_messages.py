@@ -49,7 +49,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_task_chat_messages_user_id"), table_name="task_chat_messages")
-    op.drop_index(op.f("ix_task_chat_messages_task_id"), table_name="task_chat_messages")
+    op.drop_index(
+        op.f("ix_task_chat_messages_user_id"), table_name="task_chat_messages"
+    )
+    op.drop_index(
+        op.f("ix_task_chat_messages_task_id"), table_name="task_chat_messages"
+    )
     op.drop_index(op.f("ix_task_chat_messages_id"), table_name="task_chat_messages")
     op.drop_table("task_chat_messages")

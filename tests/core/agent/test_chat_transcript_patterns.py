@@ -79,7 +79,10 @@ def test_dag_pattern_reset_can_preserve_loaded_transcript():
 
     agent_service.set_conversation_history(
         [
-            {"role": "assistant", "content": "The previous answer was about persistence."},
+            {
+                "role": "assistant",
+                "content": "The previous answer was about persistence.",
+            },
             {"role": "user", "content": "Continue that explanation"},
         ]
     )
@@ -100,4 +103,39 @@ def test_dag_pattern_reset_can_preserve_loaded_transcript():
             "content": "The previous answer was about persistence.",
         },
         {"role": "user", "content": "Continue that explanation"},
+    ]
+
+
+def test_dag_pattern_includes_execution_context_before_transcript():
+    agent_service = AgentService(
+        name="transcript_agent",
+        id="transcript_agent_id",
+        llm=MockLLM(),
+        tools=[],
+        use_dag_pattern=True,
+    )
+
+    agent_service.set_execution_context_messages(
+        [
+            {
+                "role": "system",
+                "content": "Previous execution found files: foo.docx, bar.pdf",
+            }
+        ]
+    )
+    agent_service.set_conversation_history(
+        [{"role": "assistant", "content": "The previous answer was about persistence."}]
+    )
+
+    dag_pattern = agent_service.get_dag_pattern()
+    assert dag_pattern is not None
+    assert dag_pattern._get_messages_for_llm() == [
+        {
+            "role": "system",
+            "content": "Previous execution found files: foo.docx, bar.pdf",
+        },
+        {
+            "role": "assistant",
+            "content": "The previous answer was about persistence.",
+        },
     ]

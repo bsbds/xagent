@@ -184,6 +184,8 @@ class DAGPlanExecutePattern(AgentPattern):
 
         # Conversation history for chat-to-plan flow
         self._conversation_history: List[Dict[str, Any]] = []
+        self._execution_context_messages: List[Dict[str, str]] = []
+        self._recovered_skill_context: Optional[str] = None
 
         # Initialize StepAgentFactory first
         assert workspace is not None, "workspace must be provided"
@@ -254,13 +256,21 @@ class DAGPlanExecutePattern(AgentPattern):
             for message in normalize_transcript_messages(messages)
         ]
 
+    def set_execution_context_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Load persisted execution-state context for subsequent rounds."""
+        self._execution_context_messages = normalize_transcript_messages(messages)
+
+    def set_recovered_skill_context(self, skill_context: Optional[str]) -> None:
+        """Load a recovered skill context from prior rounds."""
+        self._recovered_skill_context = skill_context
+
     def _get_messages_for_llm(self) -> List[Dict[str, str]]:
         """Get conversation history in standard format for LLM.
 
         Filters out internal fields like '_interactions' and returns
         only the standard 'role' and 'content' fields.
         """
-        return [
+        return self._execution_context_messages + [
             {"role": msg["role"], "content": msg["content"]}
             for msg in self._conversation_history
         ]
@@ -562,7 +572,7 @@ class DAGPlanExecutePattern(AgentPattern):
                     # If we reach here, LLM decided to generate a plan
                     # Now proceed with memory and skill selection for plan generation
                     enhanced_task = task
-                    skill_context = None
+                    skill_context = self._recovered_skill_context
 
                     # Create parallel tasks
                     memory_task = None
@@ -663,11 +673,15 @@ class DAGPlanExecutePattern(AgentPattern):
                             self._skill_context = (
                                 skill_context  # Store for execution phase
                             )
+                            self._recovered_skill_context = skill_context
                             logger.info(f"Using skill: {skill['name']}")
                         else:
                             logger.info("No relevant skill found")
                     elif skill_result and isinstance(skill_result, Exception):
                         logger.warning(f"Skill selection failed: {skill_result}")
+
+                    if skill_context and not self._skill_context:
+                        self._skill_context = skill_context
 
                     # Generate plan with memory and skill context
                     plan = await self.plan_generator.generate_plan(
@@ -1177,7 +1191,7 @@ class DAGPlanExecutePattern(AgentPattern):
                     if detailed_errors:
                         error_result["error_details"] = detailed_errors
 
-                self._add_assistant_message(error_result["output"])
+                self._add_assistant_message(str(error_result["output"]))
 
                 return error_result
 
@@ -1707,7 +1721,9 @@ class DAGPlanExecutePattern(AgentPattern):
                 return True
         return False
 
-    def reset_execution_state(self, preserve_conversation_history: bool = False) -> None:
+    def reset_execution_state(
+        self, preserve_conversation_history: bool = False
+    ) -> None:
         """Reset the execution state to allow a fresh execution of the task.
 
         This method clears the current plan and execution-related flags while
@@ -1739,9 +1755,7 @@ class DAGPlanExecutePattern(AgentPattern):
             self._pause_event.clear()
 
         # Clear conversation history only when explicitly requested
-        if not preserve_conversation_history and hasattr(
-            self, "_conversation_history"
-        ):
+        if not preserve_conversation_history and hasattr(self, "_conversation_history"):
             self._conversation_history.clear()
 
         # Reset plan executor state if it has a reset method

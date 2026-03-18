@@ -209,6 +209,7 @@ class ReActPattern(AgentPattern):
         )  # For immediate interruption (continuation)
         self._context: Optional[AgentContext] = None
         self._conversation_history: List[Dict[str, str]] = []
+        self._execution_context_messages: List[Dict[str, str]] = []
 
         # Context compaction configuration
         self.compact_config = CompactConfig(
@@ -232,6 +233,10 @@ class ReActPattern(AgentPattern):
     def set_conversation_history(self, messages: List[Dict[str, Any]]) -> None:
         """Replace the persisted top-level conversation transcript for a new run."""
         self._conversation_history = normalize_transcript_messages(messages)
+
+    def set_execution_context_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Load persisted execution-state context for a new run."""
+        self._execution_context_messages = normalize_transcript_messages(messages)
 
     async def _compact_react_context(
         self, messages: List[Dict[str, str]], iteration: int
@@ -711,6 +716,8 @@ class ReActPattern(AgentPattern):
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
         ]
+        if self._execution_context_messages:
+            messages.extend(self._execution_context_messages)
         if self._conversation_history:
             messages.extend(self._conversation_history)
         messages.append({"role": "user", "content": enhanced_task})

@@ -559,9 +559,11 @@ async def execute_task_background(
                     db_new,
                     task_id=task_id,
                     user_id=int(task.user_id),
-                    content=chat_response.get("message", ai_response)
-                    if isinstance(chat_response, dict)
-                    else ai_response,
+                    content=str(
+                        chat_response.get("message", ai_response)
+                        if isinstance(chat_response, dict)
+                        else ai_response
+                    ),
                     message_type="chat_response"
                     if isinstance(chat_response, dict)
                     else "final_answer",
@@ -700,9 +702,11 @@ async def execute_continuation_background(
                     db_new,
                     task_id=task_id,
                     user_id=int(task.user_id),
-                    content=chat_response.get("message", ai_response)
-                    if isinstance(chat_response, dict)
-                    else ai_response,
+                    content=str(
+                        chat_response.get("message", ai_response)
+                        if isinstance(chat_response, dict)
+                        else ai_response
+                    ),
                     message_type="chat_response"
                     if isinstance(chat_response, dict)
                     else "final_answer",
@@ -1124,6 +1128,9 @@ async def handle_chat_message(
                 load_task_transcript,
                 persist_user_message,
             )
+            from ..services.task_execution_context_service import (
+                load_task_execution_recovery_state,
+            )
             from .chat import get_agent_manager
 
             # Get database session
@@ -1235,13 +1242,6 @@ async def handle_chat_message(
                         await manager.broadcast_to_task(task_event, task_id)
                         logger.info(f"task_info event sent for task {task_id}")
 
-                persisted_user_message = persist_user_message(
-                    db,
-                    task_id=task_id,
-                    user_id=int(user.id),
-                    content=user_message,
-                )
-
                 # Handle file upload if files present
                 uploaded_file_paths = []
                 file_info_list = []
@@ -1279,6 +1279,13 @@ async def handle_chat_message(
                 # Get agent service
                 agent_service = await get_agent_manager().get_agent_for_task(
                     task_id, db, user=user
+                )
+
+                persisted_user_message = persist_user_message(
+                    db,
+                    task_id=task_id,
+                    user_id=int(user.id),
+                    content=user_message,
                 )
 
                 # Check if there's an old task running (PAUSED or RUNNING status)
@@ -1380,6 +1387,16 @@ async def handle_chat_message(
                             before_message_id=int(persisted_user_message.id),
                         )
                         agent_service.set_conversation_history(conversation_history)
+                    recovery_state = await load_task_execution_recovery_state(
+                        db, task_id
+                    )
+                    execution_context_messages = recovery_state.get("messages", [])
+                    agent_service.set_execution_context_messages(
+                        execution_context_messages
+                    )
+                    agent_service.set_recovered_skill_context(
+                        recovery_state.get("skill_context")
+                    )
 
                     # IMPORTANT: Check if task was completed/failed BEFORE updating status
                     # This is needed to force fresh execution instead of continuation
@@ -1544,6 +1561,9 @@ async def handle_execute_task(
         # Get database session
         from ..models.database import get_db
         from ..models.task import Task, TaskStatus
+        from ..services.task_execution_context_service import (
+            load_task_execution_recovery_state,
+        )
         from .chat import get_agent_manager
 
         db_gen = get_db()
@@ -1599,6 +1619,13 @@ async def handle_execute_task(
             agent_manager = get_agent_manager()
             agent_service = await agent_manager.get_agent_for_task(
                 task_id, db, user=user
+            )
+            recovery_state = await load_task_execution_recovery_state(db, task_id)
+            agent_service.set_execution_context_messages(
+                recovery_state.get("messages", [])
+            )
+            agent_service.set_recovered_skill_context(
+                recovery_state.get("skill_context")
             )
 
             # Set up user context

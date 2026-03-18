@@ -582,6 +582,18 @@ class AgentService:
             if hasattr(pattern, "set_conversation_history"):
                 pattern.set_conversation_history(messages)
 
+    def set_execution_context_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Load persisted execution-state context into patterns that support it."""
+        for pattern in self.patterns:
+            if hasattr(pattern, "set_execution_context_messages"):
+                pattern.set_execution_context_messages(messages)
+
+    def set_recovered_skill_context(self, skill_context: Optional[str]) -> None:
+        """Load recovered skill context into patterns that support it."""
+        for pattern in self.patterns:
+            if hasattr(pattern, "set_recovered_skill_context"):
+                pattern.set_recovered_skill_context(skill_context)
+
     def get_task_info(self) -> Optional[Dict[str, Any]]:
         """Get task information including generated task_name.
 

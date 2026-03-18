@@ -26,6 +26,9 @@ from ..models.user import User
 from ..schemas.chat import TaskCreateRequest, TaskCreateResponse
 from ..services.chat_history_service import load_task_transcript
 from ..services.llm_utils import resolve_llms_from_names
+from ..services.task_execution_context_service import (
+    load_task_execution_recovery_state,
+)
 from ..tools.config import WebToolConfig
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import format_datetime_for_api, safe_timestamp_to_unix
@@ -278,9 +281,7 @@ class AgentServiceManager:
                 f"Cannot set memory similarity threshold for non-existent task {task_id}"
             )
 
-    def _load_persisted_conversation_history(
-        self, task_id: int, db: Session
-    ) -> None:
+    def _load_persisted_conversation_history(self, task_id: int, db: Session) -> None:
         """Hydrate an agent's chat transcript from persisted task chat messages."""
         agent = self._agents.get(task_id)
         if agent is None:
@@ -294,6 +295,28 @@ class AgentServiceManager:
         logger.info(
             f"Loaded {len(conversation_history)} persisted chat messages for task {task_id}"
         )
+
+    async def _load_persisted_execution_context(
+        self, task_id: int, db: Session
+    ) -> None:
+        """Hydrate an agent with persisted reusable execution context."""
+        agent = self._agents.get(task_id)
+        if agent is None:
+            return
+
+        recovery_state = await load_task_execution_recovery_state(db, task_id)
+        execution_context_messages = recovery_state.get("messages", [])
+        if not execution_context_messages:
+            execution_context_messages = []
+
+        agent.set_execution_context_messages(execution_context_messages)
+        skill_context = recovery_state.get("skill_context")
+        agent.set_recovered_skill_context(skill_context)
+        logger.info(
+            f"Loaded {len(execution_context_messages)} persisted execution context messages for task {task_id}"
+        )
+        if skill_context:
+            logger.info(f"Loaded recovered skill context for task {task_id}")
 
     def _load_agent_builder_config(
         self, agent: Agent, db: Session, user_id: int
@@ -414,15 +437,16 @@ class AgentServiceManager:
                             f"Failed to create task record for task {task_id}: {e}"
                         )
             else:
-                should_reconstruct = (
-                    task is not None
-                    and task.status in [TaskStatus.RUNNING, TaskStatus.PAUSED]
-                )
+                should_reconstruct = task is not None and task.status in [
+                    TaskStatus.RUNNING,
+                    TaskStatus.PAUSED,
+                ]
                 # Task exists in database, try to reconstruct from history only for active executions
                 if db is not None and should_reconstruct:
                     try:
                         await self._reconstruct_agent_from_history(task_id, db)
                         self._load_persisted_conversation_history(task_id, db)
+                        await self._load_persisted_execution_context(task_id, db)
                         return self._agents[task_id]
                     except Exception as e:
                         logger.warning(
@@ -786,6 +810,7 @@ class AgentServiceManager:
 
                 if task_exists and db is not None:
                     self._load_persisted_conversation_history(task_id, db)
+                    await self._load_persisted_execution_context(task_id, db)
 
             except Exception as e:
                 logger.error(f"Failed to create AgentService for task {task_id}: {e}")
@@ -1251,6 +1276,7 @@ class AgentServiceManager:
                     str(task_id), tracer_events, plan_state
                 )
                 self._load_persisted_conversation_history(task_id, db)
+                await self._load_persisted_execution_context(task_id, db)
 
                 logger.info(
                     f"Successfully reconstructed agent for task {task_id} from history"
