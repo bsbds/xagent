@@ -245,26 +245,11 @@ class AgentServiceManager:
 
     def _get_task_llm_ids(self, task: Task, db: Session) -> List[Optional[str]]:
         """Return internal model_id identifiers for a task (never provider model_name)."""
-        from ..services.llm_utils import CoreStorage
+        from ..services.llm_utils import CoreStorage, make_normalize_model_id
 
         core_storage = CoreStorage(db, DBModel)
 
-        def _normalize(model_id: Any, model_name: Any) -> Optional[str]:
-            if model_id:
-                db_model = core_storage.get_db_model(model_id)
-                if db_model:
-                    return str(db_model.model_id)
-                # Preserve stored identifier even if the backing model row no longer exists.
-                # This avoids API inconsistencies when models are deleted/migrated.
-                return (
-                    str(model_id).strip()
-                    if isinstance(model_id, str)
-                    else str(model_id)
-                )
-            if model_name:
-                db_model = core_storage.get_db_model(str(model_name))
-                return str(db_model.model_id) if db_model else None
-            return None
+        _normalize = make_normalize_model_id(core_storage)
 
         return [
             _normalize(
@@ -1480,7 +1465,7 @@ async def create_task(
                     .all()
                 )
                 for row in shared_defaults:
-                    config_type = cast(str, row.config_type)
+                    config_type = row.config_type  # type: ignore
                     if row.model and defaults.get(config_type) is None:
                         defaults[config_type] = str(row.model.model_id)
 
@@ -1625,14 +1610,14 @@ async def create_task(
             created_at=format_datetime_for_api(task.created_at)
             if task.created_at
             else None,
-            model_id=getattr(task, "model_id", None),
-            small_fast_model_id=getattr(task, "small_fast_model_id", None),
-            visual_model_id=getattr(task, "visual_model_id", None),
-            compact_model_id=getattr(task, "compact_model_id", None),
+            model_id=task.model_id,
+            small_fast_model_id=task.small_fast_model_id,
+            visual_model_id=task.visual_model_id,
+            compact_model_id=task.compact_model_id,
             model_name=task.model_name,
             small_fast_model_name=task.small_fast_model_name,
             visual_model_name=task.visual_model_name,
-            compact_model_name=getattr(task, "compact_model_name", None),
+            compact_model_name=task.compact_model_name,
             vibe_mode=task.vibe_mode,
         )
 
@@ -1751,12 +1736,10 @@ async def get_tasks(
                         "status": status_value,
                         "created_at": format_datetime_for_api(task.created_at),
                         "updated_at": format_datetime_for_api(task.updated_at),
-                        "model_id": getattr(task, "model_id", None),
-                        "small_fast_model_id": getattr(
-                            task, "small_fast_model_id", None
-                        ),
-                        "visual_model_id": getattr(task, "visual_model_id", None),
-                        "compact_model_id": getattr(task, "compact_model_id", None),
+                        "model_id": task.model_id,
+                        "small_fast_model_id": task.small_fast_model_id,
+                        "visual_model_id": task.visual_model_id,
+                        "compact_model_id": task.compact_model_id,
                         "model_name": task.model_name,
                         "small_fast_model_name": task.small_fast_model_name,
                         "visual_model_name": task.visual_model_name,
@@ -1874,7 +1857,7 @@ async def get_task(
                 "model_name": task.model_name,
                 "small_fast_model_name": task.small_fast_model_name,
                 "visual_model_name": task.visual_model_name,
-                "compact_model_name": getattr(task, "compact_model_name", None),
+                "compact_model_name": task.compact_model_name,
                 "dag_data": dag_data,
                 "input_tokens": task.input_tokens or 0,
                 "output_tokens": task.output_tokens or 0,
@@ -1937,7 +1920,7 @@ async def get_task_status(
                 "model_name": task.model_name,
                 "small_fast_model_name": task.small_fast_model_name,
                 "visual_model_name": task.visual_model_name,
-                "compact_model_name": getattr(task, "compact_model_name", None),
+                "compact_model_name": task.compact_model_name,
                 "input_tokens": task.input_tokens or 0,
                 "output_tokens": task.output_tokens or 0,
                 "total_tokens": task.total_tokens or 0,

@@ -171,6 +171,9 @@ def test_get_task_llm_ids_preserves_stored_id_when_model_missing(test_db):
             description="d",
             status=TaskStatus.PENDING,
             model_id="deleted-model-id",
+            small_fast_model_id="deleted-fast-id",
+            visual_model_id="deleted-visual-id",
+            compact_model_id="deleted-compact-id",
         )
         db.add(task)
         db.commit()
@@ -178,6 +181,10 @@ def test_get_task_llm_ids_preserves_stored_id_when_model_missing(test_db):
 
         manager = AgentServiceManager()
         ids = manager._get_task_llm_ids(task, db)
+
         assert ids[0] == "deleted-model-id"
+        assert ids[1] == "deleted-fast-id"
+        assert ids[2] == "deleted-visual-id"
+        assert ids[3] == "deleted-compact-id"
     finally:
         db.close()

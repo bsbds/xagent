@@ -40,18 +40,11 @@ def _resolve_task_llm_ids(
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Best-effort resolve internal model_id identifiers for a task."""
     from ..models.model import Model as DBModel
-    from ..services.llm_utils import CoreStorage
+    from ..services.llm_utils import CoreStorage, make_normalize_model_id
 
     core_storage = CoreStorage(db, DBModel)
 
-    def _normalize(model_id: Any, model_name: Any) -> Optional[str]:
-        if model_id:
-            db_model = core_storage.get_db_model(model_id)
-            return str(db_model.model_id) if db_model else None
-        if model_name:
-            db_model = core_storage.get_db_model(str(model_name))
-            return str(db_model.model_id) if db_model else None
-        return None
+    _normalize = make_normalize_model_id(core_storage)
 
     return (
         _normalize(getattr(task, "model_id", None), getattr(task, "model_name", None)),
