@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def build_assistant_transcript_content(
-    content: str, interactions: Optional[List[Any]] = None
+    content: str | None, interactions: Optional[List[Any]] = None
 ) -> str:
     """Build assistant transcript text that preserves interactive prompts."""
-    content_parts = [content]
+    content_parts = [str(content)] if content is not None else []
 
     if interactions:
-        content_parts.append("\n\nPlease answer the following questions:")
+        interaction_lines: List[str] = []
         for interaction in interactions:
             interaction_type = _get_interaction_attr(interaction, "type")
             options = _get_interaction_attr(interaction, "options") or []
@@ -31,7 +34,7 @@ def build_assistant_transcript_content(
                         for option in options
                     ]
                 )
-                content_parts.append(f"- {label or 'Select'}: {options_desc}")
+                interaction_lines.append(f"- {label or 'Select'}: {options_desc}")
             elif interaction_type == "select_multiple":
                 options_desc = ", ".join(
                     [
@@ -39,11 +42,11 @@ def build_assistant_transcript_content(
                         for option in options
                     ]
                 )
-                content_parts.append(
+                interaction_lines.append(
                     f"- {label or 'Select multiple options'}: {options_desc}"
                 )
             elif interaction_type == "text_input":
-                content_parts.append(
+                interaction_lines.append(
                     f"- {label or 'Enter text'}: {placeholder or 'text input'}"
                 )
             elif interaction_type == "file_upload":
@@ -51,17 +54,21 @@ def build_assistant_transcript_content(
                     ", ".join(str(item) for item in accept) if accept else "any file"
                 )
                 multiple_desc = "multiple files allowed" if multiple else "single file"
-                content_parts.append(
+                interaction_lines.append(
                     f"- {label or 'Upload file'}: {accept_desc} ({multiple_desc})"
                 )
             elif interaction_type == "confirm":
                 default_desc = "Default: yes" if default else "Default: no"
-                content_parts.append(f"- {label or 'Confirm'} ({default_desc})")
+                interaction_lines.append(f"- {label or 'Confirm'} ({default_desc})")
             elif interaction_type == "number_input":
                 range_desc = ""
                 if minimum is not None and maximum is not None:
                     range_desc = f" (range: {minimum}-{maximum})"
-                content_parts.append(f"- {label or 'Enter number'}{range_desc}")
+                interaction_lines.append(f"- {label or 'Enter number'}{range_desc}")
+
+        if interaction_lines:
+            content_parts.append("\n\nPlease answer the following questions:")
+            content_parts.extend(interaction_lines)
 
     return "\n".join(content_parts)
 
@@ -74,7 +81,11 @@ def normalize_transcript_messages(
     for message in messages:
         role = str(message.get("role", "")).strip().lower()
         content = str(message.get("content", "")).strip()
+
         if role not in {"user", "assistant", "system"} or not content:
+            logger.debug(
+                f"Filtered invalid message: role={role}, content_length={len(content)}"
+            )
             continue
         normalized.append({"role": role, "content": content})
     return normalized

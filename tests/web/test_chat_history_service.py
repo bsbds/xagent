@@ -5,6 +5,7 @@ from xagent.web.models.chat_message import TaskChatMessage
 from xagent.web.models.database import Base
 from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.user import User
+from xagent.core.agent.transcript import build_assistant_transcript_content
 from xagent.web.services.chat_history_service import (
     load_task_transcript,
     persist_assistant_message,
@@ -116,3 +117,11 @@ def test_persist_assistant_message_formats_interactions_into_transcript():
         assert "Repository path: Enter the repository path" in stored_message.content
     finally:
         db_session.close()
+
+
+def test_build_assistant_transcript_content_skips_empty_unknown_interactions_header():
+    content = build_assistant_transcript_content(
+        "Test", [{"type": "unknown_type"}]
+    )
+
+    assert content == "Test"
