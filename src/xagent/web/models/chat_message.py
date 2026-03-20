@@ -19,7 +19,7 @@ class TaskChatMessage(Base):  # type: ignore
     )
     role = Column(String(32), nullable=False)
     content = Column(Text, nullable=False)
-    message_type = Column(String(64), nullable=False, server_default="message")
+    message_type = Column(String(64), nullable=False)
     interactions = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

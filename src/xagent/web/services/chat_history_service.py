@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -11,6 +12,8 @@ from ...core.agent.transcript import (
     normalize_transcript_messages,
 )
 from ..models.chat_message import TaskChatMessage
+
+logger = logging.getLogger(__name__)
 
 
 def persist_user_message(
@@ -56,6 +59,22 @@ def load_task_transcript(
     *,
     before_message_id: Optional[int] = None,
 ) -> List[Dict[str, str]]:
+    if before_message_id is not None:
+        # Check if the reference message actually exists
+        exists = (
+            db.query(TaskChatMessage.id)
+            .filter(
+                TaskChatMessage.id == before_message_id,
+                TaskChatMessage.task_id == task_id,
+            )
+            .first()
+        )
+        if not exists:
+            logger.warning(
+                "Message id: {before_message_id} does not exit, returning empty list."
+            )
+            return []
+
     query = db.query(TaskChatMessage).filter(TaskChatMessage.task_id == task_id)
     if before_message_id is not None:
         query = query.filter(TaskChatMessage.id < before_message_id)
