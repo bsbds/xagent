@@ -57,8 +57,7 @@ COPY src ./src
 COPY alembic.ini .
 
 # Install app + deepdoc into venv
-RUN /opt/venv/bin/pip install --no-cache-dir ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} . \
-    && /opt/venv/bin/pip install --no-cache-dir ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} deepdoc-lib \
+RUN /opt/venv/bin/pip install --no-cache-dir ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} ".[all]" \
     && /opt/venv/bin/deepdoc-download-models
 
 ############################
