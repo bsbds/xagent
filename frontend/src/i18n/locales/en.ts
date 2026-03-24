@@ -47,6 +47,7 @@ const en = {
     agentDev: "Agent Development",
     task: "Task",
     history: "All Tasks",
+    search: "Search Tasks",
     templates: "Templates",
     sections: {
       agentDevelopment: "Agent Development",

@@ -47,6 +47,7 @@ const zh = {
     agentDev: "Agent 构建与部署",
     task: "任务",
     history: "全部任务",
+    search: "搜索任务",
     templates: "模板",
     sections: {
       agentDevelopment: "Agent 开发",
