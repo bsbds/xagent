@@ -4,6 +4,7 @@ Plan execution logic for DAG plan-execute pattern.
 
 import asyncio
 import copy
+import json
 import logging
 import traceback
 from collections import deque
@@ -81,6 +82,7 @@ class PlanExecutor:
         self._external_context_messages: List[Dict[str, str]] = []
         self._current_bindings: Dict[str, Any] = {}
         self._step_id_prefix: Optional[str] = None
+        self._step_output_contracts: Dict[str, str] = {}
 
     def reset(self) -> None:
         """Reset execution-specific state before starting a fresh task."""
@@ -98,6 +100,7 @@ class PlanExecutor:
         external_context_messages: Optional[List[Dict[str, str]]] = None,
         bindings: Optional[Dict[str, Any]] = None,
         step_id_prefix: Optional[str] = None,
+        step_output_contracts: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """Execute the plan using queue-driven concurrent execution
 
@@ -108,6 +111,7 @@ class PlanExecutor:
             external_context_messages: Optional inherited context for nested plans
             bindings: Optional structured bindings for nested map execution
             step_id_prefix: Optional runtime prefix for nested step instance IDs
+            step_output_contracts: Optional per-step output contract instructions
         """
         logger.info(
             f"Executing plan {plan.id} with {len(plan.steps)} steps (max concurrency: {self.max_concurrency})"
@@ -119,6 +123,7 @@ class PlanExecutor:
         self._external_context_messages = list(external_context_messages or [])
         self._current_bindings = dict(bindings or {})
         self._step_id_prefix = step_id_prefix
+        self._step_output_contracts = dict(step_output_contracts or {})
 
         # Trace execution start
         trace_task_id = f"execute_{plan.id}"
@@ -557,6 +562,7 @@ class PlanExecutor:
         self._external_context_messages = []
         self._current_bindings = {}
         self._step_id_prefix = None
+        self._step_output_contracts = {}
         return execution_results
 
     def pause_execution(self) -> None:
@@ -767,6 +773,10 @@ class PlanExecutor:
                 task_message = f"{goal_reminder}Execute: {step.name}\nDescription: {step.description}"
                 if original_goal:
                     task_message += "\nRemember: This step contributes to achieving the overall goal above."
+
+            output_contract = self._step_output_contracts.get(step.id)
+            if output_contract:
+                task_message += f"\n\n{output_contract}"
             context_messages.append({"role": "user", "content": task_message})
 
             # Execute the step with enhanced messages
@@ -996,6 +1006,17 @@ class PlanExecutor:
         collection_plan = copy.deepcopy(step.map_spec.collection_plan)
         collection_executor = self._create_nested_executor()
         collection_prefix = self._build_runtime_step_id(step.id)
+        collection_output_step_id = step.map_spec.collection_output.step_id
+        collection_output_field = step.map_spec.collection_output.field
+        collection_step_output_contracts = {
+            collection_output_step_id: (
+                "IMPORTANT: Your final result must be a valid JSON object with a "
+                f'top-level field named "{collection_output_field}".\n'
+                f'The value of "{collection_output_field}" must be a list.\n'
+                "Return only the JSON object, with no prose outside it.\n\n"
+                f'Example:\n{{"{collection_output_field}": [...]}}'
+            )
+        }
 
         await collection_executor.execute_plan(
             collection_plan,
@@ -1004,6 +1025,7 @@ class PlanExecutor:
             external_context_messages=parent_context_messages,
             bindings=self._current_bindings,
             step_id_prefix=collection_prefix,
+            step_output_contracts=collection_step_output_contracts,
         )
 
         items = self._extract_collection_items(step, collection_plan)
@@ -1159,14 +1181,56 @@ class PlanExecutor:
             )
 
         field_name = step.map_spec.collection_output.field
-        items = output_step.result.get(field_name)
+        items = self._find_collection_items(output_step.result, field_name)
         if not isinstance(items, list):
+            available_keys = sorted(output_step.result.keys())
+            answer_preview = output_step.result.get("answer")
+            if isinstance(answer_preview, str):
+                answer_preview = answer_preview[:200]
             raise DAGStepError(
                 step_id=step.id,
                 step_name=step.name,
-                message=f"Map collection output field '{field_name}' must be a list",
+                message=(
+                    f"Map collection output field '{field_name}' must be a list. "
+                    f"Available result keys: {available_keys}. "
+                    f"answer preview: {answer_preview!r}"
+                ),
             )
         return items
+
+    def _find_collection_items(
+        self, result: Dict[str, Any], field_name: str
+    ) -> Optional[List[Any]]:
+        direct_value = result.get(field_name)
+        if isinstance(direct_value, list):
+            return direct_value
+
+        nested_candidates = [
+            result.get("result"),
+            result.get("output"),
+            result.get("answer"),
+        ]
+
+        for candidate in nested_candidates:
+            parsed_candidate = self._parse_collection_candidate(candidate)
+            if isinstance(parsed_candidate, dict):
+                nested_value = parsed_candidate.get(field_name)
+                if isinstance(nested_value, list):
+                    return nested_value
+
+        return None
+
+    def _parse_collection_candidate(self, candidate: Any) -> Any:
+        if isinstance(candidate, dict):
+            return candidate
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if text.startswith("{") and text.endswith("}"):
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return None
+        return None
 
     def _chunk_items(self, items: List[Any], chunk_size: int) -> List[Any]:
         if chunk_size <= 1:

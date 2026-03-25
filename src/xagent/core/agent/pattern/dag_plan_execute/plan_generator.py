@@ -201,6 +201,38 @@ class PlanGenerator:
             "map_spec": step.map_spec.to_dict() if step.map_spec else None,
         }
 
+    def _build_map_validation_feedback(
+        self, error: DAGPlanGenerationError
+    ) -> Optional[str]:
+        context = error.context or {}
+        error_message = str(error)
+
+        if "map" not in error_message.lower() and not any(
+            key.startswith("collection_") or key == "chunk_size"
+            for key in context.keys()
+        ):
+            return None
+
+        feedback_lines = [
+            "MAP PLAN REQUIREMENTS:",
+            "- Every map step must include step_kind=\"map\" and a complete map_spec.",
+            "- map_spec.collection_plan and map_spec.worker_plan must each be full nested plans.",
+            "- Each nested plan must include: id, goal, task_name, iteration, steps.",
+            "- map_spec.collection_output.step_id must reference an existing step inside collection_plan.",
+            "- map_spec.collection_output.field must be non-empty.",
+            "- map_spec.item_binding is required.",
+            "- map_spec.chunk_size must be a positive integer.",
+            "- The step referenced by collection_output.step_id must return a JSON object whose field named by collection_output.field is a list.",
+        ]
+
+        if context:
+            feedback_lines.append("")
+            feedback_lines.append("MAP ERROR DETAILS:")
+            for key, value in context.items():
+                feedback_lines.append(f"- {key}: {value}")
+
+        return "\n".join(feedback_lines)
+
     async def _trace_stream_llm_call(
         self,
         *,
@@ -630,6 +662,7 @@ class PlanGenerator:
                             else [],
                             "available_tools": available_tools_list,
                         }
+                        map_feedback = self._build_map_validation_feedback(e)
 
                         # Need to regenerate content with error context, so call LLM again
                         # Add error context to the messages for retry
@@ -639,22 +672,29 @@ class PlanGenerator:
                         retry_messages = clean_messages(prompt) + [
                             {
                                 "role": "user",
-                                "content": f"\n\nPREVIOUS ERROR INFORMATION:\n"
-                                f"Error Type: DAGPlanGenerationError\n"
-                                f"Error Message: {str(e)}\n"
-                                f"Missing Tools: {', '.join(missing_tools)}\n\n"
-                                f"Available Tools:\n"
-                                f"{', '.join(available_tools_list)}\n\n"
-                                f"COMMON TOOL NAMING MISTAKES TO AVOID:\n"
-                                f"- Use 'write_file' NOT 'write__file' (single underscore, not double)\n"
-                                f"- Use 'read_file' NOT 'read__file'\n"
-                                f"- Do NOT add any prefixes or suffixes to tool names\n"
-                                f"- Do NOT invent tools that are not in the Available Tools list\n\n"
-                                f"Please correct your plan by:\n"
-                                f"1. Removing references to non-existent tools: {', '.join(missing_tools)}\n"
-                                f"2. Using only tools from the Available Tools list above\n"
-                                f"3. If you need functionality not covered by available tools, break the task into simpler steps that can use available tools\n\n"
-                                f"Retry your plan generation with correct tool names.",
+                                "content": (
+                                    f"\n\nPREVIOUS ERROR INFORMATION:\n"
+                                    f"Error Type: DAGPlanGenerationError\n"
+                                    f"Error Message: {str(e)}\n"
+                                    f"Missing Tools: {', '.join(missing_tools)}\n\n"
+                                    f"Available Tools:\n"
+                                    f"{', '.join(available_tools_list)}\n\n"
+                                    f"COMMON TOOL NAMING MISTAKES TO AVOID:\n"
+                                    f"- Use 'write_file' NOT 'write__file' (single underscore, not double)\n"
+                                    f"- Use 'read_file' NOT 'read__file'\n"
+                                    f"- Do NOT add any prefixes or suffixes to tool names\n"
+                                    f"- Do NOT invent tools that are not in the Available Tools list\n\n"
+                                    f"Please correct your plan by:\n"
+                                    f"1. Removing references to non-existent tools: {', '.join(missing_tools)}\n"
+                                    f"2. Using only tools from the Available Tools list above\n"
+                                    f"3. If you need functionality not covered by available tools, break the task into simpler steps that can use available tools\n"
+                                )
+                                + (
+                                    f"4. Fix the map-specific schema issues below.\n\n{map_feedback}\n\n"
+                                    if map_feedback
+                                    else "\n"
+                                )
+                                + "Retry your plan generation with correct tool names.",
                             }
                         ]
 
@@ -1351,6 +1391,16 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             "IMPORTANT: Not every step needs to use a tool. Some steps can be pure analysis or organization tasks.\n"
             "- Use tools for: web searches, calculations, code execution, data processing\n"
             "- For pure analysis tasks (summarizing, organizing, explaining, formatting results): set tool_name to null or empty string\n\n"
+            "MAP STEPS:\n"
+            "- Use a map step when the task has one collection of items to derive once and one repeated workflow to apply independently to each item.\n"
+            "- A map step is a special step with step_kind='map'.\n"
+            "- For a map step, put one-time item selection or normalization in map_spec.collection_plan.\n"
+            "- Put repeated per-item work in map_spec.worker_plan.\n"
+            "- Use map_spec.collection_output to specify which step and field inside collection_plan returns the normalized list.\n"
+            "- Use map_spec.item_binding to name the current bound item in worker execution.\n"
+            "- Use map only when the repeated workflow shape is the same for every item.\n"
+            "- Do NOT use map for global ranking, clustering, pairwise comparison, or shared cross-item reasoning.\n"
+            "- Nested maps are allowed only when the inner repeated collection belongs to one outer item.\n\n"
             "CONDITIONAL BRANCHING:\n"
             "- Some steps can be CONDITIONAL NODES that branch execution based on runtime conditions\n"
             "- Use 'conditional_branches' field to define a step as a conditional node\n"
@@ -1423,8 +1473,19 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             f"- dependencies: list of step IDs this step depends on (array of strings)\n"
             f"- difficulty: 'easy' or 'hard' (string)\n"
             f"- requires_vision: true if step requires visual capabilities, false otherwise (boolean)\n"
+            f"- step_kind: OPTIONAL 'normal' or 'map' (string, default is 'normal')\n"
             f"- conditional_branches: OPTIONAL dictionary mapping branch keys to next step IDs (object)\n"
             f"- required_branch: OPTIONAL branch key that this step requires (string)\n\n"
+            f"If step_kind is 'map', the step must also include:\n"
+            f"- map_spec.collection_plan: nested plan executed once to derive items\n"
+            f"  - collection_plan must include: id, goal, task_name, iteration, steps\n"
+            f"- map_spec.collection_output.step_id: which step inside collection_plan returns the normalized collection\n"
+            f"- map_spec.collection_output.field: which field in that step result contains the list\n"
+            f"- map_spec.item_binding: name of the bound item variable\n"
+            f"- map_spec.chunk_size: positive integer\n"
+            f"- map_spec.worker_plan: nested plan executed once per item\n\n"
+            f"  - worker_plan must include: id, goal, task_name, iteration, steps\n"
+            f"The step referenced by map_spec.collection_output.step_id MUST return a JSON object with the exact field named by map_spec.collection_output.field, and that field MUST be a list.\n\n"
             f"Example with conditional branching:\n"
             f"{{\n"
             f'  "plan": {{\n'
@@ -1446,6 +1507,18 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             f'      {{"id": "step1", "name": "Research", "description": "Gather information", "tool_names": ["web_search", "zhipu_web_search"], "dependencies": [], "difficulty": "hard"}},\n'
             f'      {{"id": "step2", "name": "Analyze Data", "description": "Analyze collected information", "tool_names": ["execute_python_code"], "dependencies": ["step1"], "difficulty": "hard"}},\n'
             f'      {{"id": "step3", "name": "Organize Results", "description": "Summarize and format findings", "tool_names": [], "dependencies": ["step1", "step2"], "difficulty": "easy"}}\n'
+            f"    ]\n"
+            f"  }}\n"
+            f"}}\n\n"
+            f"Example with map:\n"
+            f"{{\n"
+            f'  "plan": {{\n'
+            f'    "task_name": "Translate Files",\n'
+            f'    "goal": "{goal}",\n'
+            f'    "steps": [\n'
+            f'      {{"id": "list_files", "name": "List Files", "description": "List available files", "tool_names": ["list_files"], "dependencies": [], "difficulty": "easy"}},\n'
+            f'      {{"id": "translate_each_file", "name": "Translate Each File", "description": "Select files to translate and translate each selected file", "tool_names": [], "dependencies": ["list_files"], "difficulty": "hard", "step_kind": "map", "map_spec": {{"collection_plan": {{"id": "derive_translation_files", "goal": "Determine which files should be translated", "task_name": "Derive Translation Files", "iteration": 1, "steps": [{{"id": "select_files", "name": "Select Files", "description": "Return a normalized files array for translation", "tool_names": [], "dependencies": [], "difficulty": "hard"}}]}}, "collection_output": {{"step_id": "select_files", "field": "files"}}, "item_binding": "file", "chunk_size": 1, "worker_plan": {{"id": "per_file_translation", "goal": "Translate one file", "task_name": "Translate One File", "iteration": 1, "steps": [{{"id": "translate_file", "name": "Translate File", "description": "Translate the current bound file", "tool_names": ["translate_json"], "dependencies": [], "difficulty": "hard"}}]}}}}}},\n'
+            f'      {{"id": "summarize_results", "name": "Summarize Results", "description": "Summarize translation outputs", "tool_names": [], "dependencies": ["translate_each_file"], "difficulty": "easy"}}\n'
             f"    ]\n"
             f"  }}\n"
             f"}}\n\n"
