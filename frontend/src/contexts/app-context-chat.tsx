@@ -269,6 +269,8 @@ interface StepExecution {
   conditional_branches?: Record<string, string>
   required_branch?: string | null
   is_conditional?: boolean
+  step_kind?: "normal" | "map"
+  map_spec?: Record<string, unknown> | null
 }
 
 interface TraceEvent {
@@ -328,6 +330,25 @@ interface AppState {
   lastTaskUpdate?: number
   isHistoryLoading: boolean
 }
+
+const normalizePlanStep = (step: any, existingStep?: StepExecution): StepExecution => ({
+  id: step.id,
+  name: step.name || step.id,
+  description: step.description || "",
+  status: existingStep?.status || step.status || "pending",
+  tool_names: step.tool_name ? [step.tool_name] : step.tool_names || [],
+  dependencies: step.dependencies || [],
+  started_at: existingStep?.started_at || step.started_at,
+  completed_at: existingStep?.completed_at || step.completed_at,
+  result_data: step.result_data,
+  step_data: step.step_data,
+  file_outputs: step.file_outputs || [],
+  conditional_branches: step.conditional_branches || {},
+  required_branch: step.required_branch || null,
+  is_conditional: step.is_conditional || false,
+  step_kind: step.step_kind || "normal",
+  map_spec: step.map_spec || null,
+})
 
 type AppAction =
   | { type: "SET_TASK_ID"; payload: number | null }
@@ -1251,24 +1272,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
 
               const steps: StepExecution[] = planData.steps.map((step: any) => {
                 const existingStep = existingStepsMap.get(step.id)
-                return {
-                  id: step.id,
-                  name: step.name || step.id,
-                  description: step.description || "",
-                  // Prioritize existing step status, otherwise use status from plan
-                  status: existingStep?.status || step.status || "pending",
-                  tool_names: step.tool_name ? [step.tool_name] : step.tool_names || [],
-                  dependencies: step.dependencies || [],
-                  // Prioritize timing information from existing steps
-                  started_at: existingStep?.started_at || step.started_at,
-                  completed_at: existingStep?.completed_at || step.completed_at,
-                  result_data: step.result_data,
-                  step_data: step.step_data,
-                  file_outputs: step.file_outputs || [],
-                  conditional_branches: step.conditional_branches || {},
-                  required_branch: step.required_branch || null,
-                  is_conditional: step.is_conditional || false,
-                }
+                return normalizePlanStep(step, existingStep)
               })
               dispatch({ type: "SET_STEPS", payload: steps })
             }
@@ -2126,20 +2130,11 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   }
 
                   return {
-                    id: step.id,
-                    name: step.name || step.id,
-                    description: step.description || "",
+                    ...normalizePlanStep(step, existingStep),
                     status: finalStatus,
-                    tool_names: step.tool_name ? [step.tool_name] : step.tool_names || [],
-                    dependencies: step.dependencies || [],
                     started_at: startedAt,
                     completed_at: completedAt,
                     result_data: resultData,
-                    step_data: step.step_data,
-                    file_outputs: step.file_outputs || [],
-                    conditional_branches: step.conditional_branches || {},
-                    required_branch: step.required_branch || null,
-                    is_conditional: step.is_conditional || false,
                   }
                 })
                 dispatch({ type: "SET_STEPS", payload: steps })

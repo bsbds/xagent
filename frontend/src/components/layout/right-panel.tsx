@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { JSONSyntaxHighlighter } from "@/components/ui/json-syntax-highlighter"
-import { ChevronDown, ChevronRight, Clock, Wrench, FileText, Database, Activity, Eye, GitBranch } from "lucide-react"
+import { ChevronDown, ChevronRight, Clock, Wrench, FileText, Database, Activity, Eye, GitBranch, Repeat } from "lucide-react"
 import { LogEvent } from "@/components/log/log-event"
 import { useApp } from "@/contexts/app-context"
 import { useI18n } from "@/contexts/i18n-context"
@@ -32,6 +32,31 @@ interface StepExecution {
   conditional_branches?: Record<string, string>
   required_branch?: string | null
   is_conditional?: boolean
+  step_kind?: "normal" | "map"
+  map_spec?: {
+    item_binding?: string
+    chunk_size?: number
+    collection_output?: {
+      step_id?: string
+      field?: string
+    }
+    collection_plan?: {
+      steps?: PlanStepData[]
+    }
+    worker_plan?: {
+      steps?: PlanStepData[]
+    }
+  } | null
+}
+
+interface PlanStepData {
+  id: string
+  name: string
+  description?: string
+  dependencies?: string[]
+  tool_names?: string[]
+  step_kind?: "normal" | "map"
+  map_spec?: StepExecution["map_spec"]
 }
 
 interface TraceEvent {
@@ -50,6 +75,68 @@ interface RightPanelProps {
   onPauseStep?: (stepId: string) => void
   onResumeStep?: (stepId: string) => void
   onRetryStep?: (stepId: string) => void
+}
+
+function NestedPlanView({
+  title,
+  steps,
+  depth = 0,
+}: {
+  title: string
+  steps?: PlanStepData[]
+  depth?: number
+}) {
+  if (!steps || steps.length === 0) return null
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium text-foreground">{title}</div>
+      <div className="space-y-2">
+        {steps.map((step, index) => (
+          <div
+            key={`${title}-${step.id}-${index}`}
+            className="rounded border border-border/60 bg-muted/20 p-2 space-y-1"
+            style={{ marginLeft: depth > 0 ? `${depth * 12}px` : 0 }}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{index + 1}. {step.name}</span>
+              {step.step_kind === "map" && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Repeat className="h-3 w-3" />
+                  map
+                </Badge>
+              )}
+            </div>
+            {step.description && (
+              <div className="text-xs text-muted-foreground">{step.description}</div>
+            )}
+            {step.dependencies && step.dependencies.length > 0 && (
+              <div className="text-xs text-blue-600 dark:text-blue-400">
+                Depends on: {step.dependencies.join(", ")}
+              </div>
+            )}
+            {step.tool_names && step.tool_names.length > 0 && (
+              <div className="text-xs font-mono text-muted-foreground">
+                {step.tool_names.join(", ")}
+              </div>
+            )}
+            {step.step_kind === "map" && step.map_spec && (
+              <div className="rounded border border-dashed border-border/60 bg-background/50 p-2 space-y-2">
+                <div className="text-xs text-muted-foreground flex flex-wrap gap-2">
+                  {step.map_spec.item_binding && <span>bind: <code>{step.map_spec.item_binding}</code></span>}
+                  {typeof step.map_spec.chunk_size === "number" && <span>chunk: <code>{step.map_spec.chunk_size}</code></span>}
+                  {step.map_spec.collection_output?.step_id && step.map_spec.collection_output?.field && (
+                    <span>source: <code>{step.map_spec.collection_output.step_id}.{step.map_spec.collection_output.field}</code></span>
+                  )}
+                </div>
+                <NestedPlanView title="Collection Plan" steps={step.map_spec.collection_plan?.steps} depth={depth + 1} />
+                <NestedPlanView title="Worker Plan" steps={step.map_spec.worker_plan?.steps} depth={depth + 1} />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 // Step detail component with file preview functionality
@@ -299,7 +386,15 @@ function StepSummary({ step }: { step: StepExecution }) {
     <div className="space-y-3">
       {/* Basic Info */}
       <div className="flex items-center justify-between">
-        <span className="text-base font-medium text-foreground">{step.name}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-base font-medium text-foreground">{step.name}</span>
+          {step.step_kind === "map" && (
+            <Badge variant="secondary" className="gap-1">
+              <Repeat className="h-3 w-3" />
+              map
+            </Badge>
+          )}
+        </div>
         <Badge variant="outline" className={`text-sm ${getStatusColor(step.status)}`}>
           {getStatusText(step.status)}
         </Badge>
@@ -346,6 +441,32 @@ function StepSummary({ step }: { step: StepExecution }) {
           <span className="text-base font-mono text-muted-foreground bg-muted px-2 py-1 rounded">
             {step.tool_names.join(", ")}
           </span>
+        </div>
+      )}
+
+      {step.step_kind === "map" && step.map_spec && (
+        <div className="space-y-3 rounded border border-dashed border-border/70 p-3 bg-muted/10">
+          <div className="flex items-start gap-2">
+            <Repeat className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+            <div className="text-sm text-muted-foreground space-y-1">
+              {step.map_spec.item_binding && (
+                <div>Binding: <code className="bg-muted px-1 py-0.5 rounded">{step.map_spec.item_binding}</code></div>
+              )}
+              {typeof step.map_spec.chunk_size === "number" && (
+                <div>Chunk size: <code className="bg-muted px-1 py-0.5 rounded">{step.map_spec.chunk_size}</code></div>
+              )}
+              {step.map_spec.collection_output?.step_id && step.map_spec.collection_output?.field && (
+                <div>
+                  Collection source:{" "}
+                  <code className="bg-muted px-1 py-0.5 rounded">
+                    {step.map_spec.collection_output.step_id}.{step.map_spec.collection_output.field}
+                  </code>
+                </div>
+              )}
+            </div>
+          </div>
+          <NestedPlanView title="Collection Plan" steps={step.map_spec.collection_plan?.steps} />
+          <NestedPlanView title="Worker Plan" steps={step.map_spec.worker_plan?.steps} />
         </div>
       )}
 

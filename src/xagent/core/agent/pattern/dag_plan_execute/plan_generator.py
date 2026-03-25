@@ -186,6 +186,21 @@ class PlanGenerator:
                 step.map_spec.worker_plan, tools, depth=depth + 1, max_depth=max_depth
             )
 
+    def _serialize_step_for_plan_data(self, step: PlanStep) -> Dict[str, Any]:
+        return {
+            "id": step.id,
+            "name": step.name,
+            "description": step.description,
+            "tool_names": step.tool_names,
+            "dependencies": step.dependencies,
+            "status": step.status.value if hasattr(step.status, "value") else str(step.status),
+            "conditional_branches": step.conditional_branches,
+            "required_branch": step.required_branch,
+            "is_conditional": step.is_conditional,
+            "step_kind": step.step_kind.value,
+            "map_spec": step.map_spec.to_dict() if step.map_spec else None,
+        }
+
     async def _trace_stream_llm_call(
         self,
         *,
@@ -501,19 +516,7 @@ class PlanGenerator:
                             "goal": goal,
                             "task_name": task_name,  # Include task_name in trace event
                             "steps": [
-                                {
-                                    "id": step.id,
-                                    "name": step.name,
-                                    "description": step.description,
-                                    "tool_names": step.tool_names,
-                                    "dependencies": step.dependencies,
-                                    "status": step.status.value
-                                    if hasattr(step.status, "value")
-                                    else str(step.status),
-                                    "conditional_branches": step.conditional_branches,
-                                    "required_branch": step.required_branch,
-                                    "is_conditional": step.is_conditional,
-                                }
+                                self._serialize_step_for_plan_data(step)
                                 for step in additional_steps
                             ],
                         }
@@ -578,19 +581,7 @@ class PlanGenerator:
                             "goal": goal,
                             "task_name": task_name,  # Include task_name in trace event
                             "steps": [
-                                {
-                                    "id": step.id,
-                                    "name": step.name,
-                                    "description": step.description,
-                                    "tool_names": step.tool_names,
-                                    "dependencies": step.dependencies,
-                                    "status": step.status.value
-                                    if hasattr(step.status, "value")
-                                    else str(step.status),
-                                    "conditional_branches": step.conditional_branches,
-                                    "required_branch": step.required_branch,
-                                    "is_conditional": step.is_conditional,
-                                }
+                                self._serialize_step_for_plan_data(step)
                                 for step in steps
                             ],
                         }

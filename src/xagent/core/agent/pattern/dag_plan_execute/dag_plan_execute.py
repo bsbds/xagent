@@ -691,26 +691,7 @@ class DAGPlanExecutePattern(AgentPattern):
                                 "plan_data": {
                                     "id": plan.id,
                                     "goal": plan.goal,
-                                    "steps": [
-                                        {
-                                            "id": step.id,
-                                            "name": step.name,
-                                            "description": step.description,
-                                            "tool_names": step.tool_names,
-                                            "dependencies": step.dependencies,
-                                            "status": step.status.value,
-                                            "started_at": step.started_at.isoformat()
-                                            if step.started_at
-                                            else None,
-                                            "completed_at": step.completed_at.isoformat()
-                                            if step.completed_at
-                                            else None,
-                                            "conditional_branches": step.conditional_branches,
-                                            "required_branch": step.required_branch,
-                                            "is_conditional": step.is_conditional,
-                                        }
-                                        for step in plan.steps
-                                    ],
+                                    "steps": [step.to_dict() for step in plan.steps],
                                 },
                             },
                         )
@@ -764,26 +745,7 @@ class DAGPlanExecutePattern(AgentPattern):
                                     "plan_data": {
                                         "id": plan.id,
                                         "goal": plan.goal,
-                                        "steps": [
-                                            {
-                                                "id": step.id,
-                                                "name": step.name,
-                                                "description": step.description,
-                                                "tool_names": step.tool_names,
-                                                "dependencies": step.dependencies,
-                                                "status": step.status.value,
-                                                "started_at": step.started_at.isoformat()
-                                                if step.started_at
-                                                else None,
-                                                "completed_at": step.completed_at.isoformat()
-                                                if step.completed_at
-                                                else None,
-                                                "conditional_branches": step.conditional_branches,
-                                                "required_branch": step.required_branch,
-                                                "is_conditional": step.is_conditional,
-                                            }
-                                            for step in plan.steps
-                                        ],
+                                        "steps": [step.to_dict() for step in plan.steps],
                                     },
                                 },
                             )
@@ -852,26 +814,7 @@ class DAGPlanExecutePattern(AgentPattern):
                                     "plan_data": {
                                         "id": new_plan.id,
                                         "goal": new_plan.goal,
-                                        "steps": [
-                                            {
-                                                "id": step.id,
-                                                "name": step.name,
-                                                "description": step.description,
-                                                "tool_names": step.tool_names,
-                                                "dependencies": step.dependencies,
-                                                "status": step.status.value,
-                                                "started_at": step.started_at.isoformat()
-                                                if step.started_at
-                                                else None,
-                                                "completed_at": step.completed_at.isoformat()
-                                                if step.completed_at
-                                                else None,
-                                                "conditional_branches": step.conditional_branches,
-                                                "required_branch": step.required_branch,
-                                                "is_conditional": step.is_conditional,
-                                            }
-                                            for step in new_plan.steps
-                                        ],
+                                        "steps": [step.to_dict() for step in new_plan.steps],
                                     },
                                 },
                             )
@@ -940,26 +883,7 @@ class DAGPlanExecutePattern(AgentPattern):
                             "plan_data": {
                                 "id": plan.id,
                                 "goal": plan.goal,
-                                "steps": [
-                                    {
-                                        "id": step.id,
-                                        "name": step.name,
-                                        "description": step.description,
-                                        "tool_names": step.tool_names,
-                                        "dependencies": step.dependencies,
-                                        "status": step.status.value,
-                                        "started_at": step.started_at.isoformat()
-                                        if step.started_at
-                                        else None,
-                                        "completed_at": step.completed_at.isoformat()
-                                        if step.completed_at
-                                        else None,
-                                        "conditional_branches": step.conditional_branches,
-                                        "required_branch": step.required_branch,
-                                        "is_conditional": step.is_conditional,
-                                    }
-                                    for step in plan.steps
-                                ],
+                                "steps": [step.to_dict() for step in plan.steps],
                             },
                         },
                     )
