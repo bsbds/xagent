@@ -30,12 +30,64 @@ class ExecutionPhase(Enum):
     PLAN_EXTENSION = "plan_extension"
 
 
+class StepKind(Enum):
+    """Semantic kind of a plan step."""
+
+    NORMAL = "normal"
+    MAP = "map"
+
+
 @dataclass
 class StepInjection:
     """Pre/post injection hooks for a step"""
 
     pre_hook: Optional[Callable[[str, Dict[str, Any]], str]] = None
     post_hook: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None
+
+
+@dataclass
+class CollectionOutputRef:
+    """Reference to the step result field containing map items."""
+
+    step_id: str
+    field: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"step_id": self.step_id, "field": self.field}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CollectionOutputRef":
+        return cls(step_id=data["step_id"], field=data["field"])
+
+
+@dataclass
+class MapSpec:
+    """Specification for a map step."""
+
+    collection_plan: "ExecutionPlan"
+    collection_output: CollectionOutputRef
+    item_binding: str
+    worker_plan: "ExecutionPlan"
+    chunk_size: int = 1
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "collection_plan": self.collection_plan.to_dict(),
+            "collection_output": self.collection_output.to_dict(),
+            "item_binding": self.item_binding,
+            "chunk_size": self.chunk_size,
+            "worker_plan": self.worker_plan.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MapSpec":
+        return cls(
+            collection_plan=ExecutionPlan.from_dict(data["collection_plan"]),
+            collection_output=CollectionOutputRef.from_dict(data["collection_output"]),
+            item_binding=data["item_binding"],
+            chunk_size=data.get("chunk_size", 1),
+            worker_plan=ExecutionPlan.from_dict(data["worker_plan"]),
+        )
 
 
 @dataclass
@@ -65,6 +117,8 @@ class PlanStep:
     # Example: {"human": "human_response_step", "kb": "kb_search_step"}
     required_branch: Optional[str] = None
     # If set, this step only executes if parent selected this branch
+    step_kind: StepKind = StepKind.NORMAL
+    map_spec: Optional[MapSpec] = None
 
     @property
     def is_conditional(self) -> bool:
@@ -146,7 +200,38 @@ class PlanStep:
             "conditional_branches": self.conditional_branches,
             "required_branch": self.required_branch,
             "is_conditional": self.is_conditional,
+            "step_kind": self.step_kind.value,
+            "map_spec": self.map_spec.to_dict() if self.map_spec else None,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PlanStep":
+        started_at = data.get("started_at")
+        completed_at = data.get("completed_at")
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data["description"],
+            tool_names=data.get("tool_names", []),
+            dependencies=data.get("dependencies", []),
+            status=StepStatus(data.get("status", StepStatus.PENDING.value)),
+            result=data.get("result"),
+            error=data.get("error"),
+            error_type=data.get("error_type"),
+            error_traceback=data.get("error_traceback"),
+            started_at=datetime.fromisoformat(started_at) if started_at else None,
+            completed_at=datetime.fromisoformat(completed_at)
+            if completed_at
+            else None,
+            context=data.get("context", {}),
+            difficulty=data.get("difficulty", "hard"),
+            conditional_branches=data.get("conditional_branches", {}),
+            required_branch=data.get("required_branch"),
+            step_kind=StepKind(data.get("step_kind", StepKind.NORMAL.value)),
+            map_spec=MapSpec.from_dict(data["map_spec"])
+            if data.get("map_spec")
+            else None,
+        )
 
 
 @dataclass
@@ -221,6 +306,21 @@ class ExecutionPlan:
             "steps": [step.to_dict() for step in self.steps],
             "active_branches": self.active_branches,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExecutionPlan":
+        created_at = data.get("created_at")
+        return cls(
+            id=data["id"],
+            goal=data["goal"],
+            steps=[PlanStep.from_dict(step) for step in data.get("steps", [])],
+            iteration=data.get("iteration", 1),
+            created_at=datetime.fromisoformat(created_at)
+            if created_at
+            else datetime.now(),
+            active_branches=data.get("active_branches", {}),
+            task_name=data.get("task_name"),
+        )
 
     def extend_with_steps(self, additional_steps: List[PlanStep]) -> "ExecutionPlan":
         """Create a new plan with additional steps appended."""

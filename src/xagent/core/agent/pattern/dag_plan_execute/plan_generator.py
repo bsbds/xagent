@@ -26,8 +26,10 @@ from .models import (
     ExecutionPlan,
     Interaction,
     InteractionType,
+    MapSpec,
     PlanGeneratorResult,
     PlanStep,
+    StepKind,
 )
 from .schemas import ClassificationResponse
 
@@ -85,6 +87,104 @@ class PlanGenerator:
         except (ValueError, TypeError):
             logger.warning(f"Invalid timeout value from LLM: {timeout}")
             return None
+
+    def _build_plan_step(self, step_data: Dict[str, Any]) -> PlanStep:
+        step_kind = StepKind(step_data.get("step_kind", StepKind.NORMAL.value))
+        map_spec = None
+        if step_kind == StepKind.MAP:
+            raw_map_spec = step_data.get("map_spec")
+            if not raw_map_spec:
+                raise ValueError(f"Map step {step_data.get('id', '<unknown>')} missing map_spec")
+            map_spec = MapSpec.from_dict(raw_map_spec)
+
+        return PlanStep(
+            id=step_data.get("id", str(uuid4())),
+            name=step_data["name"],
+            description=step_data["description"],
+            tool_names=step_data.get("tool_names", []),
+            dependencies=step_data.get("dependencies", []),
+            difficulty=step_data.get("difficulty", "hard"),
+            conditional_branches=step_data.get("conditional_branches", {}),
+            required_branch=step_data.get("required_branch"),
+            step_kind=step_kind,
+            map_spec=map_spec,
+        )
+
+    def _validate_plan_recursive(
+        self,
+        plan: ExecutionPlan,
+        tools: List[Tool],
+        *,
+        depth: int = 0,
+        max_depth: int = 8,
+    ) -> None:
+        if depth > max_depth:
+            raise DAGPlanGenerationError(
+                "Generated plan exceeds maximum map nesting depth",
+                goal=plan.goal,
+                iteration=getattr(plan, "iteration", 1),
+                llm_response=None,
+                context={"max_depth": max_depth, "plan_id": plan.id},
+            )
+
+        self._validate_plan(plan, tools)
+        available_step_ids = {step.id for step in plan.steps}
+        for step in plan.steps:
+            if step.step_kind != StepKind.MAP:
+                continue
+            if not step.map_spec:
+                raise DAGPlanGenerationError(
+                    "Map step missing map_spec",
+                    goal=plan.goal,
+                    iteration=getattr(plan, "iteration", 1),
+                    llm_response=None,
+                    context={"step_id": step.id},
+                )
+            if not step.map_spec.item_binding:
+                raise DAGPlanGenerationError(
+                    "Map step missing item_binding",
+                    goal=plan.goal,
+                    iteration=getattr(plan, "iteration", 1),
+                    llm_response=None,
+                    context={"step_id": step.id},
+                )
+            if step.map_spec.chunk_size <= 0:
+                raise DAGPlanGenerationError(
+                    "Map step chunk_size must be positive",
+                    goal=plan.goal,
+                    iteration=getattr(plan, "iteration", 1),
+                    llm_response=None,
+                    context={"step_id": step.id, "chunk_size": step.map_spec.chunk_size},
+                )
+
+            collection_step_ids = {s.id for s in step.map_spec.collection_plan.steps}
+            if step.map_spec.collection_output.step_id not in collection_step_ids:
+                raise DAGPlanGenerationError(
+                    "Map step collection_output references a non-existent collection step",
+                    goal=plan.goal,
+                    iteration=getattr(plan, "iteration", 1),
+                    llm_response=None,
+                    context={
+                        "step_id": step.id,
+                        "collection_output_step_id": step.map_spec.collection_output.step_id,
+                        "collection_step_ids": list(collection_step_ids),
+                    },
+                )
+            if not step.map_spec.collection_output.field:
+                raise DAGPlanGenerationError(
+                    "Map step collection_output.field cannot be empty",
+                    goal=plan.goal,
+                    iteration=getattr(plan, "iteration", 1),
+                    llm_response=None,
+                    context={"step_id": step.id},
+                )
+
+            self._validate_plan_recursive(
+                step.map_spec.collection_plan, tools, depth=depth + 1, max_depth=max_depth
+            )
+            self._validate_plan_recursive(
+                step.map_spec.worker_plan, tools, depth=depth + 1, max_depth=max_depth
+            )
 
     async def _trace_stream_llm_call(
         self,
@@ -366,18 +466,9 @@ class PlanGenerator:
                                 step_id = str(uuid4())
                             existing_step_ids.add(step_id)
 
-                            step = PlanStep(
-                                id=step_id,
-                                name=step_data["name"],
-                                description=step_data["description"],
-                                tool_names=step_data.get("tool_names", []),
-                                dependencies=step_data.get("dependencies", []),
-                                difficulty=step_data.get("difficulty", "hard"),
-                                conditional_branches=step_data.get(
-                                    "conditional_branches", {}
-                                ),
-                                required_branch=step_data.get("required_branch"),
-                            )
+                            step_data = dict(step_data)
+                            step_data["id"] = step_id
+                            step = self._build_plan_step(step_data)
                             additional_steps.append(step)
 
                         # Validate dependencies (both existing and new steps)
@@ -451,18 +542,9 @@ class PlanGenerator:
                             step_id = step_data.get("id", str(uuid4()))
                             step_ids.add(step_id)
 
-                            step = PlanStep(
-                                id=step_id,
-                                name=step_data["name"],
-                                description=step_data["description"],
-                                tool_names=step_data.get("tool_names", []),
-                                dependencies=step_data.get("dependencies", []),
-                                difficulty=step_data.get("difficulty", "hard"),
-                                conditional_branches=step_data.get(
-                                    "conditional_branches", {}
-                                ),
-                                required_branch=step_data.get("required_branch"),
-                            )
+                            step_data = dict(step_data)
+                            step_data["id"] = step_id
+                            step = self._build_plan_step(step_data)
                             steps.append(step)
 
                         # Validate dependencies
@@ -488,7 +570,7 @@ class PlanGenerator:
                         )
 
                         # Validate the generated plan - this can raise DAGPlanGenerationError
-                        self._validate_plan(plan, tools)
+                        self._validate_plan_recursive(plan, tools)
 
                         # Prepare plan data for trace event
                         plan_data = {
@@ -1012,7 +1094,7 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
         assert plan is not None, "Plan generation should never return None"
 
         # Validate the generated plan
-        self._validate_plan(plan, tools)
+        self._validate_plan_recursive(plan, tools)
 
         return plan
 

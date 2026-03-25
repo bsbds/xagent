@@ -3,6 +3,7 @@ Plan execution logic for DAG plan-execute pattern.
 """
 
 import asyncio
+import copy
 import logging
 import traceback
 from collections import deque
@@ -28,7 +29,7 @@ from ...trace import (
     trace_task_start,
 )
 from ...utils import ContextBuilder, StepExecutionResult
-from .models import ExecutionPlan, PlanStep, StepStatus, UserInputMapper
+from .models import ExecutionPlan, PlanStep, StepKind, StepStatus, UserInputMapper
 from .step_agent_factory import StepAgentFactory
 
 # Removed ReActPattern import to avoid circular import
@@ -76,6 +77,10 @@ class PlanExecutor:
         self._execution_interrupted = False
         self.skipped_steps: Set[str] = set()
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._current_plan: Optional[ExecutionPlan] = None
+        self._external_context_messages: List[Dict[str, str]] = []
+        self._current_bindings: Dict[str, Any] = {}
+        self._step_id_prefix: Optional[str] = None
 
     def reset(self) -> None:
         """Reset execution-specific state before starting a fresh task."""
@@ -90,6 +95,9 @@ class PlanExecutor:
         plan: ExecutionPlan,
         tool_map: Dict[str, Tool],
         skill_context: Optional[str] = None,
+        external_context_messages: Optional[List[Dict[str, str]]] = None,
+        bindings: Optional[Dict[str, Any]] = None,
+        step_id_prefix: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Execute the plan using queue-driven concurrent execution
 
@@ -97,6 +105,9 @@ class PlanExecutor:
             plan: Execution plan with steps
             tool_map: Tool name to tool mapping
             skill_context: Optional skill context to pass to step execution
+            external_context_messages: Optional inherited context for nested plans
+            bindings: Optional structured bindings for nested map execution
+            step_id_prefix: Optional runtime prefix for nested step instance IDs
         """
         logger.info(
             f"Executing plan {plan.id} with {len(plan.steps)} steps (max concurrency: {self.max_concurrency})"
@@ -104,6 +115,10 @@ class PlanExecutor:
 
         # Reset interrupt flag at the start of execution
         self._execution_interrupted = False
+        self._current_plan = plan
+        self._external_context_messages = list(external_context_messages or [])
+        self._current_bindings = dict(bindings or {})
+        self._step_id_prefix = step_id_prefix
 
         # Trace execution start
         trace_task_id = f"execute_{plan.id}"
@@ -169,15 +184,35 @@ class PlanExecutor:
                     f"Executing step {step_id} (dependencies: {step.dependencies})"
                 )
 
-                async with self._semaphore:
-                    result = await self._execute_step_with_react_agent(
-                        step, tool_map, execution_results, skill_context
+                if step.step_kind == StepKind.MAP:
+                    result = await self._execute_map_step(
+                        step, tool_map, skill_context=skill_context
                     )
+                else:
+                    async with self._semaphore:
+                        result = await self._execute_step_with_react_agent(
+                            step, tool_map, execution_results, skill_context
+                        )
 
                 # Handle successful completion
                 step.status = StepStatus.COMPLETED
                 step.result = result if isinstance(result, dict) else {"value": result}
                 completed_steps.add(step_id)
+
+                if step.step_kind == StepKind.MAP or step.id not in self.step_execution_results:
+                    self.step_execution_results[step.id] = StepExecutionResult(
+                        step_id=self._build_runtime_step_id(step.id),
+                        messages=[
+                            {
+                                "role": "assistant",
+                                "content": str(step.result),
+                            }
+                        ],
+                        final_result=step.result,
+                        agent_name="Map"
+                        if step.step_kind == StepKind.MAP
+                        else "ReAct",
+                    )
 
                 # Add to execution results
                 execution_results.append(
@@ -518,6 +553,10 @@ class PlanExecutor:
         )
 
         logger.info(f"Plan execution completed for {plan.id}")
+        self._current_plan = None
+        self._external_context_messages = []
+        self._current_bindings = {}
+        self._step_id_prefix = None
         return execution_results
 
     def pause_execution(self) -> None:
@@ -547,6 +586,11 @@ class PlanExecutor:
         self._execution_interrupted = True
         logger.info("Execution interrupted for plan modification")
 
+    def _build_runtime_step_id(self, step_id: str) -> str:
+        if self._step_id_prefix:
+            return f"{self._step_id_prefix}::{step_id}"
+        return step_id
+
     async def _execute_step_with_react_agent(
         self,
         step: PlanStep,
@@ -562,12 +606,14 @@ class PlanExecutor:
             execution_results: Optional list of execution results
             skill_context: Optional skill context to pass to context builder
         """
-        logger.info(f"Executing step {step.id}: {step.name}")
+        runtime_step_id = self._build_runtime_step_id(step.id)
+        logger.info(f"Executing step {runtime_step_id}: {step.name}")
 
         # Trace step start with detailed context
-        trace_step_id = f"step_{step.id}"
+        trace_step_id = f"step_{runtime_step_id}"
         step_start_data = {
-            "step_id": step.id,
+            "step_id": runtime_step_id,
+            "template_step_id": step.id,
             "step_name": step.name,
             "tool_names": step.tool_names,
             "dependencies": step.dependencies,
@@ -578,7 +624,7 @@ class PlanExecutor:
         await trace_step_start(
             self.tracer,
             trace_step_id,
-            step.id,
+            runtime_step_id,
             TraceCategory.DAG,
             data=step_start_data,
         )
@@ -666,11 +712,19 @@ class PlanExecutor:
                 step_description=step.description,
                 dependencies=step.dependencies,
                 dependency_results=self.step_execution_results,
-                task_id=step.id,
+                task_id=runtime_step_id,
                 original_goal=original_goal,
                 skill_context=skill_context,
                 conversation_history=conversation_history,
+                bindings=self._current_bindings,
             )
+
+            if self._external_context_messages:
+                context_messages = (
+                    [context_messages[0]]
+                    + self._external_context_messages
+                    + context_messages[1:]
+                )
 
             # Add the current step task, with tool info and original goal context
             tool_names = step.get_available_tools()
@@ -731,7 +785,7 @@ class PlanExecutor:
             execution_history = result.get("execution_history", context_messages)
 
             step_execution_result = StepExecutionResult(
-                step_id=step.id,
+                step_id=runtime_step_id,
                 messages=execution_history,  # Complete conversation history
                 final_result=result,
                 agent_name="ReAct",
@@ -741,7 +795,8 @@ class PlanExecutor:
 
             # Trace step completion with detailed execution information
             step_trace_data = {
-                "step_id": step.id,
+                "step_id": runtime_step_id,
+                "template_step_id": step.id,
                 "step_name": step.name,
                 "execution_time": (step.completed_at - step.started_at).total_seconds(),
                 "result": result,
@@ -788,7 +843,7 @@ class PlanExecutor:
             await trace_step_end(
                 self.tracer,
                 trace_step_id,
-                step.id,
+                runtime_step_id,
                 TraceCategory.DAG,
                 data=step_trace_data,
             )
@@ -811,13 +866,12 @@ class PlanExecutor:
                     )
 
                     if branch_key:
-                        # Get the plan from parent pattern and set active branch
-                        if (
-                            self.parent_pattern
-                            and hasattr(self.parent_pattern, "current_plan")
-                            and self.parent_pattern.current_plan is not None
+                        plan = self._current_plan
+                        if plan is None and self.parent_pattern and hasattr(
+                            self.parent_pattern, "current_plan"
                         ):
                             plan = self.parent_pattern.current_plan
+                        if plan is not None:
                             plan.set_active_branch(step.id, branch_key)
                             logger.info(
                                 f"Conditional node {step.id} selected branch: {branch_key} -> {step.conditional_branches[branch_key]}"
@@ -850,7 +904,7 @@ class PlanExecutor:
                         await trace_step_end(
                             self.tracer,
                             trace_step_id,
-                            step.id,
+                            runtime_step_id,
                             TraceCategory.DAG,
                             data=step_trace_data,
                         )
@@ -902,6 +956,239 @@ class PlanExecutor:
                 exc_info=True,
             )
             raise
+
+    async def _execute_map_step(
+        self,
+        step: PlanStep,
+        tool_map: Dict[str, Tool],
+        skill_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        runtime_step_id = self._build_runtime_step_id(step.id)
+        trace_step_id = f"step_{runtime_step_id}"
+        step.status = StepStatus.RUNNING
+        step.started_at = datetime.now()
+        await trace_step_start(
+            self.tracer,
+            trace_step_id,
+            runtime_step_id,
+            TraceCategory.DAG,
+            data={
+                "step_id": runtime_step_id,
+                "template_step_id": step.id,
+                "step_name": step.name,
+                "step_kind": StepKind.MAP.value,
+                "dependencies": step.dependencies,
+                "status": "starting",
+                "start_time": step.started_at.isoformat(),
+            },
+        )
+
+        if not step.map_spec:
+            raise DAGStepError(
+                step_id=step.id,
+                step_name=step.name,
+                message="Map step missing map_spec",
+            )
+
+        parent_context_messages = await self._build_parent_context_messages(
+            step, skill_context
+        )
+        collection_plan = copy.deepcopy(step.map_spec.collection_plan)
+        collection_executor = self._create_nested_executor()
+        collection_prefix = self._build_runtime_step_id(step.id)
+
+        await collection_executor.execute_plan(
+            collection_plan,
+            tool_map,
+            skill_context=skill_context,
+            external_context_messages=parent_context_messages,
+            bindings=self._current_bindings,
+            step_id_prefix=collection_prefix,
+        )
+
+        items = self._extract_collection_items(step, collection_plan)
+        chunks = self._chunk_items(items, step.map_spec.chunk_size)
+
+        worker_tasks = [
+            asyncio.create_task(
+                self._execute_map_worker_item(
+                    step=step,
+                    tool_map=tool_map,
+                    skill_context=skill_context,
+                    parent_context_messages=parent_context_messages,
+                    item_index=item_index,
+                    item_value=item_value,
+                )
+            )
+            for item_index, item_value in enumerate(chunks)
+        ]
+
+        item_results: List[Dict[str, Any]] = []
+        try:
+            for completed in asyncio.as_completed(worker_tasks):
+                item_results.append(await completed)
+        except Exception:
+            for task in worker_tasks:
+                task.cancel()
+            await asyncio.gather(*worker_tasks, return_exceptions=True)
+            raise
+
+        item_results.sort(key=lambda result: result["item_index"])
+        result = {
+            "success": True,
+            "mode": "map",
+            "item_binding": step.map_spec.item_binding,
+            "item_count": len(chunks),
+            "chunk_size": step.map_spec.chunk_size,
+            "results": item_results,
+        }
+        step.completed_at = datetime.now()
+        await trace_step_end(
+            self.tracer,
+            trace_step_id,
+            runtime_step_id,
+            TraceCategory.DAG,
+            data={
+                "step_id": runtime_step_id,
+                "template_step_id": step.id,
+                "step_name": step.name,
+                "step_kind": StepKind.MAP.value,
+                "status": StepStatus.COMPLETED.value,
+                "execution_time": (step.completed_at - step.started_at).total_seconds(),
+                "result": result,
+            },
+        )
+        return result
+
+    async def _execute_map_worker_item(
+        self,
+        *,
+        step: PlanStep,
+        tool_map: Dict[str, Tool],
+        skill_context: Optional[str],
+        parent_context_messages: List[Dict[str, str]],
+        item_index: int,
+        item_value: Any,
+    ) -> Dict[str, Any]:
+        assert step.map_spec is not None
+
+        worker_plan = copy.deepcopy(step.map_spec.worker_plan)
+        worker_executor = self._create_nested_executor()
+        parent_prefix = self._build_runtime_step_id(step.id)
+        worker_prefix = f"{parent_prefix}::item[{item_index}]"
+        bindings = dict(self._current_bindings)
+        bindings[step.map_spec.item_binding] = item_value
+
+        await worker_executor.execute_plan(
+            worker_plan,
+            tool_map,
+            skill_context=skill_context,
+            external_context_messages=parent_context_messages,
+            bindings=bindings,
+            step_id_prefix=worker_prefix,
+        )
+
+        return {
+            "item_index": item_index,
+            "bindings": {step.map_spec.item_binding: item_value},
+            "output": self._summarize_nested_plan(worker_plan),
+        }
+
+    def _create_nested_executor(self) -> "PlanExecutor":
+        nested_executor = PlanExecutor(
+            llm=self.llm,
+            tracer=self.tracer,
+            workspace=self.workspace,
+            memory_store=self.memory_store,
+            user_input_mapper=UserInputMapper(),
+            parent_pattern=self.parent_pattern,
+            context_compact_threshold=self.context_builder.compact_config.threshold,
+            max_concurrency=self.max_concurrency,
+            step_agent_factory=self.step_agent_factory,
+            compact_llm=self.compact_llm,
+        )
+        nested_executor._semaphore = self._semaphore
+        return nested_executor
+
+    async def _build_parent_context_messages(
+        self, step: PlanStep, skill_context: Optional[str]
+    ) -> List[Dict[str, str]]:
+        original_goal = (
+            getattr(self.parent_pattern, "_original_goal", None)
+            if self.parent_pattern
+            else None
+        )
+        conversation_history = None
+        if self.parent_pattern and hasattr(self.parent_pattern, "_get_messages_for_llm"):
+            conversation_history = self.parent_pattern._get_messages_for_llm()
+
+        messages = await self.context_builder.build_context_for_step(
+            step_name=step.name,
+            step_description=step.description,
+            dependencies=step.dependencies,
+            dependency_results=self.step_execution_results,
+            task_id=self._build_runtime_step_id(step.id),
+            original_goal=original_goal,
+            skill_context=skill_context,
+            conversation_history=conversation_history,
+            bindings=self._current_bindings,
+        )
+        if messages and messages[0].get("role") == "system":
+            return messages[1:]
+        return messages
+
+    def _extract_collection_items(
+        self, step: PlanStep, collection_plan: ExecutionPlan
+    ) -> List[Any]:
+        assert step.map_spec is not None
+        output_step = collection_plan.get_step_by_id(step.map_spec.collection_output.step_id)
+        if output_step is None:
+            raise DAGStepError(
+                step_id=step.id,
+                step_name=step.name,
+                message=(
+                    "Map collection output step not found: "
+                    f"{step.map_spec.collection_output.step_id}"
+                ),
+            )
+        if not isinstance(output_step.result, dict):
+            raise DAGStepError(
+                step_id=step.id,
+                step_name=step.name,
+                message="Map collection output must be a dictionary result",
+            )
+
+        field_name = step.map_spec.collection_output.field
+        items = output_step.result.get(field_name)
+        if not isinstance(items, list):
+            raise DAGStepError(
+                step_id=step.id,
+                step_name=step.name,
+                message=f"Map collection output field '{field_name}' must be a list",
+            )
+        return items
+
+    def _chunk_items(self, items: List[Any], chunk_size: int) -> List[Any]:
+        if chunk_size <= 1:
+            return items
+        return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    def _summarize_nested_plan(self, plan: ExecutionPlan) -> Dict[str, Any]:
+        return {
+            "plan_id": plan.id,
+            "goal": plan.goal,
+            "task_name": plan.task_name,
+            "steps": [
+                {
+                    "step_id": step.id,
+                    "name": step.name,
+                    "status": step.status.value,
+                    "result": step.result,
+                    "error": step.error,
+                }
+                for step in plan.steps
+            ],
+        }
 
     def _detect_circular_dependencies(
         self, steps: List[PlanStep], blocked_deps: Dict[str, List[str]]

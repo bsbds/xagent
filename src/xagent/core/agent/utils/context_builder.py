@@ -136,6 +136,7 @@ class ContextBuilder:
         original_goal: Optional[str] = None,
         skill_context: Optional[str] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        bindings: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, str]]:
         """
         Build context messages for a step based on its dependencies.
@@ -149,6 +150,7 @@ class ContextBuilder:
             original_goal: Optional original user goal for context preservation
             skill_context: Optional skill context with domain knowledge and templates
             conversation_history: Optional conversation history from user interactions
+            bindings: Optional structured bindings for nested map execution
 
         Returns:
             List of messages forming the context for this step
@@ -178,6 +180,15 @@ class ContextBuilder:
                 {
                     "role": "user",
                     "content": "=== End of Previous Conversation ===\n\nNow proceeding with the current task execution:",
+                }
+            )
+
+        if bindings:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "=== Current Map Bindings ===\n"
+                    + "\n".join(f"- {name} = {value!r}" for name, value in bindings.items()),
                 }
             )
 

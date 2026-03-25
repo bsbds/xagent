@@ -827,38 +827,9 @@ class AgentService:
         try:
             from .pattern.dag_plan_execute.models import (
                 ExecutionPlan,
-                PlanStep,
-                StepStatus,
             )
 
-            # Reconstruct ExecutionPlan
-            steps_data = plan_state.get("steps", [])
-            steps = []
-
-            for step_data in steps_data:
-                step = PlanStep(
-                    id=step_data["id"],
-                    name=step_data["name"],
-                    description=step_data["description"],
-                    tool_names=step_data.get("tool_names", []),
-                    dependencies=step_data.get("dependencies", []),
-                    status=StepStatus(step_data["status"]),
-                    result=step_data.get("result"),
-                    error=step_data.get("error"),
-                    error_type=step_data.get("error_type"),
-                    error_traceback=step_data.get("error_traceback"),
-                    context=step_data.get("context", {}),
-                    difficulty=step_data.get("difficulty", "hard"),
-                )
-                steps.append(step)
-
-            # Create ExecutionPlan
-            execution_plan = ExecutionPlan(
-                id=plan_state["id"],
-                goal=plan_state["goal"],
-                iteration=plan_state.get("iteration", 1),
-                steps=steps,
-            )
+            execution_plan = ExecutionPlan.from_dict(plan_state)
 
             # Set DAG pattern's plan
             dag_pattern.current_plan = execution_plan
@@ -891,7 +862,9 @@ class AgentService:
                 for step_id in completed_steps | failed_steps
             }
 
-            logger.info(f"DAG pattern reconstructed with {len(steps)} steps")
+            logger.info(
+                f"DAG pattern reconstructed with {len(execution_plan.steps)} steps"
+            )
 
         except Exception as e:
             logger.error(f"Failed to reconstruct DAG pattern: {e}")
