@@ -131,7 +131,6 @@ class PlanGenerator:
             )
 
         self._validate_plan(plan, tools)
-        available_step_ids = {step.id for step in plan.steps}
         for step in plan.steps:
             if step.step_kind != StepKind.MAP:
                 continue
@@ -1246,6 +1245,8 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             "The current plan has already been created and some steps may have been executed.\n"
             "Your task is to add ADDITIONAL steps that are needed to achieve the goal.\n"
             "You must NOT modify or recreate existing steps - only add new ones.\n"
+            "You must NOT add steps inside any existing map subtree.\n"
+            "Map subtrees are immutable templates during execution.\n"
             "New steps can depend on existing steps or other new steps.\n\n"
             "IMPORTANT: When a NEW USER REQUEST is provided:\n"
             "- Review all PENDING steps (marked with ⏳) and their descriptions carefully\n"
@@ -1307,6 +1308,7 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             "- tool_names: list of tools available for this step (array of strings, can be empty)\n"
             "- dependencies: list of step IDs this step depends on (array of strings)\n"
             "- difficulty: 'easy' or 'hard' (string)\n"
+            "Only add new top-level steps. Do not add, replace, or simulate steps inside any existing map subtree.\n"
             "CRITICAL DEPENDENCY RULES:\n"
             "- You can ONLY depend on step IDs that are listed in the 'Current plan steps' above\n"
             "- You CANNOT depend on step IDs that don't exist or that you are creating in this response\n"

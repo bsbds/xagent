@@ -30,7 +30,14 @@ from ...trace import (
     trace_task_start,
 )
 from ...utils import ContextBuilder, StepExecutionResult
-from .models import ExecutionPlan, PlanStep, StepKind, StepStatus, UserInputMapper
+from .models import (
+    ExecutionNode,
+    ExecutionPlan,
+    PlanStep,
+    StepKind,
+    StepStatus,
+    UserInputMapper,
+)
 from .step_agent_factory import StepAgentFactory
 
 # Removed ReActPattern import to avoid circular import
@@ -224,7 +231,10 @@ class PlanExecutor:
                 step.result = result if isinstance(result, dict) else {"value": result}
                 completed_steps.add(step_id)
 
-                if step.step_kind == StepKind.MAP or step.id not in self.step_execution_results:
+                if (
+                    step.step_kind == StepKind.MAP
+                    or step.id not in self.step_execution_results
+                ):
                     self.step_execution_results[step.id] = StepExecutionResult(
                         step_id=self._build_runtime_step_id(step.id),
                         messages=[
@@ -234,9 +244,7 @@ class PlanExecutor:
                             }
                         ],
                         final_result=step.result,
-                        agent_name="Map"
-                        if step.step_kind == StepKind.MAP
-                        else "ReAct",
+                        agent_name="Map" if step.step_kind == StepKind.MAP else "ReAct",
                     )
 
                 # Add to execution results
@@ -923,8 +931,10 @@ class PlanExecutor:
 
                     if branch_key:
                         plan = self._current_plan
-                        if plan is None and self.parent_pattern and hasattr(
-                            self.parent_pattern, "current_plan"
+                        if (
+                            plan is None
+                            and self.parent_pattern
+                            and hasattr(self.parent_pattern, "current_plan")
                         ):
                             plan = self.parent_pattern.current_plan
                         if plan is not None:
@@ -1107,6 +1117,23 @@ class PlanExecutor:
             raise
 
         item_results.sort(key=lambda result: result["item_index"])
+        execution_tree = ExecutionNode(
+            node_id=runtime_step_id,
+            node_type="map",
+            status=StepStatus.COMPLETED.value,
+            parent_node_id=self._current_parent_map_step_id,
+            runtime_step_id=runtime_step_id,
+            template_step_id=step.id,
+            name=step.name,
+            children=[
+                self._build_collection_plan_execution_node(
+                    parent_runtime_step_id=runtime_step_id,
+                    collection_plan=collection_plan,
+                    step_prefix=collection_prefix,
+                ),
+                *[item_result["execution_tree"] for item_result in item_results],
+            ],
+        ).to_dict()
         result = {
             "success": True,
             "mode": "map",
@@ -1114,6 +1141,7 @@ class PlanExecutor:
             "item_count": len(chunks),
             "chunk_size": step.map_spec.chunk_size,
             "results": item_results,
+            "execution_tree": execution_tree,
         }
         step.completed_at = datetime.now()
         await trace_step_end(
@@ -1169,7 +1197,25 @@ class PlanExecutor:
         return {
             "item_index": item_index,
             "bindings": {step.map_spec.item_binding: item_value},
-            "output": self._summarize_nested_plan(worker_plan),
+            "status": StepStatus.COMPLETED.value,
+            "worker_instance_id": worker_prefix,
+            "worker_plan": worker_plan.to_dict(),
+            "execution_tree": ExecutionNode(
+                node_id=worker_prefix,
+                node_type="worker_instance",
+                status=StepStatus.COMPLETED.value,
+                parent_node_id=parent_prefix,
+                runtime_step_id=worker_prefix,
+                template_step_id=step.map_spec.item_binding,
+                name=f"Worker {item_index + 1}",
+                bindings={step.map_spec.item_binding: item_value},
+                children=self._build_execution_children_from_plan(
+                    worker_plan,
+                    worker_prefix,
+                    worker_prefix,
+                ),
+            ).to_dict(),
+            "output": self._summarize_nested_plan(worker_plan, worker_prefix),
         }
 
     def _create_nested_executor(self) -> "PlanExecutor":
@@ -1197,7 +1243,9 @@ class PlanExecutor:
             else None
         )
         conversation_history = None
-        if self.parent_pattern and hasattr(self.parent_pattern, "_get_messages_for_llm"):
+        if self.parent_pattern and hasattr(
+            self.parent_pattern, "_get_messages_for_llm"
+        ):
             conversation_history = self.parent_pattern._get_messages_for_llm()
 
         messages = await self.context_builder.build_context_for_step(
@@ -1219,7 +1267,9 @@ class PlanExecutor:
         self, step: PlanStep, collection_plan: ExecutionPlan
     ) -> List[Any]:
         assert step.map_spec is not None
-        output_step = collection_plan.get_step_by_id(step.map_spec.collection_output.step_id)
+        output_step = collection_plan.get_step_by_id(
+            step.map_spec.collection_output.step_id
+        )
         if output_step is None:
             raise DAGStepError(
                 step_id=step.id,
@@ -1293,14 +1343,71 @@ class PlanExecutor:
             return items
         return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
-    def _summarize_nested_plan(self, plan: ExecutionPlan) -> Dict[str, Any]:
+    def _build_execution_children_from_plan(
+        self,
+        plan: ExecutionPlan,
+        step_prefix: str,
+        parent_node_id: str,
+    ) -> List[Dict[str, Any]]:
+        children: List[Dict[str, Any]] = []
+        for step in plan.steps:
+            runtime_step_id = f"{step_prefix}::{step.id}" if step_prefix else step.id
+            if step.step_kind == StepKind.MAP:
+                if isinstance(step.result, dict) and isinstance(
+                    step.result.get("execution_tree"), dict
+                ):
+                    children.append(step.result["execution_tree"])
+                    continue
+
+            children.append(
+                ExecutionNode(
+                    node_id=runtime_step_id,
+                    node_type="step",
+                    status=step.status.value,
+                    parent_node_id=parent_node_id,
+                    runtime_step_id=runtime_step_id,
+                    template_step_id=step.id,
+                    name=step.name,
+                    result=step.result,
+                    error=step.error,
+                ).to_dict()
+            )
+        return children
+
+    def _build_collection_plan_execution_node(
+        self,
+        *,
+        parent_runtime_step_id: str,
+        collection_plan: ExecutionPlan,
+        step_prefix: str,
+    ) -> ExecutionNode:
+        return ExecutionNode(
+            node_id=f"{parent_runtime_step_id}::collection_plan",
+            node_type="collection_plan",
+            status=StepStatus.COMPLETED.value,
+            parent_node_id=parent_runtime_step_id,
+            runtime_step_id=f"{parent_runtime_step_id}::collection_plan",
+            name=collection_plan.task_name or collection_plan.goal,
+            children=self._build_execution_children_from_plan(
+                collection_plan,
+                step_prefix,
+                f"{parent_runtime_step_id}::collection_plan",
+            ),
+        )
+
+    def _summarize_nested_plan(
+        self, plan: ExecutionPlan, step_prefix: Optional[str] = None
+    ) -> Dict[str, Any]:
         return {
             "plan_id": plan.id,
             "goal": plan.goal,
             "task_name": plan.task_name,
             "steps": [
                 {
-                    "step_id": step.id,
+                    "step_id": (
+                        f"{step_prefix}::{step.id}" if step_prefix else step.id
+                    ),
+                    "template_step_id": step.id,
                     "name": step.name,
                     "status": step.status.value,
                     "result": step.result,

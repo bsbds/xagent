@@ -91,6 +91,41 @@ class MapSpec:
 
 
 @dataclass
+class ExecutionNode:
+    """Runtime execution tree node."""
+
+    node_id: str
+    node_type: str
+    status: str
+    parent_node_id: Optional[str] = None
+    runtime_step_id: Optional[str] = None
+    template_step_id: Optional[str] = None
+    name: Optional[str] = None
+    bindings: Dict[str, Any] = field(default_factory=dict)
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    children: List["ExecutionNode"] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "node_id": self.node_id,
+            "node_type": self.node_type,
+            "status": self.status,
+            "parent_node_id": self.parent_node_id,
+            "runtime_step_id": self.runtime_step_id,
+            "template_step_id": self.template_step_id,
+            "name": self.name,
+            "bindings": self.bindings,
+            "result": self.result,
+            "error": self.error,
+            "children": [
+                child.to_dict() if isinstance(child, ExecutionNode) else child
+                for child in self.children
+            ],
+        }
+
+
+@dataclass
 class PlanStep:
     """A single step in the execution plan with dependency support"""
 
@@ -220,9 +255,7 @@ class PlanStep:
             error_type=data.get("error_type"),
             error_traceback=data.get("error_traceback"),
             started_at=datetime.fromisoformat(started_at) if started_at else None,
-            completed_at=datetime.fromisoformat(completed_at)
-            if completed_at
-            else None,
+            completed_at=datetime.fromisoformat(completed_at) if completed_at else None,
             context=data.get("context", {}),
             difficulty=data.get("difficulty", "hard"),
             conditional_branches=data.get("conditional_branches", {}),

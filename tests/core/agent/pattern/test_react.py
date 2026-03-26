@@ -561,5 +561,28 @@ async def test_react_uses_action_schema_for_openai_responses():
     assert "default" not in schema["properties"]["tool_name"]
 
 
+@pytest.mark.asyncio
+async def test_react_forwards_tools_to_openai_responses_models():
+    llm = MockWrappedResponsesLLM()
+    pattern = ReActPattern(llm, max_iterations=1)
+    pattern.set_step_context(step_id="tool_step", step_name="tool_test")
+
+    result = await pattern.run_with_context(
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": "Use the calculator if needed"},
+        ],
+        tools=[MockCalculatorTool()],
+        max_iterations=1,
+    )
+
+    assert result["success"] is True
+    assert llm.captured_kwargs is not None
+    assert "tools" in llm.captured_kwargs
+    assert llm.captured_kwargs["tool_choice"] == "auto"
+    assert llm.captured_kwargs["tools"][0]["type"] == "function"
+    assert llm.captured_kwargs["tools"][0]["function"]["name"] == "calculator"
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
