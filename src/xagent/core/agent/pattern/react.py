@@ -1504,6 +1504,9 @@ Failed final answer:
                         "schema": action_schema,
                     }
                 }
+                if tool_schemas:
+                    chat_kwargs["tools"] = tool_schemas
+                    chat_kwargs["tool_choice"] = "auto"
                 logger.debug("Using json_schema format.")
 
             else:
