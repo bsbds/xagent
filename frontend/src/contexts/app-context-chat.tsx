@@ -256,11 +256,14 @@ interface Task {
 
 interface StepExecution {
   id: string
+  runtime_step_id?: string
+  template_step_id?: string
   name: string
   description: string
   status: "pending" | "running" | "completed" | "failed" | "skipped"
   tool_names?: string[]
   dependencies: string[]
+  runtime_dependencies?: string[]
   started_at?: string | number
   completed_at?: string | number
   result_data?: unknown
@@ -271,6 +274,11 @@ interface StepExecution {
   is_conditional?: boolean
   step_kind?: "normal" | "map"
   map_spec?: Record<string, unknown> | null
+  parent_map_step_id?: string | null
+  worker_instance_id?: string | null
+  worker_item_index?: number | null
+  worker_depth?: number
+  execution_scope?: string | null
 }
 
 interface TraceEvent {
@@ -333,11 +341,14 @@ interface AppState {
 
 const normalizePlanStep = (step: any, existingStep?: StepExecution): StepExecution => ({
   id: step.id,
+  runtime_step_id: step.runtime_step_id || existingStep?.runtime_step_id || step.id,
+  template_step_id: step.template_step_id || existingStep?.template_step_id || step.id,
   name: step.name || step.id,
   description: step.description || "",
   status: existingStep?.status || step.status || "pending",
   tool_names: step.tool_name ? [step.tool_name] : step.tool_names || [],
   dependencies: step.dependencies || [],
+  runtime_dependencies: step.runtime_dependencies || existingStep?.runtime_dependencies || [],
   started_at: existingStep?.started_at || step.started_at,
   completed_at: existingStep?.completed_at || step.completed_at,
   result_data: step.result_data,
@@ -348,6 +359,11 @@ const normalizePlanStep = (step: any, existingStep?: StepExecution): StepExecuti
   is_conditional: step.is_conditional || false,
   step_kind: step.step_kind || "normal",
   map_spec: step.map_spec || null,
+  parent_map_step_id: step.parent_map_step_id ?? existingStep?.parent_map_step_id ?? null,
+  worker_instance_id: step.worker_instance_id ?? existingStep?.worker_instance_id ?? null,
+  worker_item_index: step.worker_item_index ?? existingStep?.worker_item_index ?? null,
+  worker_depth: step.worker_depth ?? existingStep?.worker_depth ?? 0,
+  execution_scope: step.execution_scope ?? existingStep?.execution_scope ?? null,
 })
 
 type AppAction =
@@ -493,7 +509,13 @@ function appReducer(state: AppState, action: AppAction): AppState {
         const shouldUpdate = newStep.name !== existingStep.name ||
                            newStep.description !== existingStep.description ||
                            !arraysEqual(newStep.tool_names || [], existingStep.tool_names || []) ||
-                           newStep.status !== existingStep.status
+                           newStep.status !== existingStep.status ||
+                           !arraysEqual(newStep.runtime_dependencies || [], existingStep.runtime_dependencies || []) ||
+                           newStep.parent_map_step_id !== existingStep.parent_map_step_id ||
+                           newStep.worker_instance_id !== existingStep.worker_instance_id ||
+                           newStep.worker_item_index !== existingStep.worker_item_index ||
+                           newStep.worker_depth !== existingStep.worker_depth ||
+                           newStep.execution_scope !== existingStep.execution_scope
 
         if (shouldUpdate) {
           const mergedStep = {
@@ -511,6 +533,14 @@ function appReducer(state: AppState, action: AppAction): AppState {
             conditional_branches: newStep.conditional_branches && Object.keys(newStep.conditional_branches).length > 0 ? newStep.conditional_branches : existingStep.conditional_branches || {},
             required_branch: newStep.required_branch ?? existingStep.required_branch ?? null,
             is_conditional: newStep.is_conditional ?? existingStep.is_conditional ?? false,
+            runtime_step_id: newStep.runtime_step_id || existingStep.runtime_step_id || newStep.id,
+            template_step_id: newStep.template_step_id || existingStep.template_step_id || newStep.id,
+            runtime_dependencies: newStep.runtime_dependencies && newStep.runtime_dependencies.length > 0 ? newStep.runtime_dependencies : existingStep.runtime_dependencies || [],
+            parent_map_step_id: newStep.parent_map_step_id ?? existingStep.parent_map_step_id ?? null,
+            worker_instance_id: newStep.worker_instance_id ?? existingStep.worker_instance_id ?? null,
+            worker_item_index: newStep.worker_item_index ?? existingStep.worker_item_index ?? null,
+            worker_depth: newStep.worker_depth ?? existingStep.worker_depth ?? 0,
+            execution_scope: newStep.execution_scope ?? existingStep.execution_scope ?? null,
           }
           return {
             ...state,
@@ -1445,11 +1475,14 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             const existingStep = state.steps.find(s => s.id === (message.step_id || eventData.step_id || stepName))
             const step: StepExecution = {
               id: message.step_id || eventData.step_id || stepName,
+              runtime_step_id: eventData.runtime_step_id || message.step_id || eventData.step_id || stepName,
+              template_step_id: eventData.template_step_id || eventData.step_id || stepName,
               name: stepName,
               description: eventData.description || "",
               status: "running",
               tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
               dependencies: existingStep?.dependencies || [],
+              runtime_dependencies: eventData.runtime_dependencies || existingStep?.runtime_dependencies || [],
               started_at: eventData.started_at || message.timestamp,
               completed_at: eventData.completed_at,
               result_data: eventData.result_data,
@@ -1458,6 +1491,11 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               conditional_branches: eventData.conditional_branches || existingStep?.conditional_branches || {},
               required_branch: eventData.required_branch ?? existingStep?.required_branch ?? null,
               is_conditional: eventData.is_conditional ?? existingStep?.is_conditional ?? false,
+              parent_map_step_id: eventData.parent_map_step_id ?? existingStep?.parent_map_step_id ?? null,
+              worker_instance_id: eventData.worker_instance_id ?? existingStep?.worker_instance_id ?? null,
+              worker_item_index: eventData.worker_item_index ?? existingStep?.worker_item_index ?? null,
+              worker_depth: eventData.worker_depth ?? existingStep?.worker_depth ?? 0,
+              execution_scope: eventData.execution_scope ?? existingStep?.execution_scope ?? null,
             }
             dispatch({ type: "ADD_STEP", payload: step })
 
@@ -1473,6 +1511,14 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 description: eventData.description,
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
                 started_at: eventData.started_at || message.timestamp,
+                runtime_step_id: eventData.runtime_step_id,
+                template_step_id: eventData.template_step_id,
+                runtime_dependencies: eventData.runtime_dependencies || [],
+                parent_map_step_id: eventData.parent_map_step_id,
+                worker_instance_id: eventData.worker_instance_id,
+                worker_item_index: eventData.worker_item_index,
+                worker_depth: eventData.worker_depth,
+                execution_scope: eventData.execution_scope,
               }
             }
             dispatch({ type: "ADD_TRACE_EVENT", payload: traceEvent })
@@ -1481,13 +1527,17 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             console.log('✅ dag_step_end:', stepName, JSON.stringify(message))
 
             // dag_step_end has step_id, should update right-side step data, do not display message on the left
+            const existingStep = state.steps.find(s => s.id === (message.step_id || eventData.step_id || stepName))
             const step: StepExecution = {
               id: message.step_id || eventData.step_id || stepName,
+              runtime_step_id: eventData.runtime_step_id || message.step_id || eventData.step_id || stepName,
+              template_step_id: eventData.template_step_id || eventData.step_id || stepName,
               name: stepName,
               description: eventData.description || "",
               status: eventData.status || "completed",
               tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
               dependencies: [],
+              runtime_dependencies: eventData.runtime_dependencies || existingStep?.runtime_dependencies || [],
               // Don't override started_at from end event to preserve the original start time
               started_at: undefined, // Let the reducer handle preserving existing started_at
               completed_at: eventData.completed_at || message.timestamp,
@@ -1497,6 +1547,11 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               conditional_branches: eventData.conditional_branches || {},
               required_branch: eventData.required_branch || null,
               is_conditional: eventData.is_conditional || false,
+              parent_map_step_id: eventData.parent_map_step_id ?? existingStep?.parent_map_step_id ?? null,
+              worker_instance_id: eventData.worker_instance_id ?? existingStep?.worker_instance_id ?? null,
+              worker_item_index: eventData.worker_item_index ?? existingStep?.worker_item_index ?? null,
+              worker_depth: eventData.worker_depth ?? existingStep?.worker_depth ?? 0,
+              execution_scope: eventData.execution_scope ?? existingStep?.execution_scope ?? null,
             }
             dispatch({ type: "ADD_STEP", payload: step })
 
@@ -1515,6 +1570,14 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 result_data: eventData.result_data,
                 step_data: eventData.step_data,
                 file_outputs: eventData.file_outputs || [],
+                runtime_step_id: eventData.runtime_step_id,
+                template_step_id: eventData.template_step_id,
+                runtime_dependencies: eventData.runtime_dependencies || [],
+                parent_map_step_id: eventData.parent_map_step_id,
+                worker_instance_id: eventData.worker_instance_id,
+                worker_item_index: eventData.worker_item_index,
+                worker_depth: eventData.worker_depth,
+                execution_scope: eventData.execution_scope,
               }
             }
             dispatch({ type: "ADD_TRACE_EVENT", payload: traceEvent })
@@ -1536,11 +1599,14 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             // Update step status
             const step: StepExecution = {
               id: stepId,
+              runtime_step_id: eventData.runtime_step_id || stepId,
+              template_step_id: eventData.template_step_id || stepId,
               name: stepName,
               description: eventData.description || "",
               status: "failed",
               tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
               dependencies: existingStep?.dependencies || [],
+              runtime_dependencies: eventData.runtime_dependencies || existingStep?.runtime_dependencies || [],
               started_at: eventData.started_at || existingStep?.started_at,
               completed_at: eventData.completed_at || message.timestamp,
               result_data: eventData.result_data,
@@ -1549,6 +1615,11 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               conditional_branches: eventData.conditional_branches || existingStep?.conditional_branches || {},
               required_branch: eventData.required_branch ?? existingStep?.required_branch ?? null,
               is_conditional: eventData.is_conditional ?? existingStep?.is_conditional ?? false,
+              parent_map_step_id: eventData.parent_map_step_id ?? existingStep?.parent_map_step_id ?? null,
+              worker_instance_id: eventData.worker_instance_id ?? existingStep?.worker_instance_id ?? null,
+              worker_item_index: eventData.worker_item_index ?? existingStep?.worker_item_index ?? null,
+              worker_depth: eventData.worker_depth ?? existingStep?.worker_depth ?? 0,
+              execution_scope: eventData.execution_scope ?? existingStep?.execution_scope ?? null,
             }
             dispatch({ type: "ADD_STEP", payload: step })
 
@@ -1582,6 +1653,14 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 tool_names: eventData.tool_name ? [eventData.tool_name] : eventData.tool_names || [],
                 error: eventData.error,
                 completed_at: eventData.completed_at || message.timestamp,
+                runtime_step_id: eventData.runtime_step_id,
+                template_step_id: eventData.template_step_id,
+                runtime_dependencies: eventData.runtime_dependencies || [],
+                parent_map_step_id: eventData.parent_map_step_id,
+                worker_instance_id: eventData.worker_instance_id,
+                worker_item_index: eventData.worker_item_index,
+                worker_depth: eventData.worker_depth,
+                execution_scope: eventData.execution_scope,
               }
             }
             dispatch({ type: "ADD_TRACE_EVENT", payload: traceEvent })

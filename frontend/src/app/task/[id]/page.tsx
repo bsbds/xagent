@@ -210,38 +210,90 @@ function TaskDetailContent() {
   dagreGraph.setDefaultEdgeLabel(() => '');
 
   const validSteps = state.steps.filter(step => step && typeof step.id === 'string' && step.id.trim() !== '');
+  const workerGroups = Array.from(
+    new Map(
+      validSteps
+        .filter((step: any) => !!step.worker_instance_id)
+        .map((step: any) => [
+          step.worker_instance_id,
+          {
+            id: step.worker_instance_id,
+            label: `Worker ${typeof step.worker_item_index === 'number' ? step.worker_item_index + 1 : step.worker_instance_id}`,
+            parentMapStepId: step.parent_map_step_id,
+            status: step.status,
+          },
+        ])
+    ).values()
+  )
 
-  // Set nodes
-  validSteps.forEach((step, index) => {
+  const graphNodes = [
+    ...validSteps.map((step, index) => ({
+      id: step.id,
+      label: step.name || `Step ${index + 1}`,
+      width: 250,
+      height: 200,
+      node_kind: "step" as const,
+      sourceStep: step,
+    })),
+    ...workerGroups.map((group) => ({
+      id: group.id,
+      label: group.label,
+      width: 220,
+      height: 80,
+      node_kind: "worker_group" as const,
+      sourceStep: group,
+    })),
+  ];
+
+  graphNodes.forEach((node) => {
     try {
-      dagreGraph.setNode(step.id, {
-        label: step.name || `Step ${index + 1}`,
-        width: 250,
-        height: 200,
+      dagreGraph.setNode(node.id, {
+        label: node.label,
+        width: node.width,
+        height: node.height,
       });
     } catch (error) {
-      console.error('Error adding node to dagre:', step, error);
+      console.error('Error adding node to dagre:', node, error);
     }
   });
 
-  // Set edges
-  validSteps.forEach((step) => {
-    if (!step.dependencies || !Array.isArray(step.dependencies)) {
+  const graphEdges: Array<{ source: string; target: string }> = [];
+  validSteps.forEach((step: any) => {
+    const runtimeDeps = Array.isArray(step.runtime_dependencies) && step.runtime_dependencies.length > 0
+      ? step.runtime_dependencies
+      : (Array.isArray(step.dependencies) ? step.dependencies : []);
+
+    if (runtimeDeps.length > 0) {
+      runtimeDeps.forEach((depId: string) => {
+        if (depId && typeof depId === 'string' && depId.trim() !== '') {
+          graphEdges.push({ source: depId, target: step.id });
+        }
+      });
       return;
     }
-    step.dependencies.forEach(depId => {
-      if (!depId || typeof depId !== 'string' || depId.trim() === '') {
-        return;
-      }
-      const depStep = validSteps.find(s => s.id === depId);
-      if (depStep) {
-        try {
-          dagreGraph.setEdge(depId, step.id, {});
-        } catch (error) {
-          console.error('Error adding edge to dagre:', `${depId} -> ${step.id}`, error);
-        }
-      }
-    });
+
+    if (step.worker_instance_id) {
+      graphEdges.push({ source: step.worker_instance_id, target: step.id });
+      return;
+    }
+
+    if (step.parent_map_step_id) {
+      graphEdges.push({ source: step.parent_map_step_id, target: step.id });
+    }
+  });
+
+  workerGroups.forEach((group) => {
+    if (group.parentMapStepId) {
+      graphEdges.push({ source: group.parentMapStepId, target: group.id });
+    }
+  });
+
+  graphEdges.forEach(({ source, target }) => {
+    try {
+      dagreGraph.setEdge(source, target, {});
+    } catch (error) {
+      console.error('Error adding edge to dagre:', `${source} -> ${target}`, error);
+    }
   });
 
   let dagreLayoutSuccessful = true;
@@ -252,13 +304,14 @@ function TaskDetailContent() {
     dagreLayoutSuccessful = false;
   }
 
-  const dagNodes = state.steps.map((step, index) => {
+  const dagNodes = graphNodes.map((graphNode, index) => {
+    const step: any = graphNode.sourceStep;
     let node: any, safeNode: any;
-    if (!step.id || typeof step.id !== 'string' || step.id.trim() === '') {
+    if (!graphNode.id || typeof graphNode.id !== 'string' || graphNode.id.trim() === '') {
       safeNode = { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 };
     } else if (dagreLayoutSuccessful) {
       try {
-        node = dagreGraph.node(step.id);
+        node = dagreGraph.node(graphNode.id);
         safeNode = typeof node === 'object' && node !== null ? node : { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 };
       } catch (error) {
         safeNode = { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 };
@@ -267,12 +320,13 @@ function TaskDetailContent() {
       safeNode = { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 };
     }
     return {
-      id: step.id || `step-${index}`,
+      id: graphNode.id || `step-${index}`,
       type: "default",
       position: { x: (safeNode.x || 0) - 125, y: (safeNode.y || 0) - 100 },
       data: {
-        label: step.name || `Step ${index + 1}`,
-        status: step.status,
+        label: graphNode.label,
+        node_kind: graphNode.node_kind,
+        status: step.status || "pending",
         description: step.description,
         tool_names: step.tool_names,
         started_at: step.started_at,
@@ -286,26 +340,17 @@ function TaskDetailContent() {
   });
 
   const dagEdges: any[] = [];
-  const validNodeIds = new Set(validSteps.map(s => s.id));
+  const validNodeIds = new Set(graphNodes.map(s => s.id));
   if (dagreLayoutSuccessful) {
-    validSteps.forEach((step) => {
-      if (!step.dependencies || !Array.isArray(step.dependencies)) {
-        return;
+    graphEdges.forEach(({ source, target }) => {
+      if (validNodeIds.has(source) && validNodeIds.has(target)) {
+        dagEdges.push({
+          id: `${source}-${target}`,
+          source,
+          target,
+          data: {}
+        });
       }
-      step.dependencies.forEach(depId => {
-        if (!depId || typeof depId !== 'string' || depId.trim() === '') {
-          return;
-        }
-        if (validNodeIds.has(depId) && validNodeIds.has(step.id)) {
-          const edge = {
-            id: `${depId}-${step.id}`,
-            source: depId,
-            target: step.id,
-            data: {}
-          };
-          dagEdges.push(edge);
-        }
-      });
     });
   }
 

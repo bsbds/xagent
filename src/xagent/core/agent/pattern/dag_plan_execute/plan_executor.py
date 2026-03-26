@@ -83,6 +83,11 @@ class PlanExecutor:
         self._current_bindings: Dict[str, Any] = {}
         self._step_id_prefix: Optional[str] = None
         self._step_output_contracts: Dict[str, str] = {}
+        self._current_parent_map_step_id: Optional[str] = None
+        self._current_worker_instance_id: Optional[str] = None
+        self._current_worker_item_index: Optional[int] = None
+        self._current_worker_depth: int = 0
+        self._current_execution_scope: str = "top_level"
 
     def reset(self) -> None:
         """Reset execution-specific state before starting a fresh task."""
@@ -101,6 +106,11 @@ class PlanExecutor:
         bindings: Optional[Dict[str, Any]] = None,
         step_id_prefix: Optional[str] = None,
         step_output_contracts: Optional[Dict[str, str]] = None,
+        parent_map_step_id: Optional[str] = None,
+        worker_instance_id: Optional[str] = None,
+        worker_item_index: Optional[int] = None,
+        worker_depth: int = 0,
+        execution_scope: str = "top_level",
     ) -> List[Dict[str, Any]]:
         """Execute the plan using queue-driven concurrent execution
 
@@ -112,6 +122,11 @@ class PlanExecutor:
             bindings: Optional structured bindings for nested map execution
             step_id_prefix: Optional runtime prefix for nested step instance IDs
             step_output_contracts: Optional per-step output contract instructions
+            parent_map_step_id: Optional runtime id of the parent map step for nested execution
+            worker_instance_id: Optional runtime id of the current worker instance
+            worker_item_index: Optional mapped item index
+            worker_depth: Nesting depth for worker execution
+            execution_scope: top_level | map_collection | map_worker
         """
         logger.info(
             f"Executing plan {plan.id} with {len(plan.steps)} steps (max concurrency: {self.max_concurrency})"
@@ -124,6 +139,11 @@ class PlanExecutor:
         self._current_bindings = dict(bindings or {})
         self._step_id_prefix = step_id_prefix
         self._step_output_contracts = dict(step_output_contracts or {})
+        self._current_parent_map_step_id = parent_map_step_id
+        self._current_worker_instance_id = worker_instance_id
+        self._current_worker_item_index = worker_item_index
+        self._current_worker_depth = worker_depth
+        self._current_execution_scope = execution_scope
 
         # Trace execution start
         trace_task_id = f"execute_{plan.id}"
@@ -563,6 +583,11 @@ class PlanExecutor:
         self._current_bindings = {}
         self._step_id_prefix = None
         self._step_output_contracts = {}
+        self._current_parent_map_step_id = None
+        self._current_worker_instance_id = None
+        self._current_worker_item_index = None
+        self._current_worker_depth = 0
+        self._current_execution_scope = "top_level"
         return execution_results
 
     def pause_execution(self) -> None:
@@ -597,6 +622,25 @@ class PlanExecutor:
             return f"{self._step_id_prefix}::{step_id}"
         return step_id
 
+    def _build_runtime_dependency_ids(self, dependencies: List[str]) -> List[str]:
+        return [self._build_runtime_step_id(dep) for dep in dependencies]
+
+    def _build_execution_metadata(
+        self, runtime_step_id: str, step: PlanStep
+    ) -> Dict[str, Any]:
+        return {
+            "runtime_step_id": runtime_step_id,
+            "template_step_id": step.id,
+            "runtime_dependencies": self._build_runtime_dependency_ids(
+                step.dependencies
+            ),
+            "parent_map_step_id": self._current_parent_map_step_id,
+            "worker_instance_id": self._current_worker_instance_id,
+            "worker_item_index": self._current_worker_item_index,
+            "worker_depth": self._current_worker_depth,
+            "execution_scope": self._current_execution_scope,
+        }
+
     async def _execute_step_with_react_agent(
         self,
         step: PlanStep,
@@ -626,6 +670,7 @@ class PlanExecutor:
             "description": step.description[:200] if step.description else "",
             "status": "starting",
             "start_time": datetime.now().isoformat(),
+            **self._build_execution_metadata(runtime_step_id, step),
         }
         await trace_step_start(
             self.tracer,
@@ -817,6 +862,7 @@ class PlanExecutor:
                 "end_time": step.completed_at.isoformat()
                 if step.completed_at
                 else None,
+                **self._build_execution_metadata(runtime_step_id, step),
             }
 
             # Extract meaningful execution details from result if available
@@ -942,7 +988,7 @@ class PlanExecutor:
 
             # Trace step failure with detailed error information
             error_trace_data = {
-                "step_id": step.id,
+                "step_id": runtime_step_id,
                 "step_name": step.name,
                 "error": str(e),
                 "error_type": type(e).__name__,
@@ -954,6 +1000,7 @@ class PlanExecutor:
                 if step.completed_at
                 else None,
                 "error_traceback": step.error_traceback,
+                **self._build_execution_metadata(runtime_step_id, step),
             }
             await trace_error(
                 self.tracer,
@@ -990,6 +1037,7 @@ class PlanExecutor:
                 "dependencies": step.dependencies,
                 "status": "starting",
                 "start_time": step.started_at.isoformat(),
+                **self._build_execution_metadata(runtime_step_id, step),
             },
         )
 
@@ -1026,6 +1074,9 @@ class PlanExecutor:
             bindings=self._current_bindings,
             step_id_prefix=collection_prefix,
             step_output_contracts=collection_step_output_contracts,
+            parent_map_step_id=runtime_step_id,
+            worker_depth=self._current_worker_depth + 1,
+            execution_scope="map_collection",
         )
 
         items = self._extract_collection_items(step, collection_plan)
@@ -1108,6 +1159,11 @@ class PlanExecutor:
             external_context_messages=parent_context_messages,
             bindings=bindings,
             step_id_prefix=worker_prefix,
+            parent_map_step_id=parent_prefix,
+            worker_instance_id=worker_prefix,
+            worker_item_index=item_index,
+            worker_depth=self._current_worker_depth + 1,
+            execution_scope="map_worker",
         )
 
         return {

@@ -10,14 +10,18 @@ import { ChevronDown, ChevronRight, Clock, Wrench, FileText, Database, Activity,
 import { LogEvent } from "@/components/log/log-event"
 import { useApp } from "@/contexts/app-context"
 import { useI18n } from "@/contexts/i18n-context"
+import { cn } from "@/lib/utils"
 
 interface StepExecution {
   id: string
+  runtime_step_id?: string
+  template_step_id?: string
   name: string
   description: string
   status: "pending" | "running" | "completed" | "failed" | "skipped"
   tool_names?: string[]
   dependencies: string[]
+  runtime_dependencies?: string[]
   started_at?: string | number
   completed_at?: string | number
   result_data?: unknown
@@ -47,6 +51,11 @@ interface StepExecution {
       steps?: PlanStepData[]
     }
   } | null
+  parent_map_step_id?: string | null
+  worker_instance_id?: string | null
+  worker_item_index?: number | null
+  worker_depth?: number
+  execution_scope?: string | null
 }
 
 interface PlanStepData {
@@ -136,6 +145,129 @@ function NestedPlanView({
         ))}
       </div>
     </div>
+  )
+}
+
+function groupByWorkerInstance(steps: StepExecution[]) {
+  const groups = new Map<string, StepExecution[]>()
+  steps.forEach((step) => {
+    if (!step.worker_instance_id) return
+    const existing = groups.get(step.worker_instance_id) || []
+    existing.push(step)
+    groups.set(step.worker_instance_id, existing)
+  })
+  return groups
+}
+
+function buildOrderedStepIds(steps: StepExecution[]): string[] {
+  const ordered: string[] = []
+  const topLevel = steps.filter(step => !step.parent_map_step_id)
+
+  const walkStep = (step: StepExecution) => {
+    ordered.push(step.id)
+
+    const directChildren = steps.filter(
+      child => child.parent_map_step_id === step.id && !child.worker_instance_id
+    )
+    directChildren.forEach(walkStep)
+
+    const workerSteps = steps.filter(
+      child => child.parent_map_step_id === step.id && !!child.worker_instance_id
+    )
+    const grouped = groupByWorkerInstance(workerSteps)
+    grouped.forEach((groupSteps) => {
+      const directWorkerSteps = groupSteps.filter(
+        groupStep => groupStep.parent_map_step_id === step.id
+      )
+      directWorkerSteps.forEach(walkStep)
+    })
+  }
+
+  topLevel.forEach(walkStep)
+  return ordered
+}
+
+function ExecutionTree({
+  steps,
+  selectedStepId,
+  onSelect,
+}: {
+  steps: StepExecution[]
+  selectedStepId?: string
+  onSelect?: (stepId: string) => void
+}) {
+  const renderStepRow = (step: StepExecution, depth: number) => (
+    <button
+      key={step.id}
+      onClick={() => onSelect?.(step.id)}
+      className={cn(
+        "w-full text-left rounded border px-3 py-2 transition-colors",
+        selectedStepId === step.id ? "border-primary bg-primary/10" : "border-border bg-card/40 hover:bg-muted/40"
+      )}
+      style={{ marginLeft: `${depth * 16}px` }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          {step.step_kind === "map" && <Repeat className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+          <span className="text-sm font-medium truncate">{step.name}</span>
+        </div>
+        <Badge variant="outline" className="text-[10px] shrink-0">{step.status}</Badge>
+      </div>
+    </button>
+  )
+
+  const renderChildren = (parentStepId: string, depth: number): React.ReactNode[] => {
+    const rows: React.ReactNode[] = []
+    const directChildren = steps.filter(
+      step => step.parent_map_step_id === parentStepId && !step.worker_instance_id
+    )
+
+    directChildren.forEach((step) => {
+      rows.push(renderStepRow(step, depth))
+      rows.push(...renderChildren(step.id, depth + 1))
+    })
+
+    const workerSteps = steps.filter(
+      step => step.parent_map_step_id === parentStepId && !!step.worker_instance_id
+    )
+    const workerGroups = groupByWorkerInstance(workerSteps)
+    workerGroups.forEach((groupSteps, workerInstanceId) => {
+      const itemIndex = groupSteps[0]?.worker_item_index
+      rows.push(
+        <div
+          key={`${workerInstanceId}-header`}
+          className="rounded border border-dashed border-border/70 bg-muted/10 px-3 py-2 text-xs text-muted-foreground"
+          style={{ marginLeft: `${depth * 16}px` }}
+        >
+          Worker {typeof itemIndex === "number" ? itemIndex + 1 : workerInstanceId}
+        </div>
+      )
+      const directWorkerSteps = groupSteps.filter(
+        step => step.parent_map_step_id === parentStepId
+      )
+      directWorkerSteps.forEach((step) => {
+        rows.push(renderStepRow(step, depth + 1))
+        rows.push(...renderChildren(step.id, depth + 2))
+      })
+    })
+
+    return rows
+  }
+
+  const topLevelSteps = steps.filter(step => !step.parent_map_step_id)
+
+  return (
+    <Card className="bg-card/50 border-border">
+      <div className="p-4 space-y-2">
+        <div className="text-base font-medium text-foreground">Execution Tree</div>
+        {topLevelSteps.map((step) => (
+          <div key={`tree-${step.id}`} className="space-y-2">
+            {renderStepRow(step, 0)}
+            {renderChildren(step.id, 1)}
+          </div>
+        ))}
+      </div>
+    </Card>
   )
 }
 
@@ -517,6 +649,7 @@ export function RightPanel({
 }: RightPanelProps) {
   const { t } = useI18n()
   const selectedStep = steps.find(step => step.id === selectedStepId)
+  const orderedStepIds = buildOrderedStepIds(steps)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const prevTraceEventsCountRef = useRef(traceEvents.length)
@@ -527,9 +660,9 @@ export function RightPanel({
   // Auto-select the first step if none is selected
   useEffect(() => {
     if (steps.length > 0 && !selectedStepId) {
-      onStepSelect?.(steps[0].id)
+      onStepSelect?.(orderedStepIds[0] || steps[0].id)
     }
-  }, [steps, selectedStepId, onStepSelect])
+  }, [steps, orderedStepIds, selectedStepId, onStepSelect])
 
   // Auto-scroll to running step when step status changes
   useEffect(() => {
@@ -645,17 +778,17 @@ export function RightPanel({
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
-                const currentIndex = steps.findIndex(s => s.id === selectedStepId)
+                const currentIndex = orderedStepIds.findIndex(id => id === selectedStepId)
                 if (currentIndex > 0) {
                   userManuallySelectedRef.current = true
                   setIsTransitioning(true)
                   setTimeout(() => {
-                    onStepSelect?.(steps[currentIndex - 1].id)
+                    onStepSelect?.(orderedStepIds[currentIndex - 1])
                     setTimeout(() => setIsTransitioning(false), 50)
                   }, 100)
                 }
               }}
-              disabled={!selectedStepId || steps.findIndex(s => s.id === selectedStepId) === 0 || isTransitioning}
+              disabled={!selectedStepId || orderedStepIds.findIndex(id => id === selectedStepId) === 0 || isTransitioning}
               className="p-1 text-sm bg-muted border border-border rounded hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               ← {t("agent.layout.right.buttons.prevStep")}
@@ -665,17 +798,17 @@ export function RightPanel({
             </span>
             <button
               onClick={() => {
-                const currentIndex = steps.findIndex(s => s.id === selectedStepId)
-                if (currentIndex < steps.length - 1) {
+                const currentIndex = orderedStepIds.findIndex(id => id === selectedStepId)
+                if (currentIndex < orderedStepIds.length - 1) {
                   userManuallySelectedRef.current = true
                   setIsTransitioning(true)
                   setTimeout(() => {
-                    onStepSelect?.(steps[currentIndex + 1].id)
+                    onStepSelect?.(orderedStepIds[currentIndex + 1])
                     setTimeout(() => setIsTransitioning(false), 50)
                   }, 100)
                 }
               }}
-              disabled={!selectedStepId || steps.findIndex(s => s.id === selectedStepId) === steps.length - 1 || isTransitioning}
+              disabled={!selectedStepId || orderedStepIds.findIndex(id => id === selectedStepId) === orderedStepIds.length - 1 || isTransitioning}
               className="p-1 text-sm bg-muted border border-border rounded hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               {t("agent.layout.right.buttons.nextStep")} →
@@ -691,6 +824,15 @@ export function RightPanel({
           className={`flex-1 overflow-y-auto transition-opacity duration-200 ${isTransitioning ? 'opacity-50' : 'opacity-100'}`}
         >
           <div className="p-4 space-y-4">
+            <ExecutionTree
+              steps={steps}
+              selectedStepId={selectedStepId}
+              onSelect={(stepId) => {
+                userManuallySelectedRef.current = true
+                onStepSelect?.(stepId)
+              }}
+            />
+
             {/* Step Summary */}
             {selectedStep && (
               <Card className="bg-card/50 border-border">

@@ -91,6 +91,13 @@ interface ProcessedStep {
   stepName: string;
   description: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
+  runtimeStepId?: string;
+  templateStepId?: string;
+  parentMapStepId?: string | null;
+  workerInstanceId?: string | null;
+  workerItemIndex?: number | null;
+  workerDepth?: number;
+  executionScope?: string | null;
   tools: Array<{ function: { name: string } }>;
   reasoning?: string;
   code: string;
@@ -141,6 +148,13 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
           stepName: '',
           description: '',
           status: 'pending',
+          runtimeStepId: stepId,
+          templateStepId: stepId,
+          parentMapStepId: null,
+          workerInstanceId: null,
+          workerItemIndex: null,
+          workerDepth: 0,
+          executionScope: null,
           tools: [],
           reasoning: '',
           code: '',
@@ -153,6 +167,13 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
       const step = stepsMap.get(stepId)!;
       const timestamp = normalizeTimestampMs(event.timestamp);
       const eventId = event.event_id || `event-${index}`;
+      step.runtimeStepId = (event.data?.runtime_step_id as string) || step.runtimeStepId || stepId;
+      step.templateStepId = (event.data?.template_step_id as string) || step.templateStepId || stepId;
+      step.parentMapStepId = (event.data?.parent_map_step_id as string | undefined) ?? step.parentMapStepId ?? null;
+      step.workerInstanceId = (event.data?.worker_instance_id as string | undefined) ?? step.workerInstanceId ?? null;
+      step.workerItemIndex = (event.data?.worker_item_index as number | undefined) ?? step.workerItemIndex ?? null;
+      step.workerDepth = (event.data?.worker_depth as number | undefined) ?? step.workerDepth ?? 0;
+      step.executionScope = (event.data?.execution_scope as string | undefined) ?? step.executionScope ?? null;
 
       // Process different event types
       if (event.event_type === 'dag_step_start' || event.event_type === 'react_task_start') {
@@ -634,6 +655,106 @@ function StepItem({ step, index, onOpenTerminal, onViewDetail, onFileClick }: St
   );
 }
 
+function groupProcessedStepsByWorker(steps: ProcessedStep[]) {
+  const workerGroups = new Map<string, ProcessedStep[]>()
+  steps.forEach((step) => {
+    if (!step.workerInstanceId) return
+    const existing = workerGroups.get(step.workerInstanceId) || []
+    existing.push(step)
+    workerGroups.set(step.workerInstanceId, existing)
+  })
+  return workerGroups
+}
+
+function NestedStepTree({
+  steps,
+  onOpenTerminal,
+  onViewDetail,
+  onFileClick,
+}: {
+  steps: ProcessedStep[]
+  onOpenTerminal: (code: string, output: string, toolName: string, filePath?: string) => void
+  onViewDetail: (action: StepAction) => void
+  onFileClick?: (filePath: string, fileName: string) => void
+}) {
+  const renderChildren = (parentStepId: string, depth: number): React.ReactNode[] => {
+    const rows: React.ReactNode[] = []
+
+    const directChildren = steps.filter(
+      step => step.parentMapStepId === parentStepId && !step.workerInstanceId
+    )
+    directChildren.forEach((step, index) => {
+      rows.push(
+        <div key={`direct-${step.stepId}`} style={{ marginLeft: `${depth * 20}px` }}>
+          <StepItem
+            step={step}
+            index={index}
+            onOpenTerminal={onOpenTerminal}
+            onViewDetail={onViewDetail}
+            onFileClick={onFileClick}
+          />
+        </div>
+      )
+      rows.push(...renderChildren(step.stepId, depth + 1))
+    })
+
+    const workerSteps = steps.filter(
+      step => step.parentMapStepId === parentStepId && !!step.workerInstanceId
+    )
+    const grouped = groupProcessedStepsByWorker(workerSteps)
+    grouped.forEach((groupSteps, workerInstanceId) => {
+      const itemIndex = groupSteps[0]?.workerItemIndex
+      rows.push(
+        <div
+          key={`${workerInstanceId}-header`}
+          className="rounded border border-dashed border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+          style={{ marginLeft: `${depth * 20}px` }}
+        >
+          Worker {typeof itemIndex === "number" ? itemIndex + 1 : workerInstanceId}
+        </div>
+      )
+      const directWorkerSteps = groupSteps.filter(
+        step => step.parentMapStepId === parentStepId
+      )
+      directWorkerSteps.forEach((step, index) => {
+        rows.push(
+          <div key={`worker-${step.stepId}`} style={{ marginLeft: `${(depth + 1) * 20}px` }}>
+            <StepItem
+              step={step}
+              index={index}
+              onOpenTerminal={onOpenTerminal}
+              onViewDetail={onViewDetail}
+              onFileClick={onFileClick}
+            />
+          </div>
+        )
+        rows.push(...renderChildren(step.stepId, depth + 2))
+      })
+    })
+
+    return rows
+  }
+
+  const rootSteps = steps.filter(step => !step.parentMapStepId)
+
+  return (
+    <div className="space-y-4">
+      {rootSteps.map((step, index) => (
+        <div key={step.stepId} className="space-y-3">
+          <StepItem
+            step={step}
+            index={index}
+            onOpenTerminal={onOpenTerminal}
+            onViewDetail={onViewDetail}
+            onFileClick={onFileClick}
+          />
+          {renderChildren(step.stepId, 1)}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // Main TraceEventRenderer Component
 export function TraceEventRenderer({ events }: TraceEventRendererProps) {
   const { t } = useI18n();
@@ -723,16 +844,12 @@ export function TraceEventRenderer({ events }: TraceEventRendererProps) {
       )}
       <div className="flex gap-3">
         <div className="flex-1 space-y-4 overflow-hidden">
-          {steps.map((step, index) => (
-            <StepItem
-              key={step.stepId}
-              step={step}
-              index={index}
-              onOpenTerminal={handleOpenTerminal}
-              onViewDetail={handleViewActionDetail}
-              onFileClick={openFilePreview}
-            />
-          ))}
+          <NestedStepTree
+            steps={steps}
+            onOpenTerminal={handleOpenTerminal}
+            onViewDetail={handleViewActionDetail}
+            onFileClick={openFilePreview}
+          />
         </div>
       </div>
     </div>

@@ -65,6 +65,7 @@ interface DAGNode {
   position: { x: number; y: number }
   data: {
     label: string
+    node_kind?: "step" | "worker_group"
     status: "pending" | "running" | "completed" | "failed" | "skipped"
     description?: string
     tool_names?: string[]
@@ -314,44 +315,89 @@ function AgentContent() {
     }
     return isValid
   })
+  const workerGroups = Array.from(
+    new Map(
+      validSteps
+        .filter((step: any) => !!step.worker_instance_id)
+        .map((step: any) => [
+          step.worker_instance_id,
+          {
+            id: step.worker_instance_id,
+            label: `Worker ${typeof step.worker_item_index === 'number' ? step.worker_item_index + 1 : step.worker_instance_id}`,
+            parentMapStepId: step.parent_map_step_id,
+            status: step.status,
+          },
+        ])
+    ).values()
+  )
 
-  validSteps.forEach((step) => {
+  const graphNodes = [
+    ...validSteps.map((step) => ({
+      id: step.id,
+      label: step.name || step.id,
+      width: 180,
+      height: 60,
+      node_kind: "step" as const,
+      sourceStep: step,
+    })),
+    ...workerGroups.map((group) => ({
+      id: group.id,
+      label: group.label,
+      width: 180,
+      height: 60,
+      node_kind: "worker_group" as const,
+      sourceStep: group,
+    })),
+  ]
+
+  graphNodes.forEach((node) => {
     try {
-      dagreGraph.setNode(step.id, {
-        width: 180,
-        height: 60
+      dagreGraph.setNode(node.id, {
+        width: node.width,
+        height: node.height
       })
     } catch (error) {
-      console.error('Error adding node to dagre:', step.id, error)
+      console.error('Error adding node to dagre:', node.id, error)
     }
   })
 
-  // Add edges to dagre graph based on dependencies (only with valid IDs)
-  validSteps.forEach((step) => {
-    if (!step.dependencies || !Array.isArray(step.dependencies)) {
-      console.warn('Step has invalid dependencies:', step)
+  const graphEdges: Array<{ source: string; target: string }> = []
+  validSteps.forEach((step: any) => {
+    const runtimeDeps = Array.isArray(step.runtime_dependencies) && step.runtime_dependencies.length > 0
+      ? step.runtime_dependencies
+      : (Array.isArray(step.dependencies) ? step.dependencies : [])
+
+    if (runtimeDeps.length > 0) {
+      runtimeDeps.forEach((depId: string) => {
+        if (depId && typeof depId === 'string' && depId.trim() !== '') {
+          graphEdges.push({ source: depId, target: step.id })
+        }
+      })
       return
     }
 
-    step.dependencies.forEach(depId => {
-      // Skip dependencies with empty or invalid IDs
-      if (!depId || typeof depId !== 'string' || depId.trim() === '') {
-        console.warn('Skipping dependency with invalid ID:', depId)
-        return
-      }
+    if (step.worker_instance_id) {
+      graphEdges.push({ source: step.worker_instance_id, target: step.id })
+      return
+    }
 
-      // Only add edge if both nodes exist and have valid IDs
-      const depStep = validSteps.find(s => s.id === depId)
-      if (depStep) {
-        try {
-          dagreGraph.setEdge(depId, step.id, {})
-        } catch (error) {
-          console.error('Error adding edge to dagre:', `${depId} -> ${step.id}`, error)
-        }
-      } else {
-        console.warn('Dependency not found in valid steps:', depId)
-      }
-    })
+    if (step.parent_map_step_id) {
+      graphEdges.push({ source: step.parent_map_step_id, target: step.id })
+    }
+  })
+
+  workerGroups.forEach((group) => {
+    if (group.parentMapStepId) {
+      graphEdges.push({ source: group.parentMapStepId, target: group.id })
+    }
+  })
+
+  graphEdges.forEach(({ source, target }) => {
+    try {
+      dagreGraph.setEdge(source, target, {})
+    } catch (error) {
+      console.error('Error adding edge to dagre:', `${source} -> ${target}`, error)
+    }
   })
 
   // Apply dagre layout
@@ -364,17 +410,18 @@ function AgentContent() {
   }
 
   // Convert steps to DAG nodes using dagre positions or fallback layout
-  const dagNodes: DAGNode[] = state.steps.map((step, index) => {
+  const dagNodes: DAGNode[] = graphNodes.map((graphNode, index) => {
+    const step: any = graphNode.sourceStep
     let node, safeNode
 
     // Skip steps with invalid IDs - use fallback positioning
-    if (!step.id || typeof step.id !== 'string' || step.id.trim() === '') {
+    if (!graphNode.id || typeof graphNode.id !== 'string' || graphNode.id.trim() === '') {
       console.warn('Skipping step with invalid ID:', step)
       safeNode = { x: (index % 3) * 200, y: Math.floor(index / 3) * 100 }
     } else if (dagreLayoutSuccessful) {
       // Use dagre layout if it was successful
       try {
-        node = dagreGraph.node(step.id)
+        node = dagreGraph.node(graphNode.id)
         // Ensure node is an object, not a string (prevents 'points' property error)
         safeNode = typeof node === 'object' && node !== null ? node : { x: (index % 3) * 200, y: Math.floor(index / 3) * 100 }
       } catch (error) {
@@ -388,12 +435,13 @@ function AgentContent() {
     }
 
     return {
-      id: step.id || `step-${index}`, // Ensure always has a valid ID
+      id: graphNode.id || `step-${index}`, // Ensure always has a valid ID
       type: "default",
       position: { x: (safeNode.x || 0) - 90, y: (safeNode.y || 0) - 30 }, // Center the node
       data: {
-        label: step.name || `Step ${index + 1}`, // Ensure always has a label
-        status: step.status,
+        label: step.name || graphNode.label || `Step ${index + 1}`, // Ensure always has a label
+        node_kind: graphNode.node_kind,
+        status: step.status || "pending",
         description: step.description,
         tool_names: step.tool_names,
         started_at: step.started_at,
@@ -408,37 +456,22 @@ function AgentContent() {
 
   // Create edges based on dependencies with better validation
   const dagEdges: DAGEdge[] = []
-  const validNodeIds = new Set(validSteps.map(s => s.id))
+  const validNodeIds = new Set(graphNodes.map(s => s.id))
 
 
   // Only create edges if we have valid node IDs and dagre layout was successful
   if (dagreLayoutSuccessful) {
-    validSteps.forEach((step) => {
-      if (!step.dependencies || !Array.isArray(step.dependencies)) {
-        console.warn('Step has invalid dependencies for edge creation:', step)
-        return
+    graphEdges.forEach(({ source, target }) => {
+      if (validNodeIds.has(source) && validNodeIds.has(target)) {
+        dagEdges.push({
+          id: `${source}-${target}`,
+          source,
+          target,
+          data: {}
+        })
+      } else {
+        console.warn('Skipping edge creation - missing nodes:', { source, target, validNodeIds: Array.from(validNodeIds) })
       }
-
-      step.dependencies.forEach(depId => {
-        // Skip dependencies with invalid IDs
-        if (!depId || typeof depId !== 'string' || depId.trim() === '') {
-          console.warn('Skipping dependency with invalid ID for edge creation:', depId)
-          return
-        }
-
-        // Only create edges if both source and target nodes have valid IDs
-        if (validNodeIds.has(depId) && validNodeIds.has(step.id)) {
-          const edge = {
-            id: `${depId}-${step.id}`,
-            source: depId,
-            target: step.id,
-            data: {}
-          }
-          dagEdges.push(edge)
-        } else {
-          console.warn('Skipping edge creation - missing nodes:', { source: depId, target: step.id, validNodeIds: Array.from(validNodeIds) })
-        }
-      })
     })
   } else {
     console.warn('Skipping edge creation due to dagre layout failure')

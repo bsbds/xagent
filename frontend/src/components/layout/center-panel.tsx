@@ -35,6 +35,7 @@ import { useI18n } from "@/contexts/i18n-context";
 interface DAGNode extends Node {
   data: {
     label: string
+    node_kind?: "step" | "worker_group"
     status: "pending" | "running" | "completed" | "failed" | "skipped"
     description?: string
     tool_names?: string[]
@@ -315,6 +316,7 @@ const nodeTypes: NodeTypes = {
       <div
         className={cn(
           "relative bg-card rounded-2xl border min-w-[200px] max-w-[240px] text-left transition-all hover:shadow-lg group",
+          data.node_kind === "worker_group" ? "border-dashed bg-muted/30" : "",
           selected ? "border-primary shadow-[0_0_0_1px_hsl(var(--primary))] shadow-sm" : "border-border shadow-sm",
           statusStyles[data.status as keyof typeof statusStyles]
         )}
@@ -346,13 +348,15 @@ const nodeTypes: NodeTypes = {
             <div className="flex items-center gap-2.5">
               <div className={cn(
                 "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+                data.node_kind === 'worker_group' ? 'bg-amber-500/10 text-amber-600' :
                 data.status === 'completed' ? 'bg-green-500/10 text-green-600' :
                 data.status === 'running' ? 'bg-blue-500/10 text-blue-600' :
                 data.status === 'failed' ? 'bg-red-500/10 text-red-600' :
                 data.status === 'skipped' ? 'bg-gray-500/10 text-gray-500' :
                 'bg-primary/10 text-primary'
               )}>
-                {data.status === 'completed' ? <CheckCircle2 className="w-4 h-4" /> :
+                {data.node_kind === 'worker_group' ? <LayoutPanelLeft className="w-4 h-4" /> :
+                 data.status === 'completed' ? <CheckCircle2 className="w-4 h-4" /> :
                  data.status === 'running' ? <Loader2 className="w-4 h-4 animate-spin" /> :
                  data.status === 'failed' ? <XCircle className="w-4 h-4 text-red-500" /> :
                  data.status === 'skipped' ? <RotateCcw className="w-4 h-4 text-gray-500" /> :
