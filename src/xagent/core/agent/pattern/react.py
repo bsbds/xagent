@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ...memory import MemoryStore
 from ...model.chat.basic.base import BaseLLM
+from ...model.chat.basic.schema_utils import normalize_structured_output_schema
 from ...tools.adapters.vibe import Tool
 from ..context import AgentContext
 from ..exceptions import (
@@ -1244,6 +1245,7 @@ Rules:
 6. Always provide clear reasoning for your actions
 7. Tool arguments must match the tool's schema
 8. LANGUAGE: You MUST respond in the SAME LANGUAGE as the user's task. If the task is in Chinese, respond in Chinese. If the task is in English, respond in English.
+9. Always provides an `answer` when final_answer is used
 
 Examples:
 
@@ -1484,8 +1486,31 @@ Failed final answer:
         # not actual tool calls. The code then parses the JSON and executes tools.
         tool_schemas = self.tool_registry.get_tool_schemas()
 
-        # Enforce JSON format for all LLMs
-        chat_kwargs["response_format"] = {"type": "json_object"}
+        llm_target = getattr(self.llm, "_inner", self.llm)
+        try:
+            from ...model.chat.basic.openai_responses import OpenAIResponsesLLM
+            from ....web.services.openai_codex_oauth import CodexOAuthResponsesLLM
+
+            if isinstance(llm_target, OpenAIResponsesLLM) or isinstance(
+                llm_target, CodexOAuthResponsesLLM
+            ):
+                action_schema = normalize_structured_output_schema(
+                    Action.model_json_schema()
+                )
+                chat_kwargs["output_config"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "action_schema",
+                        "schema": action_schema,
+                    }
+                }
+                logger.debug("Using json_schema format.")
+
+            else:
+                logger.debug("Using json_object format.")
+                chat_kwargs["response_format"] = {"type": "json_object"}
+        except Exception:
+            chat_kwargs["response_format"] = {"type": "json_object"}
 
         # Disable thinking mode if supported
         if (

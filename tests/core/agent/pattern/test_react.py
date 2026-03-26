@@ -6,6 +6,8 @@ from xagent.core.agent.context import AgentContext
 from xagent.core.agent.pattern.react import ReActPattern
 from xagent.core.memory.base import MemoryResponse, MemoryStore
 from xagent.core.model.chat.basic.base import BaseLLM
+from xagent.core.model.chat.basic.openai_responses import OpenAIResponsesLLM
+from xagent.core.model.chat.types import ChunkType, StreamChunk
 from xagent.core.tools.adapters.vibe import Tool, ToolMetadata
 
 
@@ -104,6 +106,37 @@ class DummyMemoryStore(MemoryStore):
 
     def list_all(self, limit: int = 100, offset: int = 0):
         return []
+
+
+class MockWrappedResponsesLLM(BaseLLM):
+    def __init__(self) -> None:
+        self._model_name = "mock_wrapped_responses_llm"
+        self._abilities = ["chat"]
+        self._inner = OpenAIResponsesLLM(model_name="gpt-5.4-mini")
+        self.captured_kwargs: dict[str, Any] | None = None
+
+    @property
+    def supports_thinking_mode(self) -> bool:
+        return False
+
+    @property
+    def abilities(self) -> list[str]:
+        return self._abilities
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    async def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        raise NotImplementedError
+
+    async def stream_chat(self, messages: list[dict[str, str]], **kwargs):
+        self.captured_kwargs = {"messages": messages, **kwargs}
+        yield StreamChunk(
+            type=ChunkType.TOKEN,
+            delta='{"type":"final_answer","reasoning":"done","answer":"ok","success":true,"error":null}',
+        )
+        yield StreamChunk(type=ChunkType.USAGE, usage={})
 
 
 @pytest.mark.asyncio
@@ -497,6 +530,35 @@ async def test_react_successful_final_answer():
     assert result["success"] is True
     assert result["output"] == "The task has been completed successfully"
     assert result["iterations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_react_uses_action_schema_for_openai_responses():
+    llm = MockWrappedResponsesLLM()
+    pattern = ReActPattern(llm, max_iterations=1)
+    pattern.set_step_context(step_id="schema_step", step_name="schema_test")
+
+    result = await pattern.run_with_context(
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": "Return a final answer"},
+        ],
+        tools=[],
+        max_iterations=1,
+    )
+
+    assert result["success"] is True
+    assert llm.captured_kwargs is not None
+    assert "output_config" in llm.captured_kwargs
+    assert "response_format" not in llm.captured_kwargs
+    assert (
+        llm.captured_kwargs["output_config"]["format"]["schema"]["properties"]["type"]["title"]
+        == "Type"
+    )
+    schema = llm.captured_kwargs["output_config"]["format"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"].keys())
+    assert "default" not in schema["properties"]["tool_name"]
 
 
 if __name__ == "__main__":

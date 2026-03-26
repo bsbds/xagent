@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from ....model.chat.basic.base import BaseLLM
+from ....model.chat.basic.schema_utils import normalize_structured_output_schema
 from ....model.chat.token_context import add_token_usage
 from ....tools.adapters.vibe import Tool
 from ...context import AgentContext
@@ -94,7 +95,9 @@ class PlanGenerator:
         if step_kind == StepKind.MAP:
             raw_map_spec = step_data.get("map_spec")
             if not raw_map_spec:
-                raise ValueError(f"Map step {step_data.get('id', '<unknown>')} missing map_spec")
+                raise ValueError(
+                    f"Map step {step_data.get('id', '<unknown>')} missing map_spec"
+                )
             map_spec = MapSpec.from_dict(raw_map_spec)
 
         return PlanStep(
@@ -154,7 +157,10 @@ class PlanGenerator:
                     goal=plan.goal,
                     iteration=getattr(plan, "iteration", 1),
                     llm_response=None,
-                    context={"step_id": step.id, "chunk_size": step.map_spec.chunk_size},
+                    context={
+                        "step_id": step.id,
+                        "chunk_size": step.map_spec.chunk_size,
+                    },
                 )
 
             collection_step_ids = {s.id for s in step.map_spec.collection_plan.steps}
@@ -180,7 +186,10 @@ class PlanGenerator:
                 )
 
             self._validate_plan_recursive(
-                step.map_spec.collection_plan, tools, depth=depth + 1, max_depth=max_depth
+                step.map_spec.collection_plan,
+                tools,
+                depth=depth + 1,
+                max_depth=max_depth,
             )
             self._validate_plan_recursive(
                 step.map_spec.worker_plan, tools, depth=depth + 1, max_depth=max_depth
@@ -193,7 +202,9 @@ class PlanGenerator:
             "description": step.description,
             "tool_names": step.tool_names,
             "dependencies": step.dependencies,
-            "status": step.status.value if hasattr(step.status, "value") else str(step.status),
+            "status": step.status.value
+            if hasattr(step.status, "value")
+            else str(step.status),
             "conditional_branches": step.conditional_branches,
             "required_branch": step.required_branch,
             "is_conditional": step.is_conditional,
@@ -215,7 +226,7 @@ class PlanGenerator:
 
         feedback_lines = [
             "MAP PLAN REQUIREMENTS:",
-            "- Every map step must include step_kind=\"map\" and a complete map_spec.",
+            '- Every map step must include step_kind="map" and a complete map_spec.',
             "- map_spec.collection_plan and map_spec.worker_plan must each be full nested plans.",
             "- Each nested plan must include: id, goal, task_name, iteration, steps.",
             "- map_spec.collection_output.step_id must reference an existing step inside collection_plan.",
@@ -812,7 +823,10 @@ class PlanGenerator:
             output_config = {
                 "format": {
                     "type": "json_schema",
-                    "schema": ClassificationResponse.model_json_schema(),
+                    "name": "classification_response",
+                    "schema": normalize_structured_output_schema(
+                        ClassificationResponse.model_json_schema()
+                    ),
                 }
             }
 

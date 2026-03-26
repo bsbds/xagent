@@ -7,6 +7,7 @@ import pytest
 
 from xagent.core.model.chat.basic.adapter import create_base_llm
 from xagent.core.model.chat.basic.openai_responses import OpenAIResponsesLLM
+from xagent.core.model.chat.basic.schema_utils import normalize_structured_output_schema
 from xagent.core.model.chat.token_context import get_and_reset_token_usage
 from xagent.core.model.model import ChatModelConfig
 
@@ -348,6 +349,33 @@ class TestOpenAIResponsesLLM:
         assert usage.input_tokens == 1
         assert usage.output_tokens == 2
         assert usage.llm_calls == 1
+
+
+def test_normalize_structured_output_schema_enforces_strict_object_rules():
+    schema = {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "default": "hello",
+            },
+            "nested": {
+                "type": "object",
+                "properties": {
+                    "flag": {"type": "boolean", "default": False},
+                },
+            },
+        },
+    }
+
+    normalized = normalize_structured_output_schema(schema)
+
+    assert normalized["additionalProperties"] is False
+    assert set(normalized["required"]) == {"answer", "nested"}
+    assert "default" not in normalized["properties"]["answer"]
+    assert normalized["properties"]["nested"]["additionalProperties"] is False
+    assert normalized["properties"]["nested"]["required"] == ["flag"]
+    assert "default" not in normalized["properties"]["nested"]["properties"]["flag"]
 
     @pytest.mark.asyncio
     async def test_streaming_emits_text_done_when_no_delta(self, llm, mocker):

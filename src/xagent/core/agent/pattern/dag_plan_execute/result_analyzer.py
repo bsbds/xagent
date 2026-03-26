@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from json_repair import loads as repair_loads
 
 from ....model.chat.basic.base import BaseLLM
+from ....model.chat.basic.schema_utils import normalize_structured_output_schema
 from ....model.chat.token_context import add_token_usage
 from ...exceptions import LLMResponseError
 from ...trace import (
@@ -101,7 +102,10 @@ class ResultAnalyzer:
             output_config = {
                 "format": {
                     "type": "json_schema",
-                    "schema": GoalCheckResponse.model_json_schema(),
+                    "name": "goal_check_response",
+                    "schema": normalize_structured_output_schema(
+                        GoalCheckResponse.model_json_schema()
+                    ),
                 }
             }
 

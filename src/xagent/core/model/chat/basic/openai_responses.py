@@ -394,9 +394,13 @@ class OpenAIResponsesLLM(BaseLLM):
         return ""
 
     def _extract_usage(self, response: Any) -> dict[str, int]:
+        raw = self._response_to_raw(response)
         usage = getattr(response, "usage", None)
-        if usage is None:
-            raw = self._response_to_raw(response)
+        if isinstance(usage, dict):
+            pass
+        elif isinstance(raw.get("usage"), dict):
+            usage = raw.get("usage")
+        elif usage is None:
             usage = raw.get("usage")
         if usage is None:
             return {}
