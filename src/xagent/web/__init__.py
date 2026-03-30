@@ -23,11 +23,27 @@ try:
 except Exception:
     __version__ = "0.0.0+unknown"
 
-from .app import app
+
+def create_app(*args: Any, **kwargs: Any):
+    from .app import create_app as _create_app
+
+    return _create_app(*args, **kwargs)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "app":
+        return create_app()
+    if name == "create_app":
+        return create_app
+    raise AttributeError(name)
 
 
 def run_server(
-    host: str = "127.0.0.1", port: int = 8000, reload: bool = False, **kwargs: Any
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    reload: bool = False,
+    uploads_dir: str | None = None,
+    **kwargs: Any,
 ) -> None:
     """快速启动Web服务器
 
@@ -35,11 +51,33 @@ def run_server(
         host: 服务器主机地址
         port: 服务器端口
         reload: 是否启用自动重载
+        uploads_dir: 上传目录；默认使用xagent配置默认值
         **kwargs: 其他uvicorn参数
     """
     import uvicorn
 
-    uvicorn.run("xagent.web.app:app", host=host, port=port, reload=reload, **kwargs)
+    if uploads_dir is not None:
+        import os
+
+        os.environ["XAGENT_UPLOADS_DIR"] = uploads_dir
+
+    if reload:
+        uvicorn.run(
+            "xagent.web.app:create_app",
+            host=host,
+            port=port,
+            reload=reload,
+            factory=True,
+            **kwargs,
+        )
+    else:
+        uvicorn.run(
+            create_app(uploads_dir=uploads_dir),
+            host=host,
+            port=port,
+            reload=reload,
+            **kwargs,
+        )
 
 
-__all__ = ["app", "run_server", "__version__"]
+__all__ = ["app", "create_app", "run_server", "__version__"]

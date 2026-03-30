@@ -16,6 +16,8 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 
+from .app import create_app
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -169,13 +171,23 @@ def main() -> None:
         logger.info("🐛 Debug mode: verbose logging enabled")
 
     try:
-        uvicorn.run(
-            "xagent.web.app:app",
-            host=args.host,
-            port=args.port,
-            reload=args.reload,
-            log_level=args.log_level,
-        )
+        if args.reload:
+            uvicorn.run(
+                "xagent.web.app:create_app",
+                host=args.host,
+                port=args.port,
+                reload=args.reload,
+                log_level=args.log_level,
+                factory=True,
+            )
+        else:
+            uvicorn.run(
+                create_app(),
+                host=args.host,
+                port=args.port,
+                reload=args.reload,
+                log_level=args.log_level,
+            )
     except KeyboardInterrupt:
         logger.info("⏹️  Service stopped")
     except Exception as e:

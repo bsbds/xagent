@@ -8,7 +8,19 @@ from typing import List, Optional
 WEB_DIR = Path(__file__).parent
 
 # File storage configuration
-UPLOADS_DIR = WEB_DIR / "uploads"
+def resolve_uploads_dir(uploads_dir: str | Path | None = None) -> Path:
+    """Resolve the uploads directory for xagent web."""
+    if uploads_dir is not None:
+        return Path(uploads_dir).expanduser().resolve()
+
+    env_uploads_dir = os.getenv("XAGENT_UPLOADS_DIR")
+    if env_uploads_dir:
+        return Path(env_uploads_dir).expanduser().resolve()
+
+    return WEB_DIR / "uploads"
+
+
+UPLOADS_DIR = resolve_uploads_dir()
 STATIC_DIR = WEB_DIR / "static"
 
 # Ensure uploads directory exists
@@ -38,6 +50,16 @@ if _EXTERNAL_UPLOAD_DIRS:
 # File storage paths for AI tools
 FILE_STORAGE_BASE_DIR = UPLOADS_DIR
 FILE_STORAGE_URL_BASE = "/uploads"
+
+
+def configure_uploads_dir(uploads_dir: str | Path | None = None) -> Path:
+    """Configure the global uploads directory for xagent web."""
+    global UPLOADS_DIR, FILE_STORAGE_BASE_DIR
+
+    UPLOADS_DIR = resolve_uploads_dir(uploads_dir)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    FILE_STORAGE_BASE_DIR = UPLOADS_DIR
+    return UPLOADS_DIR
 
 # Supported file types
 ALLOWED_EXTENSIONS = {
