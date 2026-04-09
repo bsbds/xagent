@@ -107,11 +107,11 @@ jobs:
           set -e
           python3 -m uv sync --all-extras
 
-      - name: Download NLTK data
+      - name: Download Deepdoc models
         shell: bash
         run: |
           set -e
-          python3 -m uv run python -c "import nltk; nltk.download('punkt_tab')"
+          python3 -m uv run deepdoc-download-models
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
