@@ -73,7 +73,11 @@ class MockReActLLM(BaseLLM):
         # Check if this is a native tool call request. The ReAct pattern's first
         # call returns JSON text; only the second call passes tools and should
         # produce native tool_calls.
-        if response_json.get("type") == "tool_call" and kwargs.get("tools"):
+        if (
+            isinstance(response_json, dict)
+            and response_json.get("type") == "tool_call"
+            and kwargs.get("tools")
+        ):
             # Return native tool call format
             tool_name = response_json.get("tool_name", "")
             tool_args = response_json.get("tool_args", {})
@@ -345,6 +349,80 @@ async def test_react_raises_when_parsed_json_does_not_create_action(monkeypatch)
     with pytest.raises(PatternExecutionError, match="Failed to parse ReAct action"):
         await pattern._get_action_from_llm(
             [{"role": "user", "content": "Complete the task"}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_react_accepts_single_item_action_array():
+    """A JSON array containing one action dict should be parsed as that action."""
+    responses = [
+        '[{"type": "tool_call", "reasoning": "I need to calculate using a tool"}]',
+        '{"type": "tool_call", "reasoning": "Calling calculator", "tool_name": "calculator", "tool_args": {"expression": "2+2"}}',
+        '{"type": "final_answer", "reasoning": "The calculation is complete", "answer": "The result is 4", "success": true, "error": null}',
+    ]
+
+    llm = MockReActLLM(responses)
+    memory = DummyMemoryStore()
+    tools = [MockCalculatorTool()]
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    result = await pattern.run(
+        task="Calculate 2+2",
+        memory=memory,
+        tools=tools,
+        context=AgentContext(),
+    )
+
+    assert result["success"] is True
+    assert result["output"] == "The result is 4"
+
+
+@pytest.mark.asyncio
+async def test_react_normalizes_registered_tool_name_action_type_in_array():
+    """A tool-name type inside a JSON action array should normalize to tool_call."""
+    responses = [
+        '[{"type": "calculator", "reasoning": "I need the calculator tool"}]',
+        '{"type": "tool_call", "reasoning": "Calling calculator", "tool_name": "calculator", "tool_args": {"expression": "3+3"}}',
+        '{"type": "final_answer", "reasoning": "The calculation is complete", "answer": "The result is 6", "success": true, "error": null}',
+    ]
+
+    llm = MockReActLLM(responses)
+    memory = DummyMemoryStore()
+    tools = [MockCalculatorTool()]
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    result = await pattern.run(
+        task="Calculate 3+3",
+        memory=memory,
+        tools=tools,
+        context=AgentContext(),
+    )
+
+    assert result["success"] is True
+    assert result["output"] == "The result is 6"
+
+
+@pytest.mark.asyncio
+async def test_react_raises_for_empty_action_array():
+    """An empty first-phase JSON array should raise instead of becoming final text."""
+    llm = MockReActLLM(["[]"])
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    with pytest.raises(PatternExecutionError, match="No ReAct action object found"):
+        await pattern._get_action_from_llm(
+            [{"role": "user", "content": "Create an FAQ agent"}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_react_raises_when_action_array_has_no_dict():
+    """A first-phase JSON array without any dict item should raise."""
+    llm = MockReActLLM(['["tool_call"]'])
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    with pytest.raises(PatternExecutionError, match="No ReAct action object found"):
+        await pattern._get_action_from_llm(
+            [{"role": "user", "content": "Create an FAQ agent"}]
         )
 
 
