@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from xagent.core.agent.context import AgentContext
+from xagent.core.agent.exceptions import PatternExecutionError
 from xagent.core.agent.pattern.react import ReActPattern
 from xagent.core.memory.base import MemoryResponse, MemoryStore
 from xagent.core.model.chat.basic.base import BaseLLM
@@ -282,6 +283,69 @@ async def test_react_native_tool_call_includes_decision_reasoning():
     second_call_prompt = second_call_messages[-1]["content"]
     assert "Your prior decision/reasoning for this tool call was" in second_call_prompt
     assert decision_reasoning in second_call_prompt
+
+
+@pytest.mark.asyncio
+async def test_react_normalizes_registered_tool_name_action_type():
+    """A first-phase type matching a tool name should become a tool_call decision."""
+    responses = [
+        '{"type": "calculator", "reasoning": "I need to calculate using the calculator tool"}',
+        '{"type": "tool_call", "reasoning": "Calling calculator", "tool_name": "calculator", "tool_args": {"expression": "2+2"}}',
+        '{"type": "final_answer", "reasoning": "The calculation is complete", "answer": "The result is 4", "success": true, "error": null}',
+    ]
+
+    llm = MockReActLLM(responses)
+    memory = DummyMemoryStore()
+    tools = [MockCalculatorTool()]
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    result = await pattern.run(
+        task="Calculate 2+2",
+        memory=memory,
+        tools=tools,
+        context=AgentContext(),
+    )
+
+    assert result["success"] is True
+    assert result["output"] == "The result is 4"
+    assert len(llm.calls) >= 2
+    second_call_prompt = llm.calls[1]["messages"][-1]["content"]
+    assert "I need to calculate using the calculator tool" in second_call_prompt
+
+
+@pytest.mark.asyncio
+async def test_react_raises_for_unknown_action_type():
+    """Unknown first-phase JSON types should raise instead of becoming final text."""
+    responses = [
+        '{"type": "clarification", "reasoning": "Need more information"}',
+    ]
+
+    llm = MockReActLLM(responses)
+    pattern = ReActPattern(llm, max_iterations=3)
+    pattern.tool_registry.register_all([MockCalculatorTool()])
+
+    with pytest.raises(PatternExecutionError, match="Invalid ReAct action type"):
+        await pattern._get_action_from_llm(
+            [{"role": "user", "content": "Create an FAQ agent"}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_react_raises_when_parsed_json_does_not_create_action(monkeypatch):
+    """Parsed first-phase JSON should not fall back to final text if action parsing fails."""
+    responses = [
+        '{"type": "final_answer", "reasoning": "Done", "answer": "Done"}',
+    ]
+
+    llm = MockReActLLM(responses)
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    monkeypatch.setattr(pattern, "_try_parse_action_from_dict", lambda *_args: None)
+
+    with pytest.raises(PatternExecutionError, match="Failed to parse ReAct action"):
+        await pattern._get_action_from_llm(
+            [{"role": "user", "content": "Complete the task"}]
+        )
 
 
 @pytest.mark.asyncio

@@ -1578,16 +1578,17 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             try:
                 parsed = json.loads(response.strip())
                 if isinstance(parsed, dict):
+                    parsed = self._normalize_first_phase_action_dict(parsed)
                     action = self._try_parse_action_from_dict(parsed, response.strip())
                     if action:
                         await log_llm_completion(
                             parsed, action.type == "tool_call", action.reasoning
                         )
                         return action
-                    else:
-                        logger.warning(
-                            f"First call: Parsed JSON but unknown type: {parsed.get('type')}"
-                        )
+                    self._raise_invalid_first_phase_action(
+                        parsed,
+                        f"Failed to parse ReAct action from JSON type: {parsed.get('type')}",
+                    )
             except json.JSONDecodeError:
                 # JSON parsing failed - might be multiple JSON objects
                 # Try to use json_repair to handle multiple JSON objects
@@ -1637,6 +1638,9 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                             )
 
                     if isinstance(action_data, dict):
+                        action_data = self._normalize_first_phase_action_dict(
+                            action_data
+                        )
                         action = self._try_parse_action_from_dict(
                             action_data, response.strip()
                         )
@@ -1647,6 +1651,10 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                                 action.reasoning,
                             )
                             return action
+                        self._raise_invalid_first_phase_action(
+                            action_data,
+                            f"Failed to parse ReAct action from JSON type: {action_data.get('type')}",
+                        )
                 except Exception as repair_error:
                     # Re-raise PatternExecutionError as it's not a repair failure
                     if isinstance(repair_error, PatternExecutionError):
@@ -1852,6 +1860,52 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                 message=f"Failed to invoke tool via native calling: {str(e)}",
                 context={"error": str(e), "chat_kwargs": chat_kwargs},
             )
+
+    def _normalize_first_phase_action_dict(self, data: dict) -> dict:
+        """Normalize first-phase action JSON before parsing it as an Action.
+
+        The first ReAct LLM call should use ``type="tool_call"`` for any tool
+        intent. Some models put the concrete tool name in ``type`` instead.
+        Treat registered tool names as tool-call decisions; reject other
+        unknown types so they are not leaked as final answers.
+        """
+        action_type = data.get("type")
+        if action_type in ("tool_call", "final_answer"):
+            return data
+
+        registered_tools = set(self.tool_registry.list_tools())
+        if isinstance(action_type, str) and action_type in registered_tools:
+            normalized = dict(data)
+            normalized["type"] = "tool_call"
+            normalized["intended_tool_name"] = action_type
+            return normalized
+
+        self._raise_invalid_first_phase_action(
+            data,
+            f"Invalid ReAct action type: {action_type}",
+            available_tools=registered_tools,
+        )
+
+        # fix mypy false positive
+        return data
+
+    def _raise_invalid_first_phase_action(
+        self,
+        data: dict,
+        message: str,
+        available_tools: Optional[set[str]] = None,
+    ) -> None:
+        """Raise when parsed first-phase JSON is not a usable ReAct action."""
+        tool_names = (
+            sorted(available_tools)
+            if available_tools is not None
+            else sorted(self.tool_registry.list_tools())
+        )
+        raise PatternExecutionError(
+            pattern_name="ReAct",
+            message=message,
+            context={"response": data, "available_tools": tool_names},
+        )
 
     def _try_parse_action_from_dict(
         self, data: dict, answer_fallback: str = ""
