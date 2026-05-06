@@ -59,6 +59,10 @@ class MockReActLLM(BaseLLM):
             # Parse the response
             response_text = self.responses[self.call_count]
             self.call_count += 1
+            if response_text is None:
+                yield StreamChunk(type=ChunkType.END, finish_reason="stop")
+                return
+
             try:
                 response_json = json.loads(response_text)
             except json.JSONDecodeError:
@@ -161,6 +165,11 @@ class DummyMemoryStore(MemoryStore):
 
     def list_all(self, limit: int = 100, offset: int = 0):
         return []
+
+
+async def _noop_react_memories(*args, **kwargs):
+    # Isolate retry-loop tests from memory insight generation, which uses the same mock LLM.
+    return None
 
 
 @pytest.mark.asyncio
@@ -371,26 +380,135 @@ async def test_react_tool_not_found():
 
 @pytest.mark.asyncio
 async def test_react_none_response():
-    """Test ReAct pattern with None response from LLM - should retry and eventually complete"""
+    """Test repeated None responses abort as a repeated error loop."""
     responses = [None, None, None]  # LLM returns None multiple times
 
     llm = MockReActLLM(responses)
     memory = DummyMemoryStore()
     tools = [MockCalculatorTool()]
-    pattern = ReActPattern(llm, max_iterations=3)
+    pattern = ReActPattern(llm, max_iterations=3, repeated_error_abort_threshold=2)
+    pattern._generate_and_store_react_memories = _noop_react_memories
 
-    # With new retry logic, None triggers retries
-    # After exhausting responses, default final answer is used
+    from xagent.core.agent.exceptions import PatternExecutionError
+
+    with pytest.raises(PatternExecutionError) as exc_info:
+        await pattern.run(
+            task="Test None response",
+            memory=memory,
+            tools=tools,
+            context=AgentContext(),
+        )
+
+    assert "Repeated identical ReAct error" in str(exc_info.value)
+    assert llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_react_aborts_on_consecutive_identical_errors():
+    """Test ReAct aborts early when the same error repeats consecutively."""
+    responses = [
+        "[1",
+        "[1",
+        '{"type": "final_answer", "reasoning": "Recovered", "answer": "Recovered"}',
+    ]
+
+    llm = MockReActLLM(responses)
+    tools = []
+    pattern = ReActPattern(llm, max_iterations=10, repeated_error_abort_threshold=2)
+    pattern._generate_and_store_react_memories = _noop_react_memories
+
+    from xagent.core.agent.exceptions import PatternExecutionError
+
+    with pytest.raises(PatternExecutionError) as exc_info:
+        await pattern.run(
+            task="Trigger repeated parse failure",
+            memory=None,
+            tools=tools,
+            context=AgentContext(),
+        )
+
+    assert "Repeated identical ReAct error" in str(exc_info.value)
+    assert llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_react_does_not_abort_on_different_consecutive_errors():
+    """Test ReAct only aborts when consecutive error signatures match."""
+    responses = [
+        "[1",
+        "",
+        '{"type": "final_answer", "reasoning": "Recovered", "answer": "Recovered"}',
+    ]
+
+    llm = MockReActLLM(responses)
+    tools = []
+    pattern = ReActPattern(llm, max_iterations=10, repeated_error_abort_threshold=2)
+    pattern._generate_and_store_react_memories = _noop_react_memories
+
     result = await pattern.run(
-        task="Test None response",
-        memory=memory,
+        task="Recover after different parse failures",
+        memory=None,
         tools=tools,
         context=AgentContext(),
     )
 
-    # Should complete successfully after retries using default final answer
     assert result["success"] is True
-    assert result["output"] == "Task completed successfully"
+    assert result["output"] == "Recovered"
+    assert result["iterations"] == 3
+
+
+@pytest.mark.asyncio
+async def test_react_recovers_after_single_error():
+    """Test a single retryable error can still recover on the next iteration."""
+    responses = [
+        "[1",
+        '{"type": "final_answer", "reasoning": "Recovered", "answer": "Recovered"}',
+    ]
+
+    llm = MockReActLLM(responses)
+    tools = []
+    pattern = ReActPattern(llm, max_iterations=10, repeated_error_abort_threshold=2)
+    pattern._generate_and_store_react_memories = _noop_react_memories
+
+    result = await pattern.run(
+        task="Recover after one parse failure",
+        memory=None,
+        tools=tools,
+        context=AgentContext(),
+    )
+
+    assert result["success"] is True
+    assert result["output"] == "Recovered"
+    assert result["iterations"] == 2
+
+
+@pytest.mark.asyncio
+async def test_react_clears_repeated_error_state_after_observation():
+    """Errors separated by a successful tool observation are not consecutive."""
+    responses = [
+        "[1",
+        '{"type": "tool_call", "reasoning": "I need to calculate something"}',
+        '{"type": "tool_call", "reasoning": "Calling calculator", "tool_name": "calculator", "tool_args": {"expression": "2+2"}}',
+        "[1",
+        '{"type": "final_answer", "reasoning": "Recovered", "answer": "Recovered"}',
+    ]
+
+    llm = MockReActLLM(responses)
+    tools = [MockCalculatorTool()]
+    pattern = ReActPattern(llm, max_iterations=10, repeated_error_abort_threshold=2)
+    pattern._generate_and_store_react_memories = _noop_react_memories
+
+    result = await pattern.run(
+        task="Recover after progress separates parse failures",
+        memory=None,
+        tools=tools,
+        context=AgentContext(),
+    )
+
+    assert result["success"] is True
+    assert result["output"] == "Recovered"
+    assert result["iterations"] == 4
+    assert llm.call_count == 5
 
 
 @pytest.mark.asyncio

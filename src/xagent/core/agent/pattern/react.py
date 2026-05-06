@@ -85,6 +85,10 @@ class ReActPattern(AgentPattern):
     4. Repeat until final answer or max iterations
     """
 
+    # Stop retrying when the same failure repeats without new observations.
+    # This caps malformed-output loops independently from the action budget.
+    DEFAULT_REPEATED_ERROR_ABORT_THRESHOLD = 5
+
     def __init__(
         self,
         llm: BaseLLM,
@@ -95,6 +99,7 @@ class ReActPattern(AgentPattern):
         compact_llm: Optional[BaseLLM] = None,
         memory_store: Optional[MemoryStore] = None,
         is_sub_agent: bool = False,
+        repeated_error_abort_threshold: Optional[int] = None,
     ):
         """
         Initialize ReAct pattern.
@@ -107,6 +112,8 @@ class ReActPattern(AgentPattern):
             enable_auto_compact: Whether to enable automatic context compaction (default: True)
             compact_llm: Optional LLM for context compaction, defaults to main LLM
             is_sub_agent: Whether this pattern is running as a sub-agent (e.g., in a DAG step)
+            repeated_error_abort_threshold: Consecutive identical errors before aborting the retry loop.
+                This is separate from max_iterations, which limits successful ReAct action cycles.
         """
         self.llm = llm
         self.is_sub_agent = is_sub_agent
@@ -114,6 +121,11 @@ class ReActPattern(AgentPattern):
             compact_llm or llm
         )  # Use main LLM if compact_llm not provided
         self.max_iterations = max_iterations
+        self.repeated_error_abort_threshold = (
+            repeated_error_abort_threshold
+            if repeated_error_abort_threshold is not None
+            else self.DEFAULT_REPEATED_ERROR_ABORT_THRESHOLD
+        )
         self.tracer = tracer or Tracer()
         self.tool_registry = ToolRegistry()
         self.memory_store = memory_store
@@ -667,6 +679,10 @@ class ReActPattern(AgentPattern):
         """
         # Store initial messages
         self._last_messages = messages.copy()
+        # Track consecutive identical failures so deterministic parse/provider errors
+        # do not consume the full ReAct action budget.
+        last_error_signature = None
+        consecutive_error_count = 0
 
         # Execute action loop
         for iteration in range(max_iterations):
@@ -691,6 +707,7 @@ class ReActPattern(AgentPattern):
                 self._interrupt_event.clear()  # Clear for next use
                 raise InterruptedError("Execution interrupted for plan modification")
 
+            action_id = None
             try:
                 # Set action ID for tracing (needed for tool execution correlation)
                 action_id = f"{task_id}_action_{iteration + 1}"
@@ -737,6 +754,8 @@ class ReActPattern(AgentPattern):
 
                 # Execute the action
                 result = await self._execute_action(action, messages, task_id, step_id)
+                last_error_signature = None
+                consecutive_error_count = 0
 
                 # Trace action end
                 await trace_action_end(
@@ -853,6 +872,13 @@ class ReActPattern(AgentPattern):
                 self._last_messages = messages.copy()
 
             except Exception as e:
+                error_signature = self._build_error_signature(e)
+                if error_signature == last_error_signature:
+                    consecutive_error_count += 1
+                else:
+                    last_error_signature = error_signature
+                    consecutive_error_count = 1
+
                 # Generate insights and store memories even for failures
                 try:
                     await self._generate_and_store_react_memories(
@@ -880,6 +906,44 @@ class ReActPattern(AgentPattern):
                         "action_id": action_id,
                     },
                 )
+
+                if consecutive_error_count >= self.repeated_error_abort_threshold:
+                    await trace_error(
+                        self.tracer,
+                        task_id,
+                        step_id,
+                        error_type="RepeatedErrorLoopDetected",
+                        error_message=(
+                            "Repeated identical ReAct error detected "
+                            f"after {consecutive_error_count} consecutive failures: {str(e)}"
+                        ),
+                        data={
+                            "task": task_description[:100],
+                            "messages_count": len(messages),
+                            "iteration": iteration + 1,
+                            "step_id": step_id,
+                            "step_name": getattr(self, "_current_step_name", "main"),
+                            "action_id": action_id,
+                            "consecutive_error_count": consecutive_error_count,
+                            "error_signature": error_signature,
+                        },
+                    )
+                    raise PatternExecutionError(
+                        pattern_name="ReAct",
+                        message=(
+                            "Repeated identical ReAct error detected; "
+                            f"aborting retry loop after {consecutive_error_count} consecutive failures. "
+                            f"Last error: {str(e)}"
+                        ),
+                        iteration=iteration + 1,
+                        context={
+                            "task": task_description[:100],
+                            "messages_count": len(messages),
+                            "consecutive_error_count": consecutive_error_count,
+                            "error_signature": error_signature,
+                            "last_error": str(e),
+                        },
+                    ) from e
 
                 # Retryable errors - continue to next iteration
                 logger.warning(
@@ -925,6 +989,17 @@ class ReActPattern(AgentPattern):
                 "final_messages_count": len(messages),
             },
         )
+
+    def _build_error_signature(self, error: Exception) -> tuple[Any, ...]:
+        """Build a stable signature for detecting repeated identical failures."""
+        return (
+            error.__class__.__name__,
+            self._normalize_error_message(str(error)),
+        )
+
+    def _normalize_error_message(self, message: str) -> str:
+        """Remove volatile whitespace from error messages before comparison."""
+        return " ".join(message.split())
 
     async def run_with_context(
         self,
