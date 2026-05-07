@@ -318,10 +318,10 @@ async def test_react_normalizes_registered_tool_name_action_type():
 
 
 @pytest.mark.asyncio
-async def test_react_raises_for_unknown_action_type():
-    """Unknown first-phase JSON types should raise instead of becoming final text."""
+async def test_react_raises_for_non_string_action_type():
+    """Non-string first-phase JSON types should raise instead of becoming final text."""
     responses = [
-        '{"type": "clarification", "reasoning": "Need more information"}',
+        '{"type": 123, "reasoning": "Need more information"}',
     ]
 
     llm = MockReActLLM(responses)
@@ -423,6 +423,66 @@ async def test_react_raises_when_action_array_has_no_dict():
     with pytest.raises(PatternExecutionError, match="No ReAct action object found"):
         await pattern._get_action_from_llm(
             [{"role": "user", "content": "Create an FAQ agent"}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_react_extracts_direct_chat_response_payload():
+    """A valid frontend chat payload should complete as chat_response."""
+    chat_payload = {
+        "type": "chat",
+        "chat": {
+            "message": "Please provide a Sansri Enterprise FAQ source.",
+            "interactions": [
+                {
+                    "type": "action_cards",
+                    "field": "knowledge_source",
+                    "label": "Add knowledge source",
+                    "options": [
+                        {
+                            "label": "Import Website",
+                            "value": "url",
+                            "action_type": "input_url",
+                        },
+                        {
+                            "label": "Upload File",
+                            "value": "upload",
+                            "action_type": "upload",
+                        },
+                    ],
+                }
+            ],
+        },
+    }
+    responses = [json.dumps(chat_payload)]
+
+    llm = MockReActLLM(responses)
+    memory = DummyMemoryStore()
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    result = await pattern.run(
+        task="Create a Sansri Enterprise FAQ bot",
+        memory=memory,
+        tools=[],
+        context=AgentContext(),
+    )
+
+    assert result["success"] is True
+    assert result["output"] == "Please provide a Sansri Enterprise FAQ source."
+    assert result["chat_response"] == chat_payload["chat"]
+
+
+@pytest.mark.asyncio
+async def test_react_raises_for_invalid_chat_payload():
+    """A chat type without chat response data is not a usable ReAct action."""
+    responses = ['{"type": "chat", "reasoning": "Need user input"}']
+
+    llm = MockReActLLM(responses)
+    pattern = ReActPattern(llm, max_iterations=3)
+
+    with pytest.raises(PatternExecutionError, match="Invalid ReAct chat response"):
+        await pattern._get_action_from_llm(
+            [{"role": "user", "content": "Create a Sansri Enterprise FAQ bot"}]
         )
 
 

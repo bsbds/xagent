@@ -1862,26 +1862,43 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
     def _normalize_first_phase_action_dict(self, data: dict) -> dict:
         """Normalize first-phase action JSON before parsing it as an Action.
 
-        The first ReAct LLM call should use ``type="tool_call"`` for any tool
-        intent. Some models put the concrete tool name in ``type`` instead.
-        Treat registered tool names as tool-call decisions; reject other
-        unknown types so they are not leaked as final answers.
+        The first ReAct LLM call should normally return ``type="tool_call"``
+        or ``type="final_answer"``. This also accepts the frontend
+        ``type="chat"`` payload emitted after ``ask_user_question`` and wraps
+        it as a final answer so the caller can extract ``chat_response``.
+
+        Some models put a concrete tool name, such as ``ask_user_question``,
+        in ``type`` instead of using ``tool_call``. Any other string type is
+        treated as that kind of tool-call decision; non-string or missing
+        action types are rejected so they trigger the ReAct retry path.
         """
         action_type = data.get("type")
         if action_type in ("tool_call", "final_answer"):
             return data
 
-        registered_tools = set(self.tool_registry.list_tools())
-        if isinstance(action_type, str) and action_type in registered_tools:
+        if action_type == "chat":
+            chat_response = data.get("chat")
+            if isinstance(chat_response, dict):
+                return {
+                    "type": "final_answer",
+                    "reasoning": "LLM provided a structured chat response",
+                    "answer": json.dumps(data, ensure_ascii=False),
+                    "success": True,
+                    "error": None,
+                }
+
+            self._raise_invalid_first_phase_action(
+                data,
+                "Invalid ReAct chat response: expected a 'chat' object",
+            )
+
+        if isinstance(action_type, str):
             normalized = dict(data)
             normalized["type"] = "tool_call"
-            normalized["intended_tool_name"] = action_type
             return normalized
 
         self._raise_invalid_first_phase_action(
-            data,
-            f"Invalid ReAct action type: {action_type}",
-            available_tools=registered_tools,
+            data, f"Invalid ReAct action type: {action_type}"
         )
 
         # fix mypy false positive
@@ -1891,18 +1908,10 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
         self,
         data: dict,
         message: str,
-        available_tools: Optional[set[str]] = None,
     ) -> None:
         """Raise when parsed first-phase JSON is not a usable ReAct action."""
-        tool_names = (
-            sorted(available_tools)
-            if available_tools is not None
-            else sorted(self.tool_registry.list_tools())
-        )
         raise PatternExecutionError(
-            pattern_name="ReAct",
-            message=message,
-            context={"response": data, "available_tools": tool_names},
+            pattern_name="ReAct", message=message, context={"response": data}
         )
 
     def _try_parse_action_from_dict(
