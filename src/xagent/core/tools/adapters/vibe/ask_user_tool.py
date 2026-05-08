@@ -73,7 +73,7 @@ class AskUserQuestionTool(AbstractBaseTool):
     recognizes and renders as a ClarificationForm.
     """
 
-    category: ToolCategory = ToolCategory.AGENT
+    category: ToolCategory = ToolCategory.BASIC
 
     def __init__(
         self,
