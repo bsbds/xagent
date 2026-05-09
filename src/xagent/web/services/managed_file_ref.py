@@ -4,7 +4,6 @@ import mimetypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
-from uuid import uuid4
 
 from ...core.file_storage import FsspecFileStorage, StoredObject, get_file_storage
 from ..models.uploaded_file import UploadedFile
@@ -157,21 +156,19 @@ def create_uploaded_file_from_local_path(
     task_id: int | None = None,
     mime_type: str | None = None,
     storage_key: str | None = None,
+    workspace_relative_path: str | None = None,
+    workspace_category: str | None = None,
 ) -> UploadedFile:
-    resolved_filename = filename or local_path.name
-    resolved_mime_type = mime_type or guess_media_type(resolved_filename)
-    file_record = UploadedFile(
-        file_id=file_id or str(uuid4()),
+    from .uploaded_file_store import create_unbound_uploaded_file_from_local_path
+
+    return create_unbound_uploaded_file_from_local_path(
+        local_path=local_path,
         user_id=user_id,
+        filename=filename,
+        file_id=file_id,
         task_id=task_id,
-        filename=Path(resolved_filename).name,
-        storage_path=str(local_path),
-        mime_type=resolved_mime_type,
-        file_size=local_path.stat().st_size,
-        storage_status="pending",
-    )
-    ManagedFileRef(file_record).sync_to_durable(
+        mime_type=mime_type,
         storage_key=storage_key,
-        mime_type=resolved_mime_type,
+        workspace_relative_path=workspace_relative_path,
+        workspace_category=workspace_category,
     )
-    return file_record

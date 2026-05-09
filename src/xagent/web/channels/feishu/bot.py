@@ -391,9 +391,7 @@ class FeishuBotInstance:
 
         from lark_oapi.api.im.v1 import GetMessageResourceRequest
 
-        from ...services.managed_file_ref import (
-            create_uploaded_file_from_local_path,
-        )
+        from ...services.uploaded_file_store import UploadedFileStore
 
         uploaded_files_info: list[dict] = []
 
@@ -470,7 +468,7 @@ class FeishuBotInstance:
 
                 file_size = target_path.stat().st_size
 
-                file_record = create_uploaded_file_from_local_path(
+                file_record = UploadedFileStore(db).create_from_local_path(
                     local_path=target_path,
                     user_id=user_id,
                     task_id=task_id,
@@ -478,7 +476,6 @@ class FeishuBotInstance:
                     mime_type=mime_type,
                 )
                 file_record.file_size = file_size
-                db.add(file_record)
                 db.flush()
 
                 agent_service.workspace.register_file(

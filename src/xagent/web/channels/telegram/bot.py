@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, cast
+from typing import TYPE_CHECKING, Dict, Optional
 
 if TYPE_CHECKING:
     from ....core.agent.service import AgentService
@@ -181,9 +181,7 @@ class TelegramBotInstance:
         import mimetypes
         from pathlib import Path
 
-        from ...services.managed_file_ref import (
-            create_uploaded_file_from_local_path,
-        )
+        from ...services.uploaded_file_store import UploadedFileStore
 
         uploaded_files_info: list[dict] = []
 
@@ -236,15 +234,14 @@ class TelegramBotInstance:
 
                 file_size = getattr(f, "file_size", target_path.stat().st_size)
 
-                file_record = create_uploaded_file_from_local_path(
+                file_record = UploadedFileStore(db).create_from_local_path(
                     local_path=target_path,
                     user_id=user_id,
                     task_id=task_id,
                     filename=normalized_file_name,
                     mime_type=mime_type,
                 )
-                cast(Any, file_record).file_size = int(file_size)
-                db.add(file_record)
+                setattr(file_record, "file_size", int(file_size))
                 db.flush()
 
                 agent_service.workspace.register_file(

@@ -198,28 +198,21 @@ class TaskWorkspace:
                 relative_path = file_path.name
             category = relative_path.split("/", 1)[0] if relative_path else "workspace"
 
-            # Create file record
-            file_record = UploadedFile(
+            from ..web.services.uploaded_file_store import UploadedFileStore
+
+            UploadedFileStore(db).create_from_local_path(
+                local_path=file_path,
+                user_id=int(task.user_id),
                 file_id=file_id,
-                user_id=task.user_id,
                 task_id=task_id,
                 filename=file_path.name,
-                storage_path=str(file_path),
-                workspace_relative_path=relative_path,
-                workspace_category=category,
-                storage_status="pending",
-                mime_type=mime_type,
-                file_size=file_path.stat().st_size,
-            )
-            from ..web.services.managed_file_ref import ManagedFileRef
-
-            ManagedFileRef(file_record).sync_to_durable(
                 storage_key=_build_workspace_storage_key(
                     int(task.user_id), task_id, file_id, relative_path
                 ),
+                workspace_relative_path=relative_path,
+                workspace_category=category,
                 mime_type=mime_type,
             )
-            db.add(file_record)
             if should_close:
                 db.commit()
             else:

@@ -41,7 +41,6 @@ from ..models.user import User
 from ..services.chat_history_service import get_latest_waiting_question
 from ..services.managed_file_ref import (
     build_task_output_storage_key,
-    create_uploaded_file_from_local_path,
     ensure_uploaded_file_local_path,
 )
 from ..services.task_lease_service import (
@@ -52,6 +51,7 @@ from ..services.task_lease_service import (
     run_task_lease_heartbeat,
     stop_task_lease_heartbeat,
 )
+from ..services.uploaded_file_store import UploadedFileStore
 from ..tools.config import WebToolConfig
 from ..tracing import create_ephemeral_tracer
 from ..user_isolated_memory import UserContext
@@ -799,7 +799,7 @@ def _normalize_file_outputs(
             )
 
         if file_record is None:
-            file_record = create_uploaded_file_from_local_path(
+            file_record = UploadedFileStore(db).create_from_local_path(
                 local_path=resolved_path,
                 user_id=task_user_id,
                 file_id=expected_file_id,
@@ -813,7 +813,6 @@ def _normalize_file_outputs(
                     normalized_relative_path,
                 ),
             )
-            db.add(file_record)
             db.flush()
             changed = True
 
@@ -1484,7 +1483,7 @@ async def redirect_legacy_preview(
 
         owner_user_id, task_id = owner_info
         generated_file_id = _build_output_file_id(relative_path)
-        file_record = create_uploaded_file_from_local_path(
+        file_record = UploadedFileStore(db).create_from_local_path(
             local_path=resolved_path,
             user_id=owner_user_id,
             file_id=generated_file_id,
@@ -1498,7 +1497,6 @@ async def redirect_legacy_preview(
                 relative_path,
             ),
         )
-        db.add(file_record)
         db.commit()
         db.refresh(file_record)
 

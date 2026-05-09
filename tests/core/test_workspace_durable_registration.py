@@ -59,7 +59,7 @@ def test_workspace_register_file_writes_durable_storage(
         engine.dispose()
 
 
-def test_workspace_register_file_uses_managed_file_ref_sync(
+def test_workspace_register_file_uses_uploaded_file_store_create(
     monkeypatch, tmp_path, mock_workspace_db
 ):
     # Override the global autouse fixture from tests/conftest.py for this module.
@@ -68,23 +68,29 @@ def test_workspace_register_file_uses_managed_file_ref_sync(
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
     get_file_storage.cache_clear()
 
-    sync_calls = []
+    create_calls = []
 
-    from xagent.web.services.managed_file_ref import ManagedFileRef
+    from xagent.web.services.uploaded_file_store import UploadedFileStore
 
-    original_sync = ManagedFileRef.sync_to_durable
+    original_create = UploadedFileStore.create_from_local_path
 
-    def sync_spy(self, *, storage_key=None, mime_type=None):
-        sync_calls.append(
+    def create_spy(self, **kwargs):
+        create_calls.append(
             {
-                "file_id": self.record.file_id,
-                "storage_key": storage_key,
-                "mime_type": mime_type,
+                "local_path": kwargs["local_path"],
+                "user_id": kwargs["user_id"],
+                "file_id": kwargs["file_id"],
+                "task_id": kwargs["task_id"],
+                "filename": kwargs["filename"],
+                "storage_key": kwargs["storage_key"],
+                "workspace_relative_path": kwargs["workspace_relative_path"],
+                "workspace_category": kwargs["workspace_category"],
+                "mime_type": kwargs["mime_type"],
             }
         )
-        return original_sync(self, storage_key=storage_key, mime_type=mime_type)
+        return original_create(self, **kwargs)
 
-    monkeypatch.setattr(ManagedFileRef, "sync_to_durable", sync_spy)
+    monkeypatch.setattr(UploadedFileStore, "create_from_local_path", create_spy)
 
     engine = create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}
@@ -108,12 +114,18 @@ def test_workspace_register_file_uses_managed_file_ref_sync(
 
         file_id = workspace.register_file(str(output_path), db_session=db)
 
-        assert sync_calls == [
+        assert create_calls == [
             {
+                "local_path": output_path,
+                "user_id": user.id,
                 "file_id": file_id,
+                "task_id": 456,
+                "filename": "report.txt",
                 "storage_key": (
                     f"users/{user.id}/tasks/456/outputs/{file_id}/output/report.txt"
                 ),
+                "workspace_relative_path": "output/report.txt",
+                "workspace_category": "output",
                 "mime_type": "text/plain",
             }
         ]

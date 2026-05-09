@@ -34,7 +34,7 @@ from ...core.tools.core.RAG_tools.version_management.cascade_cleaner import (
 )
 from ...providers.vector_store.lancedb import get_connection_from_env
 from ..models.uploaded_file import UploadedFile
-from .managed_file_ref import ManagedFileRef
+from .uploaded_file_store import UploadedFileStore
 
 logger = logging.getLogger(__name__)
 
@@ -106,32 +106,13 @@ def upsert_uploaded_file_record(
     if scope.user_id is None:
         raise ValueError("user_id is required for UploadedFile upsert")
 
-    storage_path_str = str(storage_path)
-    existing = (
-        db.query(UploadedFile)
-        .filter(UploadedFile.storage_path == storage_path_str)
-        .first()
+    file_record = UploadedFileStore(db).upsert_by_storage_path(
+        user_id=scope.user_id,
+        filename=filename,
+        storage_path=storage_path,
+        mime_type=mime_type,
+        file_size=file_size,
     )
-    if existing:
-        existing.filename = filename  # type: ignore[assignment]
-        existing.file_size = int(file_size)  # type: ignore[assignment]
-        if mime_type is not None:
-            existing.mime_type = mime_type  # type: ignore[assignment]
-        file_record = existing
-    else:
-        file_record = UploadedFile(
-            user_id=scope.user_id,
-            filename=filename,
-            storage_path=storage_path_str,
-            mime_type=mime_type,
-            file_size=int(file_size),
-            storage_status="pending",
-        )
-        db.add(file_record)
-        db.flush()
-
-    ManagedFileRef(file_record).sync_to_durable(mime_type=mime_type)
-    db.flush()
     db.commit()
     db.refresh(file_record)
 
@@ -301,13 +282,9 @@ def delete_uploaded_file_if_orphaned(
             resolved_path.unlink()
             logger.info("Deleted orphaned physical file: %s", resolved_path)
 
-    ManagedFileRef(file_record).delete_durable()
-    db.delete(file_record)
-    db.flush()
-
+    UploadedFileStore(db).delete(file_record, delete_local=False)
     # Invalidate cache for this user since file list changed
     _file_status_cache.invalidate_user(scope.user_id)
-
     return True
 
 

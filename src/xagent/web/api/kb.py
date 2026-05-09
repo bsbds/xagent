@@ -117,6 +117,7 @@ from ..services.kb_file_service import (
 from ..services.kb_file_service import (
     upsert_uploaded_file_record as _upsert_uploaded_file_record,
 )
+from ..services.uploaded_file_store import UploadedFileStore
 from .cloud_storage import get_google_credentials
 
 T = TypeVar("T", bound=Callable[..., Any])
@@ -389,7 +390,9 @@ async def _rollback_failed_ingestion(
                     .first()
                 )
                 if refreshed_file_record is not None:
-                    db.delete(refreshed_file_record)
+                    UploadedFileStore(db).delete(
+                        refreshed_file_record, delete_local=False
+                    )
             await _cleanup_failed_new_collection_metadata(
                 collection_name=collection_name,
                 user=user,
@@ -441,7 +444,7 @@ async def _rollback_failed_ingestion(
                     is_admin=bool(user.is_admin),
                 )
             if not uploaded_file_existed_before:
-                db.delete(file_record)
+                UploadedFileStore(db).delete(file_record, delete_local=False)
                 db.commit()
 
         _restore_ingest_file_backup(

@@ -32,10 +32,10 @@ from ..services.kb_file_service import aggregate_uploaded_file_statuses
 from ..services.managed_file_ref import (
     DurableObjectMissingError,
     ManagedFileRef,
-    create_uploaded_file_from_local_path,
     guess_media_type,
     iter_file_handle,
 )
+from ..services.uploaded_file_store import UploadedFileStore
 from .legacy_file import (
     infer_user_id_from_legacy_path,
     is_valid_uuid,
@@ -252,14 +252,14 @@ def _backfill_uploaded_file_records(db: Session, user: User) -> None:
                 if not existing_record.storage_key:
                     setattr(existing_record, "user_id", target_user_id)
                     setattr(existing_record, "storage_path", str(candidate))
-                    ManagedFileRef(existing_record).sync_to_durable(
-                        mime_type=guess_media_type(candidate.name)
+                    UploadedFileStore(db).sync_existing(
+                        existing_record, mime_type=guess_media_type(candidate.name)
                     )
                     created += 1
                 continue
 
             file_id = str(uuid4())
-            file_record = create_uploaded_file_from_local_path(
+            file_record = UploadedFileStore(db).create_from_local_path(
                 local_path=candidate,
                 user_id=target_user_id,
                 file_id=file_id,
@@ -267,7 +267,6 @@ def _backfill_uploaded_file_records(db: Session, user: User) -> None:
                 filename=candidate.name,
                 mime_type=guess_media_type(candidate.name),
             )
-            db.add(file_record)
             existing_records[storage_path] = file_record
             created += 1
 
@@ -542,7 +541,7 @@ async def upload_file(
             file_size = await _write_upload_with_size_limit(uploaded, target_path)
             written_paths.append(target_path)
             file_id = str(uuid4())
-            file_record = create_uploaded_file_from_local_path(
+            file_record = UploadedFileStore(db).create_from_local_path(
                 local_path=target_path,
                 user_id=_user_id_value(user),
                 file_id=file_id,
@@ -553,7 +552,6 @@ async def upload_file(
             if file_record.storage_key:
                 written_storage_keys.append(str(file_record.storage_key))
             setattr(file_record, "file_size", file_size)
-            db.add(file_record)
             db.flush()
 
             content_preview = ""
@@ -977,11 +975,7 @@ async def delete_file(
     if file_path.exists() and file_path.is_file():
         file_path.unlink()
     if file_record:
-        ManagedFileRef(file_record).delete_durable()
-
-    # Delete database record if exists
-    if file_record:
-        db.delete(file_record)
+        UploadedFileStore(db).delete(file_record, delete_local=False)
         db.commit()
 
     return {
