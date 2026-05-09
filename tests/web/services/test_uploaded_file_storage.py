@@ -1,9 +1,9 @@
 from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.models.uploaded_file import UploadedFile
-from xagent.web.services.uploaded_file_storage import (
+from xagent.web.services.managed_file_ref import (
+    ManagedFileRef,
     create_uploaded_file_from_local_path,
     ensure_uploaded_file_local_path,
-    materialize_uploaded_file,
 )
 
 
@@ -38,12 +38,12 @@ def test_create_uploaded_file_from_local_path_stores_durable_object(
 
     source.unlink()
 
-    materialized = materialize_uploaded_file(file_record)
+    materialized = ManagedFileRef(file_record).materialize()
     assert materialized.parent == tmp_path / "materialized"
     assert materialized.read_text(encoding="utf-8") == "hello object storage"
 
 
-def test_materialize_uploaded_file_prefers_existing_local_path(tmp_path):
+def test_managed_file_ref_materialize_prefers_existing_local_path(tmp_path):
     source = tmp_path / "still-local.txt"
     source.write_text("local copy", encoding="utf-8")
 
@@ -60,7 +60,7 @@ def test_materialize_uploaded_file_prefers_existing_local_path(tmp_path):
         file_size=10,
     )
 
-    assert materialize_uploaded_file(file_record) == source
+    assert ManagedFileRef(file_record).materialize() == source
 
 
 def test_ensure_uploaded_file_local_path_restores_original_path(monkeypatch, tmp_path):

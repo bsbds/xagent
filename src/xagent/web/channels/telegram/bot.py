@@ -181,7 +181,7 @@ class TelegramBotInstance:
         import mimetypes
         from pathlib import Path
 
-        from ...services.uploaded_file_storage import (
+        from ...services.managed_file_ref import (
             create_uploaded_file_from_local_path,
         )
 

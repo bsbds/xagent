@@ -391,7 +391,7 @@ class FeishuBotInstance:
 
         from lark_oapi.api.im.v1 import GetMessageResourceRequest
 
-        from ...services.uploaded_file_storage import (
+        from ...services.managed_file_ref import (
             create_uploaded_file_from_local_path,
         )
 

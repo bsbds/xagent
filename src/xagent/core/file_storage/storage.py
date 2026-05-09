@@ -91,6 +91,12 @@ class FsspecFileStorage:
             shutil.copyfileobj(src, dst)
         return target_path
 
+    def copy_to_path(self, key: str, target_path: Path) -> Path:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.open_read(key) as src, target_path.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return target_path
+
     def _full_path(self, key: str) -> str:
         if not self._root:
             return key

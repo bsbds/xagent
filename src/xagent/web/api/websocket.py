@@ -39,6 +39,11 @@ from ..models.task import Task, TaskStatus
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.chat_history_service import get_latest_waiting_question
+from ..services.managed_file_ref import (
+    build_task_output_storage_key,
+    create_uploaded_file_from_local_path,
+    ensure_uploaded_file_local_path,
+)
 from ..services.task_lease_service import (
     acquire_task_lease,
     mark_task_paused_if_stale,
@@ -46,11 +51,6 @@ from ..services.task_lease_service import (
     release_task_lease,
     run_task_lease_heartbeat,
     stop_task_lease_heartbeat,
-)
-from ..services.uploaded_file_storage import (
-    build_task_output_storage_key,
-    create_uploaded_file_from_local_path,
-    ensure_uploaded_file_local_path,
 )
 from ..tools.config import WebToolConfig
 from ..tracing import create_ephemeral_tracer

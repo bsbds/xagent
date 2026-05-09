@@ -35,6 +35,7 @@ from ..services.chat_history_service import (
     load_task_transcript,
 )
 from ..services.llm_utils import resolve_llms_from_names
+from ..services.managed_file_ref import ensure_uploaded_file_local_path
 from ..services.model_service import _get_visible_user_ids
 from ..services.task_execution_context_service import (
     load_task_execution_recovery_state,
@@ -46,7 +47,6 @@ from ..services.task_lease_service import (
     run_task_lease_heartbeat,
     stop_task_lease_heartbeat,
 )
-from ..services.uploaded_file_storage import ensure_uploaded_file_local_path
 from ..tools.config import WebToolConfig
 from ..tracing import create_task_tracer
 from ..user_isolated_memory import UserContext

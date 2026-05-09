@@ -46,3 +46,17 @@ def test_local_file_storage_put_bytes(monkeypatch, tmp_path):
 
     assert stored.size == 3
     assert Path(stored.uri.removeprefix("file://")).read_bytes() == b"abc"
+
+
+def test_local_file_storage_copies_object_to_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    stored = storage.put_bytes(b"restore me", "copies/data.txt")
+    target = tmp_path / "restored" / "data.txt"
+
+    copied = storage.copy_to_path(stored.key, target)
+
+    assert copied == target
+    assert target.read_bytes() == b"restore me"

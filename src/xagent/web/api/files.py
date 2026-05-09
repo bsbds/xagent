@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...config import get_uploads_dir
+from ...core.file_storage.factory import get_file_storage
 from ...core.tools.adapters.vibe.file_tool import read_file
 from ...core.tools.core.file_analysis import (
     collect_pptx_slide_blocks,
@@ -28,19 +29,12 @@ from ..models.database import get_db
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.kb_file_service import aggregate_uploaded_file_statuses
-from ..services.uploaded_file_storage import (
+from ..services.managed_file_ref import (
+    DurableObjectMissingError,
+    ManagedFileRef,
     create_uploaded_file_from_local_path,
-    delete_uploaded_file_object,
-    delete_uploaded_file_storage_key,
     guess_media_type,
-    has_durable_object,
     iter_file_handle,
-    materialize_uploaded_file,
-    open_uploaded_file,
-    upload_uploaded_file_to_durable,
-    uploaded_file_name,
-    uploaded_file_storage_key,
-    uploaded_file_storage_path,
 )
 from .legacy_file import (
     infer_user_id_from_legacy_path,
@@ -107,18 +101,6 @@ def _is_admin_user(user: User) -> bool:
     return bool(getattr(user, "is_admin", False))
 
 
-def _file_storage_path_value(file_record: UploadedFile) -> str:
-    return uploaded_file_storage_path(file_record)
-
-
-def _file_name_value(file_record: UploadedFile) -> str:
-    return uploaded_file_name(file_record)
-
-
-def _file_storage_key_value(file_record: UploadedFile) -> str:
-    return uploaded_file_storage_key(file_record)
-
-
 def _parse_task_id(task_id: Optional[str]) -> Optional[int]:
     if task_id is None or task_id == "":
         return None
@@ -126,26 +108,6 @@ def _parse_task_id(task_id: Optional[str]) -> Optional[int]:
         return int(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid task_id") from exc
-
-
-def _guess_media_type(filename: str) -> str:
-    return guess_media_type(filename)
-
-
-def _has_durable_object(file_record: UploadedFile) -> bool:
-    return has_durable_object(file_record)
-
-
-def _iter_file_handle(handle: Any) -> Any:
-    return iter_file_handle(handle)
-
-
-def _open_uploaded_file(file_record: UploadedFile) -> Any:
-    return open_uploaded_file(file_record)
-
-
-def _materialize_uploaded_file(file_record: UploadedFile) -> Path:
-    return materialize_uploaded_file(file_record)
 
 
 def _build_unique_file_path(path: Path) -> Path:
@@ -287,12 +249,11 @@ def _backfill_uploaded_file_records(db: Session, user: User) -> None:
             storage_path: str = str(candidate)
             existing_record = existing_records.get(storage_path)
             if existing_record is not None:
-                if not _file_storage_key_value(existing_record):
-                    upload_uploaded_file_to_durable(
-                        existing_record,
-                        local_path=candidate,
-                        user_id=target_user_id,
-                        mime_type=_guess_media_type(candidate.name),
+                if not existing_record.storage_key:
+                    setattr(existing_record, "user_id", target_user_id)
+                    setattr(existing_record, "storage_path", str(candidate))
+                    ManagedFileRef(existing_record).sync_to_durable(
+                        mime_type=guess_media_type(candidate.name)
                     )
                     created += 1
                 continue
@@ -304,7 +265,7 @@ def _backfill_uploaded_file_records(db: Session, user: User) -> None:
                 file_id=file_id,
                 task_id=_infer_backfill_task_id(db, candidate, target_user_id),
                 filename=candidate.name,
-                mime_type=_guess_media_type(candidate.name),
+                mime_type=guess_media_type(candidate.name),
             )
             db.add(file_record)
             existing_records[storage_path] = file_record
@@ -360,7 +321,7 @@ def _resolve_file_path(
         if file_record:
             return (
                 file_record,
-                Path(_file_storage_path_value(file_record)),
+                Path(str(file_record.storage_path)),
                 _file_user_id_value(file_record),
             )
 
@@ -591,7 +552,7 @@ async def upload_file(
             )
             if file_record.storage_key:
                 written_storage_keys.append(str(file_record.storage_key))
-            cast(Any, file_record).file_size = file_size
+            setattr(file_record, "file_size", file_size)
             db.add(file_record)
             db.flush()
 
@@ -641,7 +602,7 @@ async def upload_file(
         db.rollback()
         for storage_key in written_storage_keys:
             try:
-                delete_uploaded_file_storage_key(storage_key)
+                get_file_storage().delete(storage_key)
             except Exception:
                 logger.warning("Failed to clean up durable upload: %s", storage_key)
         for path in written_paths:
@@ -690,13 +651,13 @@ async def list_files(
     )
     files = []
     for record in records:
-        path = Path(_file_storage_path_value(record))
+        path = Path(str(record.storage_path))
         record_user_id = _file_user_id_value(record)
         relative_path = _extract_relative_path(path, record_user_id)
         files.append(
             {
                 "file_id": record.file_id,
-                "filename": _file_name_value(record),
+                "filename": record.filename,
                 "file_size": record.file_size,
                 "modified_time": _to_unix_timestamp(path, record.created_at),
                 "file_type": path.suffix.lower().lstrip("."),
@@ -733,8 +694,9 @@ async def list_task_files(
 
     files = []
     for record in records:
-        path = Path(_file_storage_path_value(record))
-        if not path.exists() and not _has_durable_object(record):
+        file_ref = ManagedFileRef(record)
+        path = file_ref.local_path
+        if not path.exists() and not file_ref.has_durable_object:
             # Skip files that no longer exist on disk
             continue
 
@@ -752,7 +714,7 @@ async def list_task_files(
         files.append(
             {
                 "file_id": record.file_id,
-                "filename": _file_name_value(record),
+                "filename": record.filename,
                 "file_size": record.file_size,
                 "modified_time": _to_unix_timestamp(path, record.created_at),
                 "file_type": path.suffix.lower().lstrip("."),
@@ -779,16 +741,17 @@ async def download_file(
     # Check access permissions
     if file_record:
         _check_file_access(file_record, user)
-        file_name = _file_name_value(file_record)
-        media_type = _guess_media_type(file_name)
-        if _has_durable_object(file_record):
+        file_ref = ManagedFileRef(file_record)
+        file_name = str(file_record.filename)
+        media_type = guess_media_type(file_name)
+        if file_ref.has_durable_object:
             content_disposition = (
                 "inline"
                 if media_type.startswith(("image/", "video/", "audio/", "text/"))
                 else "attachment"
             )
             return StreamingResponse(
-                _iter_file_handle(_open_uploaded_file(file_record)),
+                iter_file_handle(file_ref.open_read()),
                 media_type=media_type,
                 headers={
                     "Content-Disposition": f'{content_disposition}; filename="{file_name}"'
@@ -799,7 +762,7 @@ async def download_file(
         if owner_user_id != _user_id_value(user) and not _is_admin_user(user):
             raise HTTPException(status_code=403, detail="Access denied")
         file_name = full_path.name
-        media_type = _guess_media_type(file_name)
+        media_type = guess_media_type(file_name)
 
     _ensure_under_uploads(full_path, owner_user_id)
 
@@ -837,10 +800,14 @@ async def preview_file(
     # Check access permissions
     if file_record:
         _check_file_access(file_record, user)
-        file_name = _file_name_value(file_record)
-        media_type = _guess_media_type(file_name)
-        if _has_durable_object(file_record):
-            materialized_path = _materialize_uploaded_file(file_record)
+        file_ref = ManagedFileRef(file_record)
+        file_name = str(file_record.filename)
+        media_type = guess_media_type(file_name)
+        if file_ref.has_durable_object:
+            try:
+                materialized_path = file_ref.materialize()
+            except DurableObjectMissingError:
+                materialized_path = file_ref.local_path
             converted_pdf = await _try_convert_pptx_to_pdf(materialized_path)
             if converted_pdf is not None:
                 return converted_pdf
@@ -862,7 +829,7 @@ async def preview_file(
         if owner_user_id != _user_id_value(user) and not _is_admin_user(user):
             raise HTTPException(status_code=403, detail="Access denied")
         file_name = full_path.name
-        media_type = _guess_media_type(file_name)
+        media_type = guess_media_type(file_name)
 
     _ensure_under_uploads(full_path, owner_user_id)
 
@@ -905,10 +872,14 @@ async def public_preview_file(
         )
 
     if file_record:
-        base_path = Path(_file_storage_path_value(file_record))
+        file_ref = ManagedFileRef(file_record)
+        base_path = file_ref.local_path
         owner_user_id = _file_user_id_value(file_record)
-        if _has_durable_object(file_record) and not relative_path:
-            target_path = _materialize_uploaded_file(file_record)
+        if file_ref.has_durable_object and not relative_path:
+            try:
+                target_path = file_ref.materialize()
+            except DurableObjectMissingError:
+                target_path = file_ref.local_path
             converted_pdf = await _try_convert_pptx_to_pdf(target_path)
             if converted_pdf is not None:
                 return converted_pdf
@@ -921,8 +892,8 @@ async def public_preview_file(
 
             return FileResponse(
                 path=str(target_path),
-                filename=_file_name_value(file_record),
-                media_type=_guess_media_type(_file_name_value(file_record)),
+                filename=str(file_record.filename),
+                media_type=guess_media_type(str(file_record.filename)),
                 headers={"Content-Disposition": "inline"},
             )
     else:
@@ -955,7 +926,7 @@ async def public_preview_file(
     return FileResponse(
         path=str(target_path),
         filename=target_path.name,
-        media_type=_guess_media_type(target_path.name),
+        media_type=guess_media_type(target_path.name),
         headers={"Content-Disposition": "inline"},
     )
 
@@ -994,7 +965,7 @@ async def delete_file(
     # Check access permissions
     if file_record:
         _check_file_access(file_record, user)
-        file_name = _file_name_value(file_record)
+        file_name = str(file_record.filename)
     else:
         # For legacy files without records, check ownership
         if owner_user_id != _user_id_value(user) and not _is_admin_user(user):
@@ -1006,7 +977,7 @@ async def delete_file(
     if file_path.exists() and file_path.is_file():
         file_path.unlink()
     if file_record:
-        delete_uploaded_file_object(file_record)
+        ManagedFileRef(file_record).delete_durable()
 
     # Delete database record if exists
     if file_record:
