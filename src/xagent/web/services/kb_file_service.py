@@ -34,6 +34,7 @@ from ...core.tools.core.RAG_tools.version_management.cascade_cleaner import (
 )
 from ...providers.vector_store.lancedb import get_connection_from_env
 from ..models.uploaded_file import UploadedFile
+from .managed_file_ref import ManagedFileRef
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,6 @@ def upsert_uploaded_file_record(
         existing.file_size = int(file_size)  # type: ignore[assignment]
         if mime_type is not None:
             existing.mime_type = mime_type  # type: ignore[assignment]
-        db.flush()
         file_record = existing
     else:
         file_record = UploadedFile(
@@ -125,9 +125,13 @@ def upsert_uploaded_file_record(
             storage_path=storage_path_str,
             mime_type=mime_type,
             file_size=int(file_size),
+            storage_status="pending",
         )
         db.add(file_record)
         db.flush()
+
+    ManagedFileRef(file_record).sync_to_durable(mime_type=mime_type)
+    db.flush()
     db.commit()
     db.refresh(file_record)
 

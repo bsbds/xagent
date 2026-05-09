@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.api.kb import (
     _WEB_FILE_LOCKS,
     _atomic_replace_file,
@@ -147,9 +148,17 @@ class TestWebIngestionUploadedFilePersistence:
     """Test uploaded-file persistence behavior used by web ingestion."""
 
     def test_new_file_creation(
-        self, db_session: Session, test_user: User, mock_user: MagicMock
+        self,
+        db_session: Session,
+        test_user: User,
+        mock_user: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ):
         """Test creating a new file when no cache or DB record exists."""
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+        get_file_storage.cache_clear()
+
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create a temporary markdown file
             temp_file = Path(temp_dir) / "temp.md"
@@ -210,7 +219,14 @@ class TestWebIngestionUploadedFilePersistence:
                     assert file_record.file_id is not None
                     assert file_record.filename == filename
                     assert file_record.storage_path == str(persistent_file)
+                    assert file_record.storage_status == "available"
+                    assert file_record.storage_key
+                    assert file_record.storage_uri
                     assert persistent_file.exists()
+                    with get_file_storage().open_read(
+                        str(file_record.storage_key)
+                    ) as handle:
+                        assert handle.read() == persistent_file.read_bytes()
 
                     # Verify DB record exists
                     db_record = (
