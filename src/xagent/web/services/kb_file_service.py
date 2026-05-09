@@ -301,6 +301,7 @@ def delete_uploaded_file_if_orphaned(
             resolved_path.unlink()
             logger.info("Deleted orphaned physical file: %s", resolved_path)
 
+    ManagedFileRef(file_record).delete_durable()
     db.delete(file_record)
     db.flush()
 
