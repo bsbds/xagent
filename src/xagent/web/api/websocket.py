@@ -47,6 +47,11 @@ from ..services.task_lease_service import (
     run_task_lease_heartbeat,
     stop_task_lease_heartbeat,
 )
+from ..services.uploaded_file_storage import (
+    build_task_output_storage_key,
+    create_uploaded_file_from_local_path,
+    ensure_uploaded_file_local_path,
+)
 from ..tools.config import WebToolConfig
 from ..tracing import create_ephemeral_tracer
 from ..user_isolated_memory import UserContext
@@ -794,14 +799,19 @@ def _normalize_file_outputs(
             )
 
         if file_record is None:
-            file_record = UploadedFile(
-                file_id=expected_file_id,
+            file_record = create_uploaded_file_from_local_path(
+                local_path=resolved_path,
                 user_id=task_user_id,
+                file_id=expected_file_id,
                 task_id=task_id,
                 filename=item_filename or resolved_path.name,
-                storage_path=str(resolved_path),
                 mime_type=None,
-                file_size=int(resolved_path.stat().st_size),
+                storage_key=build_task_output_storage_key(
+                    task_user_id,
+                    task_id,
+                    expected_file_id,
+                    normalized_relative_path,
+                ),
             )
             db.add(file_record)
             db.flush()
@@ -1473,14 +1483,20 @@ async def redirect_legacy_preview(
             )
 
         owner_user_id, task_id = owner_info
-        file_record = UploadedFile(
-            file_id=_build_output_file_id(relative_path),
+        generated_file_id = _build_output_file_id(relative_path)
+        file_record = create_uploaded_file_from_local_path(
+            local_path=resolved_path,
             user_id=owner_user_id,
+            file_id=generated_file_id,
             task_id=task_id,
             filename=resolved_path.name,
-            storage_path=str(resolved_path),
             mime_type=None,
-            file_size=int(resolved_path.stat().st_size),
+            storage_key=build_task_output_storage_key(
+                owner_user_id,
+                cast(int, task_id),
+                generated_file_id,
+                relative_path,
+            ),
         )
         db.add(file_record)
         db.commit()
@@ -1613,7 +1629,7 @@ async def handle_file_upload_for_task(
             file_name = file_record.filename
             file_size = file_record.file_size
             file_type = file_record.mime_type
-            source_path = Path(str(file_record.storage_path))
+            source_path = ensure_uploaded_file_local_path(file_record)
 
             if not source_path.exists():
                 logger.warning(f"Physical file not found: {source_path}")
@@ -4439,7 +4455,7 @@ async def handle_build_preview_execution(
                     file_name = file_record.filename
                     file_size = file_record.file_size
                     file_type = file_record.mime_type
-                    source_path = Path(str(file_record.storage_path))
+                    source_path = ensure_uploaded_file_local_path(file_record)
 
                     if not source_path.exists():
                         logger.warning(f"Physical file not found: {source_path}")

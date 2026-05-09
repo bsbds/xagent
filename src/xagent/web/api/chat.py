@@ -46,6 +46,7 @@ from ..services.task_lease_service import (
     run_task_lease_heartbeat,
     stop_task_lease_heartbeat,
 )
+from ..services.uploaded_file_storage import ensure_uploaded_file_local_path
 from ..tools.config import WebToolConfig
 from ..tracing import create_task_tracer
 from ..user_isolated_memory import UserContext
@@ -1036,7 +1037,7 @@ class AgentServiceManager:
                             if uploaded_file is None:
                                 continue
 
-                            source_path = Path(str(uploaded_file.storage_path))
+                            source_path = ensure_uploaded_file_local_path(uploaded_file)
                             if not source_path.exists() or not source_path.is_file():
                                 continue
 
@@ -1546,7 +1547,7 @@ async def create_task(
 
                 selected_file_ids.append(str(file_id))
 
-                file_path = Path(str(uploaded_file.storage_path))
+                file_path = ensure_uploaded_file_local_path(uploaded_file)
                 file_paths.append(str(file_path))
 
                 if file_path.exists():
