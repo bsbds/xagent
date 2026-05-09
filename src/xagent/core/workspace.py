@@ -7,6 +7,7 @@ ensuring that each agent has its own isolated workspace context.
 
 import contextvars
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -18,11 +19,29 @@ from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
 from ..config import get_uploads_dir
+from .file_storage.factory import get_file_storage
 
 logger = logging.getLogger(__name__)
 
 # Context variable for auto-registration mode
 _auto_register = contextvars.ContextVar("_auto_register", default=False)
+
+
+def _safe_storage_relative_path(relative_path: str) -> str:
+    path = Path(relative_path)
+    safe_parts = [part for part in path.parts if part not in ("", ".", "..")]
+    if not safe_parts:
+        return "file"
+    return "/".join(safe_parts)
+
+
+def _build_workspace_storage_key(
+    user_id: int, task_id: int, file_id: str, relative_path: str
+) -> str:
+    return (
+        f"users/{user_id}/tasks/{task_id}/outputs/"
+        f"{file_id}/{_safe_storage_relative_path(relative_path)}"
+    )
 
 
 @dataclass
@@ -170,11 +189,22 @@ class TaskWorkspace:
                 return
 
             # Guess MIME type
-            import mimetypes
-
             mime_type, _ = mimetypes.guess_type(file_path.name)
             if not mime_type:
                 mime_type = "application/octet-stream"
+
+            try:
+                relative_path = str(file_path.relative_to(self.workspace_dir))
+            except ValueError:
+                relative_path = file_path.name
+            category = relative_path.split("/", 1)[0] if relative_path else "workspace"
+            stored_object = get_file_storage().put_file(
+                file_path,
+                _build_workspace_storage_key(
+                    int(task.user_id), task_id, file_id, relative_path
+                ),
+                mime_type,
+            )
 
             # Create file record
             file_record = UploadedFile(
@@ -183,6 +213,14 @@ class TaskWorkspace:
                 task_id=task_id,
                 filename=file_path.name,
                 storage_path=str(file_path),
+                storage_backend=stored_object.backend,
+                storage_key=stored_object.key,
+                storage_uri=stored_object.uri,
+                checksum=stored_object.checksum,
+                etag=stored_object.etag,
+                workspace_relative_path=relative_path,
+                workspace_category=category,
+                storage_status="available",
                 mime_type=mime_type,
                 file_size=file_path.stat().st_size,
             )
@@ -296,7 +334,12 @@ class TaskWorkspace:
         try:
             from ..web.models.uploaded_file import UploadedFile
 
-            db = create_db_session()
+            if self.db_session is not None:
+                db = self.db_session
+                should_close = False
+            else:
+                db = create_db_session()
+                should_close = True
             try:
                 record = (
                     db.query(UploadedFile)
@@ -315,9 +358,19 @@ class TaskWorkspace:
                             )
                             return None
                         return resolved_path
+                if (
+                    record
+                    and getattr(record, "storage_key", None)
+                    and getattr(record, "storage_status", None) == "available"
+                ):
+                    return get_file_storage().materialize(
+                        str(record.storage_key),
+                        str(record.filename),
+                    )
                 return None
             finally:
-                db.close()
+                if should_close:
+                    db.close()
         except Exception as e:
             logger.warning(f"Failed to resolve file_id from database: {e}")
             return None

@@ -19,9 +19,12 @@ configuration management with validation, type safety, and better structure.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import tempfile
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,9 @@ TASK_LEASE_TTL_SECONDS = "XAGENT_TASK_LEASE_TTL_SECONDS"
 TASK_LEASE_HEARTBEAT_SECONDS = "XAGENT_TASK_LEASE_HEARTBEAT_SECONDS"
 STORAGE_ROOT = "XAGENT_STORAGE_ROOT"
 MAX_UPLOAD_SIZE = "XAGENT_MAX_UPLOAD_SIZE"
+FILE_STORAGE_URI = "XAGENT_FILE_STORAGE_URI"
+FILE_STORAGE_OPTIONS = "XAGENT_FILE_STORAGE_OPTIONS"
+FILE_MATERIALIZE_DIR = "XAGENT_FILE_MATERIALIZE_DIR"
 SANDBOX_IMAGE = "SANDBOX_IMAGE"
 LANCEDB_PATH = "LANCEDB_PATH"
 DATABASE_URL = "DATABASE_URL"
@@ -251,6 +257,56 @@ def get_max_upload_size_bytes() -> int:
         )
 
     return result
+
+
+def get_file_storage_uri() -> str:
+    """Get the durable file storage URI.
+
+    Priority:
+        1. XAGENT_FILE_STORAGE_URI environment variable
+        2. file://<storage-root>/files
+
+    Returns:
+        fsspec-compatible URI for durable user-visible file storage.
+    """
+    env_value = os.getenv(FILE_STORAGE_URI)
+    if env_value:
+        return env_value
+
+    return (get_storage_root() / "files").as_uri()
+
+
+def get_file_storage_options() -> dict[str, Any]:
+    """Get fsspec provider options for durable file storage.
+
+    The value must be a JSON object. Provider-specific details such as S3
+    endpoint URL, region, or credentials profile live here to keep the config
+    surface small.
+    """
+    env_value = os.getenv(FILE_STORAGE_OPTIONS)
+    if not env_value:
+        return {}
+
+    try:
+        parsed = json.loads(env_value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid {FILE_STORAGE_OPTIONS} value: {env_value!r}"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Invalid {FILE_STORAGE_OPTIONS} value: must be a JSON object")
+
+    return parsed
+
+
+def get_file_materialize_dir() -> Path:
+    """Get the local directory used for temporary durable-file materialization."""
+    env_value = os.getenv(FILE_MATERIALIZE_DIR)
+    if env_value:
+        return Path(env_value)
+
+    return Path(tempfile.gettempdir()) / "xagent-materialized"
 
 
 def format_file_size(size_bytes: int) -> str:

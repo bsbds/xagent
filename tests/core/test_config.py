@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from tempfile import gettempdir
 
 import pytest
 
@@ -10,6 +11,9 @@ from xagent.config import (
     DATABASE_URL,
     EXTERNAL_SKILLS_LIBRARY_DIRS,
     EXTERNAL_UPLOAD_DIRS,
+    FILE_MATERIALIZE_DIR,
+    FILE_STORAGE_OPTIONS,
+    FILE_STORAGE_URI,
     LANCEDB_PATH,
     MAX_TRACE_PAYLOAD_BYTES,
     MAX_UPLOAD_SIZE,
@@ -30,6 +34,9 @@ from xagent.config import (
     get_default_task_execution_mode,
     get_external_skills_dirs,
     get_external_upload_dirs,
+    get_file_materialize_dir,
+    get_file_storage_options,
+    get_file_storage_uri,
     get_lancedb_path,
     get_max_trace_payload_bytes,
     get_max_upload_size_bytes,
@@ -77,6 +84,15 @@ class TestEnvironmentVariableConstants:
 
     def test_web_search_provider_constant(self):
         assert WEB_SEARCH_PROVIDER == "XAGENT_WEB_SEARCH_PROVIDER"
+
+    def test_file_storage_uri_constant(self):
+        assert FILE_STORAGE_URI == "XAGENT_FILE_STORAGE_URI"
+
+    def test_file_storage_options_constant(self):
+        assert FILE_STORAGE_OPTIONS == "XAGENT_FILE_STORAGE_OPTIONS"
+
+    def test_file_materialize_dir_constant(self):
+        assert FILE_MATERIALIZE_DIR == "XAGENT_FILE_MATERIALIZE_DIR"
 
 
 class TestGetWebSearchProvider:
@@ -138,6 +154,51 @@ class TestFormatFileSize:
 
     def test_promotes_boundary_values_to_next_unit(self):
         assert format_file_size(1048575) == "1MB"
+
+
+class TestFileStorageConfig:
+    def test_default_file_storage_uri_uses_storage_root(self, monkeypatch):
+        monkeypatch.delenv(FILE_STORAGE_URI, raising=False)
+        monkeypatch.setenv(STORAGE_ROOT, "/custom/storage")
+
+        assert get_file_storage_uri() == "file:///custom/storage/files"
+
+    def test_file_storage_uri_with_env_var(self, monkeypatch):
+        monkeypatch.setenv(FILE_STORAGE_URI, "s3://bucket/prefix")
+
+        assert get_file_storage_uri() == "s3://bucket/prefix"
+
+    def test_file_storage_options_default_to_empty_dict(self, monkeypatch):
+        monkeypatch.delenv(FILE_STORAGE_OPTIONS, raising=False)
+
+        assert get_file_storage_options() == {}
+
+    def test_file_storage_options_parse_json_object(self, monkeypatch):
+        monkeypatch.setenv(
+            FILE_STORAGE_OPTIONS,
+            '{"endpoint_url":"https://s3.example.com","region_name":"us-east-1"}',
+        )
+
+        assert get_file_storage_options() == {
+            "endpoint_url": "https://s3.example.com",
+            "region_name": "us-east-1",
+        }
+
+    def test_file_storage_options_reject_non_object_json(self, monkeypatch):
+        monkeypatch.setenv(FILE_STORAGE_OPTIONS, '["not", "an", "object"]')
+
+        with pytest.raises(ValueError, match="XAGENT_FILE_STORAGE_OPTIONS"):
+            get_file_storage_options()
+
+    def test_file_materialize_dir_default(self, monkeypatch):
+        monkeypatch.delenv(FILE_MATERIALIZE_DIR, raising=False)
+
+        assert get_file_materialize_dir() == Path(gettempdir()) / "xagent-materialized"
+
+    def test_file_materialize_dir_with_env_var(self, monkeypatch):
+        monkeypatch.setenv(FILE_MATERIALIZE_DIR, "/custom/materialized")
+
+        assert get_file_materialize_dir() == Path("/custom/materialized")
 
 
 class TestGetUploadsDir:

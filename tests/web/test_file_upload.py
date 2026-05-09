@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.api.auth import hash_password
 from xagent.web.api.files import file_router
 from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
@@ -135,6 +136,8 @@ def temp_uploads_dir(monkeypatch):
         import xagent.web.api.files
         import xagent.web.config
 
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (temp_path / "objects").as_uri())
+        get_file_storage.cache_clear()
         monkeypatch.setattr(xagent.web.config, "get_uploads_dir", lambda: temp_path)
         monkeypatch.setattr(xagent.web.api.files, "get_uploads_dir", lambda: temp_path)
 
@@ -161,6 +164,40 @@ class TestFileUpload:
 
         # File upload returns 200 on success
         assert response.status_code == 200
+
+    def test_upload_download_uses_durable_storage_after_local_file_deleted(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch, tmp_path
+    ):
+        """Uploaded files should download from durable storage, not local uploads."""
+        object_root = tmp_path / "objects"
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+        get_file_storage.cache_clear()
+
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("durable.txt", b"durable content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 200
+        file_id = response.json()["file_id"]
+
+        object_files = [path for path in object_root.rglob("*") if path.is_file()]
+        assert len(object_files) == 1
+        assert object_files[0].read_bytes() == b"durable content"
+
+        for path in temp_uploads_dir.rglob("*"):
+            if path.is_file():
+                path.unlink()
+
+        download = client.get(
+            f"/api/files/download/{file_id}",
+            headers=auth_headers,
+        )
+
+        assert download.status_code == 200
+        assert download.content == b"durable content"
 
     def test_upload_python_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
