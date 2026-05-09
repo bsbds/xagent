@@ -19,7 +19,6 @@ from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
 from ..config import get_uploads_dir
-from .file_storage.factory import get_file_storage
 
 logger = logging.getLogger(__name__)
 
@@ -198,13 +197,6 @@ class TaskWorkspace:
             except ValueError:
                 relative_path = file_path.name
             category = relative_path.split("/", 1)[0] if relative_path else "workspace"
-            stored_object = get_file_storage().put_file(
-                file_path,
-                _build_workspace_storage_key(
-                    int(task.user_id), task_id, file_id, relative_path
-                ),
-                mime_type,
-            )
 
             # Create file record
             file_record = UploadedFile(
@@ -213,16 +205,19 @@ class TaskWorkspace:
                 task_id=task_id,
                 filename=file_path.name,
                 storage_path=str(file_path),
-                storage_backend=stored_object.backend,
-                storage_key=stored_object.key,
-                storage_uri=stored_object.uri,
-                checksum=stored_object.checksum,
-                etag=stored_object.etag,
                 workspace_relative_path=relative_path,
                 workspace_category=category,
-                storage_status="available",
+                storage_status="pending",
                 mime_type=mime_type,
                 file_size=file_path.stat().st_size,
+            )
+            from ..web.services.managed_file_ref import ManagedFileRef
+
+            ManagedFileRef(file_record).sync_to_durable(
+                storage_key=_build_workspace_storage_key(
+                    int(task.user_id), task_id, file_id, relative_path
+                ),
+                mime_type=mime_type,
             )
             db.add(file_record)
             if should_close:
@@ -363,10 +358,9 @@ class TaskWorkspace:
                     and getattr(record, "storage_key", None)
                     and getattr(record, "storage_status", None) == "available"
                 ):
-                    return get_file_storage().materialize(
-                        str(record.storage_key),
-                        str(record.filename),
-                    )
+                    from ..web.services.managed_file_ref import ManagedFileRef
+
+                    return ManagedFileRef(record).materialize()
                 return None
             finally:
                 if should_close:

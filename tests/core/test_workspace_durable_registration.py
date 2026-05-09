@@ -59,6 +59,69 @@ def test_workspace_register_file_writes_durable_storage(
         engine.dispose()
 
 
+def test_workspace_register_file_uses_managed_file_ref_sync(
+    monkeypatch, tmp_path, mock_workspace_db
+):
+    # Override the global autouse fixture from tests/conftest.py for this module.
+    del mock_workspace_db
+    object_root = tmp_path / "objects"
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+    get_file_storage.cache_clear()
+
+    sync_calls = []
+
+    from xagent.web.services.managed_file_ref import ManagedFileRef
+
+    original_sync = ManagedFileRef.sync_to_durable
+
+    def sync_spy(self, *, storage_key=None, mime_type=None):
+        sync_calls.append(
+            {
+                "file_id": self.record.file_id,
+                "storage_key": storage_key,
+                "mime_type": mime_type,
+            }
+        )
+        return original_sync(self, storage_key=storage_key, mime_type=mime_type)
+
+    monkeypatch.setattr(ManagedFileRef, "sync_to_durable", sync_spy)
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        user = User(username="workspace-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        task = Task(id=456, user_id=user.id, title="Workspace task")
+        db.add(task)
+        db.commit()
+
+        workspace = TaskWorkspace(
+            id="web_task_456", base_dir=str(tmp_path / "workspaces")
+        )
+        output_path = workspace.output_dir / "report.txt"
+        output_path.write_text("workspace output", encoding="utf-8")
+
+        file_id = workspace.register_file(str(output_path), db_session=db)
+
+        assert sync_calls == [
+            {
+                "file_id": file_id,
+                "storage_key": (
+                    f"users/{user.id}/tasks/456/outputs/{file_id}/output/report.txt"
+                ),
+                "mime_type": "text/plain",
+            }
+        ]
+    finally:
+        db.close()
+        engine.dispose()
+
+
 @pytest.fixture
 def mock_workspace_db():
     yield
