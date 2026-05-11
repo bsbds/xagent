@@ -11,7 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import get_uploads_dir
+from ..config import (
+    get_agent_runtime,
+    get_file_storage_startup_sync_enabled,
+    get_uploads_dir,
+)
 from ..core.tracing.langfuse import flush_langfuse, initialize_langfuse
 from .api.admin_mcp import admin_mcp_router
 from .api.admin_users import router as admin_users_router
@@ -61,6 +65,25 @@ app = FastAPI(
 
 # Track background migration task for graceful shutdown cleanup.
 _migration_task: asyncio.Task[None] | None = None
+
+
+def run_startup_file_storage_sync() -> None:
+    """Synchronize DB-registered local files into durable S3 storage."""
+    if not get_file_storage_startup_sync_enabled():
+        logger.info("Startup file storage sync is disabled")
+        return
+
+    from .models.database import get_session_local
+    from .services.startup_file_storage_sync import (
+        sync_registered_files_to_durable_storage,
+    )
+
+    SessionLocal = get_session_local()
+    db = SessionLocal()
+    try:
+        sync_registered_files_to_durable_storage(db)
+    finally:
+        db.close()
 
 
 @app.get("/health")
@@ -248,6 +271,7 @@ async def startup_event() -> None:
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
+    run_startup_file_storage_sync()
 
     initialize_langfuse()
 
