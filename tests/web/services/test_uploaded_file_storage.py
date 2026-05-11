@@ -39,7 +39,8 @@ def test_create_uploaded_file_from_local_path_stores_durable_object(
     source.unlink()
 
     materialized = ManagedFileRef(file_record).materialize()
-    assert materialized.parent == tmp_path / "materialized"
+    assert materialized.is_relative_to(tmp_path / "materialized")
+    assert materialized.name == "input.txt"
     assert materialized.read_text(encoding="utf-8") == "hello object storage"
 
 

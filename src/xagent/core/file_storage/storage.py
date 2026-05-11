@@ -84,8 +84,9 @@ class FsspecFileStorage:
 
     def materialize(self, key: str, filename: str | None = None) -> Path:
         normalized_key = self._normalize_key(key)
-        target_name = Path(filename or normalized_key).name
-        target_path = self._materialize_dir / target_name
+        target_name = Path(filename or normalized_key).name or "file"
+        key_digest = hashlib.sha256(normalized_key.encode("utf-8")).hexdigest()[:16]
+        target_path = self._materialize_dir / key_digest / target_name
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with self.open_read(normalized_key) as src, target_path.open("wb") as dst:
             shutil.copyfileobj(src, dst)

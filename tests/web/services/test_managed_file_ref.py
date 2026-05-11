@@ -70,7 +70,8 @@ def test_materialize_uses_temp_dir_when_original_path_is_missing(monkeypatch, tm
 
     materialized = ManagedFileRef(record).materialize()
 
-    assert materialized == tmp_path / "materialized" / "preview.txt"
+    assert materialized.is_relative_to(tmp_path / "materialized")
+    assert materialized.name == "preview.txt"
     assert materialized.read_text(encoding="utf-8") == "preview content"
     assert not local_path.exists()
 
