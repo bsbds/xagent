@@ -91,8 +91,6 @@ class ManagedFileRef:
         return self.storage.materialize(self.storage_key, self.filename)
 
     def open_read(self) -> BinaryIO:
-        if self.has_durable_object:
-            return self.storage.open_read(self.storage_key)
         return self.ensure_local().open("rb")
 
     def sync_to_durable(

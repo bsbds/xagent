@@ -92,6 +92,27 @@ def test_open_read_streams_from_durable_when_available(monkeypatch, tmp_path):
         assert handle.read() == b"stream me"
 
 
+def test_open_read_prefers_existing_local_file_over_durable(monkeypatch, tmp_path):
+    _configure_storage(monkeypatch, tmp_path)
+    storage = get_file_storage()
+    stored = storage.put_bytes(
+        b"stale durable content", "users/7/uploads/file-123/current.txt"
+    )
+    local_path = tmp_path / "uploads" / "current.txt"
+    local_path.parent.mkdir()
+    local_path.write_bytes(b"current local content")
+    record = _record(
+        local_path,
+        storage_backend=stored.backend,
+        storage_key=stored.key,
+        storage_uri=stored.uri,
+        storage_status="available",
+    )
+
+    with ManagedFileRef(record).open_read() as handle:
+        assert handle.read() == b"current local content"
+
+
 def test_sync_to_durable_uploads_local_file_and_updates_record(monkeypatch, tmp_path):
     _configure_storage(monkeypatch, tmp_path)
     source = tmp_path / "uploads" / "sync.txt"
