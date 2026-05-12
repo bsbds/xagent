@@ -143,7 +143,11 @@ class AgentService:
             if not has_files:
                 raise ValueError("Task cannot be empty or whitespace-only")
         await self._ensure_tools_initialized()
-        return await self._execute_agent_task(task, context, task_id)
+        result = await self._execute_agent_task(task, context, task_id)
+        file_outputs = self.get_output_files()
+        if file_outputs:
+            result["file_outputs"] = file_outputs
+        return result
 
     async def pause_execution(self) -> bool:
         if self._is_paused:
