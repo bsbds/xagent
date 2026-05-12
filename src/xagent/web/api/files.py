@@ -31,6 +31,7 @@ from ..models.user import User
 from ..services.kb_file_service import aggregate_uploaded_file_statuses
 from ..services.managed_file_ref import (
     DurableObjectMissingError,
+    DurableStorageOperationError,
     ManagedFileRef,
     guess_media_type,
     iter_file_handle,
@@ -56,6 +57,13 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 file_router = APIRouter(prefix="/api/files", tags=["files"])
+
+
+def _durable_storage_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="Durable storage is temporarily unavailable",
+    )
 
 
 async def _write_upload_with_size_limit(uploaded: UploadFile, target_path: Path) -> int:
@@ -596,6 +604,21 @@ async def upload_file(
             )
 
         db.commit()
+    except DurableStorageOperationError as exc:
+        db.rollback()
+        for storage_key in written_storage_keys:
+            try:
+                get_file_storage().delete(storage_key)
+            except Exception:
+                logger.warning("Failed to clean up durable upload: %s", storage_key)
+        for path in written_paths:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        logger.warning("Durable storage unavailable during upload: %s", exc)
+        raise _durable_storage_unavailable() from exc
     except Exception:
         db.rollback()
         for storage_key in written_storage_keys:
@@ -742,19 +765,36 @@ async def download_file(
         file_ref = ManagedFileRef(file_record)
         file_name = str(file_record.filename)
         media_type = guess_media_type(file_name)
+        if full_path.exists() and full_path.is_file():
+            content_disposition = (
+                "inline"
+                if media_type.startswith(("image/", "video/", "audio/", "text/"))
+                else "attachment"
+            )
+            return FileResponse(
+                path=str(full_path),
+                filename=file_name,
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f'{content_disposition}; filename="{file_name}"'
+                },
+            )
         if file_ref.has_durable_object:
             content_disposition = (
                 "inline"
                 if media_type.startswith(("image/", "video/", "audio/", "text/"))
                 else "attachment"
             )
-            return StreamingResponse(
-                iter_file_handle(file_ref.open_read()),
-                media_type=media_type,
-                headers={
-                    "Content-Disposition": f'{content_disposition}; filename="{file_name}"'
-                },
-            )
+            try:
+                return StreamingResponse(
+                    iter_file_handle(file_ref.open_read()),
+                    media_type=media_type,
+                    headers={
+                        "Content-Disposition": f'{content_disposition}; filename="{file_name}"'
+                    },
+                )
+            except DurableStorageOperationError as exc:
+                raise _durable_storage_unavailable() from exc
     else:
         # For legacy files without records, check ownership
         if owner_user_id != _user_id_value(user) and not _is_admin_user(user):
@@ -804,6 +844,8 @@ async def preview_file(
         if file_ref.has_durable_object:
             try:
                 materialized_path = file_ref.materialize()
+            except DurableStorageOperationError as exc:
+                raise _durable_storage_unavailable() from exc
             except DurableObjectMissingError:
                 materialized_path = file_ref.local_path
             converted_pdf = await _try_convert_pptx_to_pdf(materialized_path)
@@ -876,6 +918,8 @@ async def public_preview_file(
         if file_ref.has_durable_object and not relative_path:
             try:
                 target_path = file_ref.materialize()
+            except DurableStorageOperationError as exc:
+                raise _durable_storage_unavailable() from exc
             except DurableObjectMissingError:
                 target_path = file_ref.local_path
             converted_pdf = await _try_convert_pptx_to_pdf(target_path)
@@ -973,8 +1017,22 @@ async def delete_file(
     _ensure_under_uploads(file_path, owner_user_id)
 
     if file_record:
-        UploadedFileStore(db).delete(file_record)
+        storage_key = str(file_record.storage_key or "")
+        storage_status = str(file_record.storage_status or "")
+        db.delete(file_record)
         db.commit()
+        # TODO: Replace this best-effort cleanup with a strict delete lifecycle
+        # using tombstones/status and a retryable reconciler.
+        try:
+            if file_path.exists() and file_path.is_file():
+                file_path.unlink()
+        except OSError:
+            logger.warning("Failed to clean up deleted local file: %s", file_path)
+        try:
+            if storage_key and storage_status == "available":
+                get_file_storage().delete(storage_key)
+        except Exception:
+            logger.warning("Failed to clean up deleted durable file: %s", storage_key)
     elif file_path.exists() and file_path.is_file():
         file_path.unlink()
 

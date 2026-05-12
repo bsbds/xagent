@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -5,6 +6,7 @@ from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.models.database import Base
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
+from xagent.web.services.managed_file_ref import DurableStorageOperationError
 from xagent.web.services.uploaded_file_store import UploadedFileStore
 
 
@@ -103,6 +105,38 @@ def test_delete_removes_local_durable_and_db_record(monkeypatch, tmp_path):
     assert db.query(UploadedFile).filter_by(file_id="file-delete").first() is None
 
 
+def test_delete_removes_db_row_before_cleanup(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+    db = _session()
+    user = _user(db)
+    source = tmp_path / "uploads" / "delete-first.txt"
+    source.parent.mkdir()
+    source.write_text("delete first", encoding="utf-8")
+    store = UploadedFileStore(db)
+    record = store.create_from_local_path(
+        local_path=source,
+        user_id=int(user.id),
+        file_id="file-delete-first",
+        filename="delete-first.txt",
+    )
+    storage_key = str(record.storage_key)
+
+    from xagent.web.services.managed_file_ref import ManagedFileRef
+
+    def fail_delete_durable(self: ManagedFileRef) -> None:
+        raise RuntimeError("simulated durable cleanup failure")
+
+    monkeypatch.setattr(ManagedFileRef, "delete_durable", fail_delete_durable)
+
+    with pytest.raises(RuntimeError, match="simulated durable cleanup failure"):
+        store.delete(record, delete_local=True)
+
+    assert db.query(UploadedFile).filter_by(file_id="file-delete-first").first() is None
+    assert source.exists()
+    assert get_file_storage().exists(storage_key)
+
+
 def test_upsert_by_storage_path_reuses_record_and_refreshes_durable(
     monkeypatch, tmp_path
 ):
@@ -140,3 +174,34 @@ def test_upsert_by_storage_path_reuses_record_and_refreshes_durable(
     assert second.file_size == len("second")
     with get_file_storage().open_read(first_key) as handle:
         assert handle.read() == b"second"
+
+
+def test_create_from_local_path_rolls_back_record_when_durable_write_fails(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+    db = _session()
+    user = _user(db)
+    source = tmp_path / "uploads" / "output.txt"
+    source.parent.mkdir()
+    source.write_text("output content", encoding="utf-8")
+
+    from xagent.core.file_storage.storage import FsspecFileStorage
+
+    def fail_put_file(self, source, key, content_type=None):
+        raise RuntimeError("simulated durable write outage")
+
+    monkeypatch.setattr(FsspecFileStorage, "put_file", fail_put_file)
+
+    with pytest.raises(DurableStorageOperationError):
+        UploadedFileStore(db).create_from_local_path(
+            local_path=source,
+            user_id=int(user.id),
+            file_id="file-output",
+            filename="output.txt",
+            mime_type="text/plain",
+        )
+
+    db.rollback()
+    assert db.query(UploadedFile).filter_by(file_id="file-output").first() is None

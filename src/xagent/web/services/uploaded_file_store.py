@@ -157,11 +157,11 @@ class UploadedFileStore:
         delete_local: bool = True,
         local_root: Optional[Path] = None,
     ) -> None:
+        self.db.delete(file_record)
+        self.db.flush()
         ManagedFileRef(file_record).delete_durable()
         if delete_local:
             self._delete_local(file_record, local_root=local_root)
-        self.db.delete(file_record)
-        self.db.flush()
 
     @staticmethod
     def ensure_local(file_record: UploadedFile) -> Path:

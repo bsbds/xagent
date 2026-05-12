@@ -13,6 +13,10 @@ class DurableObjectMissingError(FileNotFoundError):
     """Raised when a registered file has no local copy or durable object."""
 
 
+class DurableStorageOperationError(RuntimeError):
+    """Raised when durable object storage is unavailable for an operation."""
+
+
 def safe_storage_filename(filename: str) -> str:
     safe_name = Path(filename).name.strip()
     return safe_name or "file"
@@ -78,7 +82,12 @@ class ManagedFileRef:
         if not self.has_durable_object:
             raise DurableObjectMissingError(path)
 
-        return self.storage.copy_to_path(self.storage_key, path)
+        try:
+            return self.storage.copy_to_path(self.storage_key, path)
+        except Exception as exc:
+            raise DurableStorageOperationError(
+                f"Failed to restore durable object: {self.storage_key}"
+            ) from exc
 
     def materialize(self) -> Path:
         path = self.local_path
@@ -88,7 +97,12 @@ class ManagedFileRef:
         if not self.has_durable_object:
             raise DurableObjectMissingError(path)
 
-        return self.storage.materialize(self.storage_key, self.filename)
+        try:
+            return self.storage.materialize(self.storage_key, self.filename)
+        except Exception as exc:
+            raise DurableStorageOperationError(
+                f"Failed to materialize durable object: {self.storage_key}"
+            ) from exc
 
     def open_read(self) -> BinaryIO:
         return self.ensure_local().open("rb")
@@ -112,11 +126,16 @@ class ManagedFileRef:
                 self.filename or path.name,
             )
         )
-        stored_object = self.storage.put_file(
-            path,
-            resolved_key,
-            mime_type or getattr(self.record, "mime_type", None),
-        )
+        try:
+            stored_object = self.storage.put_file(
+                path,
+                resolved_key,
+                mime_type or getattr(self.record, "mime_type", None),
+            )
+        except Exception as exc:
+            raise DurableStorageOperationError(
+                f"Failed to write durable object: {resolved_key}"
+            ) from exc
         self.apply_stored_object(stored_object)
         setattr(self.record, "file_size", path.stat().st_size)
         return stored_object

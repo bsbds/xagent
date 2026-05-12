@@ -2,16 +2,24 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from tests.utils.langfuse_execution_fakes import (
     CalculatorTool,
     DeterministicReActLLM,
     FakeLangfuseClient,
 )
-from xagent.web.api.websocket import handle_build_preview_execution
+from xagent.web.api.websocket import (
+    _normalize_file_outputs,
+    handle_build_preview_execution,
+)
+from xagent.web.models.database import Base
 from xagent.web.models.model import Model as DBModel
+from xagent.web.models.task import Task
+from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
+from xagent.web.services.managed_file_ref import DurableStorageOperationError
 
 
 @pytest.mark.asyncio
@@ -85,6 +93,51 @@ async def test_handle_build_preview_execution_empty_tool_categories():
         # Assert
         # Verify WebToolConfig was called (this is where MinimalRequest is used)
         assert MockWebToolConfig.called
+
+
+def test_normalize_file_outputs_rolls_back_when_durable_storage_fails(
+    monkeypatch, tmp_path
+):
+    engine = create_engine("sqlite:///:memory:")
+    SessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(engine)
+    db = SessionLocal()
+    try:
+        user = User(username="ws-output-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        task = Task(id=321, user_id=user.id, title="Output outage task")
+        db.add(task)
+        db.commit()
+
+        uploads_dir = tmp_path / "uploads"
+        output_path = uploads_dir / "user_1" / "web_task_321" / "output" / "report.txt"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_text("report", encoding="utf-8")
+        monkeypatch.setattr(
+            "xagent.web.api.websocket.get_uploads_dir", lambda: uploads_dir
+        )
+
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        def fail_put_file(self, source, key, content_type=None):
+            raise RuntimeError("simulated durable output outage")
+
+        monkeypatch.setattr(FsspecFileStorage, "put_file", fail_put_file)
+
+        with pytest.raises(DurableStorageOperationError):
+            _normalize_file_outputs(
+                db,
+                task_id=321,
+                task_user_id=int(user.id),
+                file_outputs=[str(output_path)],
+            )
+
+        db.rollback()
+        assert db.query(UploadedFile).filter_by(task_id=321).all() == []
+    finally:
+        db.close()
+        engine.dispose()
 
 
 @pytest.mark.asyncio

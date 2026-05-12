@@ -2,7 +2,10 @@ import pytest
 
 from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.models.uploaded_file import UploadedFile
-from xagent.web.services.managed_file_ref import ManagedFileRef
+from xagent.web.services.managed_file_ref import (
+    DurableStorageOperationError,
+    ManagedFileRef,
+)
 
 
 def _configure_storage(monkeypatch, tmp_path):
@@ -154,3 +157,55 @@ def test_missing_local_and_missing_durable_key_raises(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         ManagedFileRef(record).ensure_local()
+
+
+class FailingStorage:
+    def put_file(self, source, key, content_type=None):
+        raise RuntimeError("remote write unavailable")
+
+    def copy_to_path(self, key, target_path):
+        raise RuntimeError("remote read unavailable")
+
+    def materialize(self, key, filename=None):
+        raise RuntimeError("remote preview unavailable")
+
+
+def test_sync_to_durable_wraps_remote_write_failure(tmp_path):
+    source = tmp_path / "uploads" / "sync-fails.txt"
+    source.parent.mkdir()
+    source.write_text("sync content", encoding="utf-8")
+    record = _record(source, file_size=source.stat().st_size)
+
+    with pytest.raises(DurableStorageOperationError, match="write durable object"):
+        ManagedFileRef(record, storage=FailingStorage()).sync_to_durable()
+
+    assert record.storage_status == "legacy"
+    assert record.storage_key is None
+
+
+def test_ensure_local_wraps_remote_read_failure_when_local_missing(tmp_path):
+    local_path = tmp_path / "uploads" / "missing-local.txt"
+    record = _record(
+        local_path,
+        storage_backend="s3",
+        storage_key="users/7/uploads/file-123/missing-local.txt",
+        storage_status="available",
+    )
+
+    with pytest.raises(DurableStorageOperationError, match="restore durable object"):
+        ManagedFileRef(record, storage=FailingStorage()).ensure_local()
+
+
+def test_materialize_wraps_remote_preview_failure_when_local_missing(tmp_path):
+    local_path = tmp_path / "uploads" / "missing-preview.txt"
+    record = _record(
+        local_path,
+        storage_backend="s3",
+        storage_key="users/7/uploads/file-123/missing-preview.txt",
+        storage_status="available",
+    )
+
+    with pytest.raises(
+        DurableStorageOperationError, match="materialize durable object"
+    ):
+        ManagedFileRef(record, storage=FailingStorage()).materialize()

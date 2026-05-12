@@ -16,6 +16,7 @@ from xagent.web.api.auth import hash_password
 from xagent.web.api.files import file_router
 from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from xagent.web.models.database import Base, get_db
+from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
 
 
@@ -198,6 +199,127 @@ class TestFileUpload:
 
         assert download.status_code == 200
         assert download.content == b"durable content"
+
+    def test_upload_remote_storage_outage_returns_503_and_rolls_back(
+        self, client, test_db, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        admin_user, test_app = test_db
+
+        def fail_put_file(self, source, key, content_type=None):
+            raise RuntimeError("simulated remote write outage")
+
+        monkeypatch.setattr(FsspecFileStorage, "put_file", fail_put_file)
+
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("outage.txt", b"outage content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 503
+        assert "durable storage" in response.json()["detail"].lower()
+        assert not list(temp_uploads_dir.rglob("outage.txt"))
+
+        db = next(test_app.dependency_overrides[get_db]())
+        try:
+            assert (
+                db.query(UploadedFile)
+                .filter(
+                    UploadedFile.user_id == admin_user.id,
+                    UploadedFile.filename == "outage.txt",
+                )
+                .first()
+                is None
+            )
+        finally:
+            db.close()
+
+    def test_download_serves_existing_local_file_during_remote_outage(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        upload = client.post(
+            "/api/files/upload",
+            files={"file": ("local-copy.txt", b"local content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+
+        def fail_open_read(self, key):
+            raise RuntimeError("simulated remote read outage")
+
+        monkeypatch.setattr(FsspecFileStorage, "open_read", fail_open_read)
+
+        download = client.get(
+            f"/api/files/download/{upload.json()['file_id']}",
+            headers=auth_headers,
+        )
+
+        assert download.status_code == 200
+        assert download.content == b"local content"
+
+    def test_download_remote_storage_outage_returns_503_when_local_missing(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        upload = client.post(
+            "/api/files/upload",
+            files={"file": ("remote-only.txt", b"remote content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+        for path in temp_uploads_dir.rglob("remote-only.txt"):
+            path.unlink()
+
+        def fail_open_read(self, key):
+            raise RuntimeError("simulated remote read outage")
+
+        monkeypatch.setattr(FsspecFileStorage, "open_read", fail_open_read)
+
+        download = client.get(
+            f"/api/files/download/{file_id}",
+            headers=auth_headers,
+        )
+
+        assert download.status_code == 503
+        assert "durable storage" in download.json()["detail"].lower()
+
+    def test_preview_remote_storage_outage_returns_503_when_local_missing(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        upload = client.post(
+            "/api/files/upload",
+            files={"file": ("preview-remote.txt", b"preview content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+        for path in temp_uploads_dir.rglob("preview-remote.txt"):
+            path.unlink()
+
+        def fail_open_read(self, key):
+            raise RuntimeError("simulated remote preview outage")
+
+        monkeypatch.setattr(FsspecFileStorage, "open_read", fail_open_read)
+
+        preview = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+        )
+
+        assert preview.status_code == 503
+        assert "durable storage" in preview.json()["detail"].lower()
 
     def test_upload_python_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
