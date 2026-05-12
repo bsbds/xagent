@@ -972,11 +972,11 @@ async def delete_file(
 
     _ensure_under_uploads(file_path, owner_user_id)
 
-    if file_path.exists() and file_path.is_file():
-        file_path.unlink()
     if file_record:
-        UploadedFileStore(db).delete(file_record, delete_local=False)
+        UploadedFileStore(db).delete(file_record)
         db.commit()
+    elif file_path.exists() and file_path.is_file():
+        file_path.unlink()
 
     return {
         "success": True,
