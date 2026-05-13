@@ -34,7 +34,6 @@ from ..services.managed_file_ref import (
     DurableStorageOperationError,
     ManagedFileRef,
     guess_media_type,
-    iter_file_handle,
 )
 from ..services.uploaded_file_store import UploadedFileStore
 from .legacy_file import (
@@ -786,8 +785,10 @@ async def download_file(
                 else "attachment"
             )
             try:
-                return StreamingResponse(
-                    iter_file_handle(file_ref.open_read()),
+                restored_path = file_ref.ensure_local()
+                return FileResponse(
+                    path=str(restored_path),
+                    filename=file_name,
                     media_type=media_type,
                     headers={
                         "Content-Disposition": f'{content_disposition}; filename="{file_name}"'
