@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import logging
 import os
 import tempfile
@@ -9,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock, Timeout
 from sqlalchemy.orm import Session
 
 from ...core.file_storage import FsspecFileStorage, get_file_storage
@@ -195,24 +195,14 @@ def _get_lock_file_path() -> str:
 def _acquire_file_lock() -> Any | None:
     lock_path = _get_lock_file_path()
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-    lock_file = open(lock_path, "a+", encoding="utf-8")
     try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        lock_file.seek(0)
-        lock_file.truncate()
-        lock_file.write(str(os.getpid()))
-        lock_file.flush()
-        return lock_file
-    except BlockingIOError:
-        lock_file.close()
+        lock = FileLock(lock_path, timeout=0)
+        lock.acquire()
+        Path(lock_path).write_text(str(os.getpid()), encoding="utf-8")
+        return lock
+    except Timeout:
         return None
-    except Exception:
-        lock_file.close()
-        raise
 
 
 def _release_file_lock(lock_file: Any) -> None:
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    finally:
-        lock_file.close()
+    lock_file.release()

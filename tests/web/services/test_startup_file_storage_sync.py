@@ -8,6 +8,8 @@ from xagent.web.models.database import Base
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
 from xagent.web.services.startup_file_storage_sync import (
+    _acquire_file_lock,
+    _release_file_lock,
     sync_registered_files_to_durable_storage,
 )
 
@@ -221,3 +223,29 @@ def test_sync_skips_non_s3_backend(tmp_path):
     assert result.skipped_backend == 1
     assert storage.list_calls == []
     assert storage.put_calls == []
+
+
+def test_startup_sync_file_lock_prevents_second_holder(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "XAGENT_FILE_STORAGE_STARTUP_SYNC_LOCK_FILE", str(tmp_path / "sync.lock")
+    )
+    first_lock = _acquire_file_lock()
+    assert first_lock is not None
+
+    try:
+        assert _acquire_file_lock() is None
+    finally:
+        _release_file_lock(first_lock)
+
+
+def test_startup_sync_file_lock_can_be_reacquired(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "XAGENT_FILE_STORAGE_STARTUP_SYNC_LOCK_FILE", str(tmp_path / "sync.lock")
+    )
+    first_lock = _acquire_file_lock()
+    assert first_lock is not None
+    _release_file_lock(first_lock)
+
+    second_lock = _acquire_file_lock()
+    assert second_lock is not None
+    _release_file_lock(second_lock)
