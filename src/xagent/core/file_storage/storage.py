@@ -71,13 +71,12 @@ class FsspecFileStorage:
         full_prefix = self._full_path(normalized_prefix)
         if not self._fs.exists(full_prefix):
             return []
-        entries = self._fs.find(full_prefix)
-        keys = [
-            self._relative_key(entry)
-            for entry in entries
-            if not str(entry).rstrip("/").endswith("/")
+        entries = self._fs.find(full_prefix, detail=True)
+        return [
+            self._stored_object_from_info(self._relative_key(path), info)
+            for path, info in sorted(entries.items())
+            if not self._is_directory_entry(path, info)
         ]
-        return [self._stored_object(key) for key in sorted(keys)]
 
     def delete(self, key: str) -> None:
         full_path = self._full_path(self._normalize_key(key))
@@ -119,6 +118,14 @@ class FsspecFileStorage:
 
     def _stored_object(self, key: str, checksum: str | None = None) -> StoredObject:
         info = self._fs.info(self._full_path(key))
+        return self._stored_object_from_info(key, info, checksum=checksum)
+
+    def _stored_object_from_info(
+        self,
+        key: str,
+        info: dict[str, Any],
+        checksum: str | None = None,
+    ) -> StoredObject:
         etag = info.get("ETag") or info.get("etag")
         return StoredObject(
             backend=self._backend,
@@ -128,6 +135,11 @@ class FsspecFileStorage:
             checksum=checksum,
             etag=str(etag) if etag is not None else None,
         )
+
+    @staticmethod
+    def _is_directory_entry(path: str, info: dict[str, Any]) -> bool:
+        entry_type = str(info.get("type", "")).lower()
+        return entry_type == "directory" or str(path).rstrip("/").endswith("/")
 
     def _object_uri(self, key: str) -> str:
         quoted_key = quote(key, safe="/")

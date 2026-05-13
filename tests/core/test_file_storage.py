@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from xagent.core.file_storage.factory import get_file_storage
+from xagent.core.file_storage.storage import FsspecFileStorage
 
 
 def test_local_file_storage_round_trips_file(monkeypatch, tmp_path):
@@ -76,6 +77,45 @@ def test_object_uri_quotes_key_without_backend_branch(monkeypatch, tmp_path):
     stored = storage.put_bytes(b"abc", "uploads/file with spaces.txt")
 
     assert stored.uri.endswith("/uploads/file%20with%20spaces.txt")
+
+
+def test_list_uses_detailed_find_metadata_without_per_object_info(tmp_path):
+    class DetailedFindStorage:
+        def exists(self, path):
+            return True
+
+        def find(self, path, detail=False):
+            assert detail is True
+            return {
+                f"{path}/first.txt": {
+                    "type": "file",
+                    "size": 5,
+                    "ETag": "etag-first",
+                },
+                f"{path}/nested/second.txt": {
+                    "type": "file",
+                    "size": 6,
+                    "etag": "etag-second",
+                },
+            }
+
+        def info(self, path):
+            raise AssertionError(f"unexpected per-object info call: {path}")
+
+    storage = FsspecFileStorage(
+        fs=DetailedFindStorage(),
+        root="bucket/root",
+        backend="s3",
+        base_uri="s3://bucket/root",
+        materialize_dir=tmp_path,
+    )
+
+    listed = storage.list("users/1/uploads")
+
+    assert [(item.key, item.size, item.etag) for item in listed] == [
+        ("users/1/uploads/first.txt", 5, "etag-first"),
+        ("users/1/uploads/nested/second.txt", 6, "etag-second"),
+    ]
 
 
 def test_local_file_storage_copies_object_to_path(monkeypatch, tmp_path):
