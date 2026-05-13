@@ -68,6 +68,16 @@ def test_local_file_storage_put_bytes(monkeypatch, tmp_path):
     assert Path(stored.uri.removeprefix("file://")).read_bytes() == b"abc"
 
 
+def test_object_uri_quotes_key_without_backend_branch(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    stored = storage.put_bytes(b"abc", "uploads/file with spaces.txt")
+
+    assert stored.uri.endswith("/uploads/file%20with%20spaces.txt")
+
+
 def test_local_file_storage_copies_object_to_path(monkeypatch, tmp_path):
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
     get_file_storage.cache_clear()

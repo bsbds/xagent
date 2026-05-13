@@ -131,8 +131,6 @@ class FsspecFileStorage:
 
     def _object_uri(self, key: str) -> str:
         quoted_key = quote(key, safe="/")
-        if self._base_uri.startswith("file://"):
-            return f"{self._base_uri}/{quoted_key}"
         return f"{self._base_uri}/{quoted_key}"
 
     @staticmethod
