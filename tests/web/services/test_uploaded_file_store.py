@@ -137,6 +137,33 @@ def test_delete_removes_db_row_before_cleanup(monkeypatch, tmp_path):
     assert get_file_storage().exists(storage_key)
 
 
+def test_delete_skips_local_file_outside_local_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+    db = _session()
+    user = _user(db)
+    source = tmp_path / "outside" / "unexpected.txt"
+    source.parent.mkdir()
+    source.write_text("unexpected", encoding="utf-8")
+    store = UploadedFileStore(db)
+    record = store.create_from_local_path(
+        local_path=source,
+        user_id=int(user.id),
+        file_id="file-outside",
+        filename="unexpected.txt",
+    )
+    storage_key = str(record.storage_key)
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+
+    store.delete(record, delete_local=True, local_root=allowed_root)
+    db.commit()
+
+    assert source.exists()
+    assert not get_file_storage().exists(storage_key)
+    assert db.query(UploadedFile).filter_by(file_id="file-outside").first() is None
+
+
 def test_upsert_by_storage_path_reuses_record_and_refreshes_durable(
     monkeypatch, tmp_path
 ):

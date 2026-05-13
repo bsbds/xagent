@@ -197,7 +197,8 @@ class UploadedFileStore:
         local_path = Path(str(file_record.storage_path))
         if local_root is not None:
             resolved_path = local_path.resolve()
-            resolved_path.relative_to(local_root.resolve())
+            if not resolved_path.is_relative_to(local_root.resolve()):
+                return
             local_path = resolved_path
         if local_path.exists() and local_path.is_file():
             local_path.unlink()
