@@ -176,6 +176,45 @@ def test_upsert_by_storage_path_reuses_record_and_refreshes_durable(
         assert handle.read() == b"second"
 
 
+def test_upsert_by_storage_path_skips_durable_sync_when_file_unchanged(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+    db = _session()
+    user = _user(db)
+    source = tmp_path / "uploads" / "kb.md"
+    source.parent.mkdir()
+    source.write_text("same", encoding="utf-8")
+    store = UploadedFileStore(db)
+    first = store.upsert_by_storage_path(
+        user_id=int(user.id),
+        filename="kb.md",
+        storage_path=source,
+        mime_type="text/markdown",
+        file_size=source.stat().st_size,
+    )
+    db.commit()
+
+    from xagent.web.services.managed_file_ref import ManagedFileRef
+
+    def fail_sync(self, *, storage_key=None, mime_type=None):
+        raise AssertionError("unexpected durable sync for unchanged file")
+
+    monkeypatch.setattr(ManagedFileRef, "sync_to_durable", fail_sync)
+
+    second = store.upsert_by_storage_path(
+        user_id=int(user.id),
+        filename="kb.md",
+        storage_path=source,
+        mime_type="text/markdown",
+        file_size=source.stat().st_size,
+    )
+
+    assert second.id == first.id
+    assert second.storage_status == "available"
+
+
 def test_create_from_local_path_rolls_back_record_when_durable_write_fails(
     monkeypatch, tmp_path
 ):

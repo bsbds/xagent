@@ -143,10 +143,16 @@ class UploadedFileStore:
             self.db.add(file_record)
             self.db.flush()
         else:
+            unchanged = self._has_current_durable_object(
+                file_record, file_size=file_size, mime_type=mime_type
+            )
             file_record.filename = filename  # type: ignore[assignment]
             file_record.file_size = int(file_size)  # type: ignore[assignment]
             if mime_type is not None:
                 file_record.mime_type = mime_type  # type: ignore[assignment]
+            if unchanged:
+                self.db.flush()
+                return file_record
 
         return self.sync_existing(file_record, mime_type=mime_type)
 
@@ -166,6 +172,23 @@ class UploadedFileStore:
     @staticmethod
     def ensure_local(file_record: UploadedFile) -> Path:
         return ManagedFileRef(file_record).ensure_local()
+
+    @staticmethod
+    def _has_current_durable_object(
+        file_record: UploadedFile,
+        *,
+        file_size: int,
+        mime_type: str | None,
+    ) -> bool:
+        if getattr(file_record, "storage_status", None) != "available":
+            return False
+        if not getattr(file_record, "storage_key", None):
+            return False
+        if int(getattr(file_record, "file_size", 0) or 0) != int(file_size):
+            return False
+        if mime_type is None:
+            return True
+        return getattr(file_record, "mime_type", None) == mime_type
 
     @staticmethod
     def _delete_local(
