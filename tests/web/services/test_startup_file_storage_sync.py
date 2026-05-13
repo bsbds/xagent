@@ -155,6 +155,39 @@ def test_sync_does_not_upload_when_remote_key_is_present(tmp_path):
     assert record.storage_status == "available"
 
 
+def test_sync_refreshes_metadata_when_remote_key_present_but_record_incomplete(
+    tmp_path,
+):
+    db = _session()
+    user = _user(db)
+    local_path = tmp_path / "uploads" / "input.txt"
+    local_path.parent.mkdir()
+    local_path.write_text("content", encoding="utf-8")
+    key = f"users/{int(user.id)}/uploads/file-123/input.txt"
+    record = _record(
+        db,
+        user=user,
+        local_path=local_path,
+        file_id="file-123",
+        storage_key=key,
+        storage_status="legacy",
+    )
+    db.commit()
+    storage = FakeStorage({key})
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(record)
+    assert result.scanned == 1
+    assert result.already_present == 1
+    assert result.uploaded == 0
+    assert storage.put_calls == []
+    assert record.storage_backend == "s3"
+    assert record.storage_key == key
+    assert record.storage_uri == f"s3://bucket/{key}"
+    assert record.storage_status == "available"
+
+
 def test_sync_reuploads_available_row_when_remote_key_is_missing(tmp_path):
     db = _session()
     user = _user(db)

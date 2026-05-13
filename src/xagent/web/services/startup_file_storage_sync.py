@@ -92,7 +92,7 @@ def _sync_registered_files(
         .yield_per(batch_size)
     )
     current_user_id: int | None = None
-    remote_keys: set[str] = set()
+    remote_objects: dict[str, Any] = {}
     batch_updates = 0
 
     for record in rows:
@@ -100,10 +100,16 @@ def _sync_registered_files(
         user_id = int(getattr(record, "user_id"))
         if user_id != current_user_id:
             current_user_id = user_id
-            remote_keys = _list_remote_keys_for_user(storage, user_id)
+            remote_objects = _list_remote_objects_for_user(storage, user_id)
 
         expected_key = _expected_storage_key(record)
-        if expected_key in remote_keys and _has_complete_durable_metadata(record):
+        remote_object = remote_objects.get(expected_key)
+        if remote_object is not None:
+            if not _has_complete_durable_metadata(record):
+                ManagedFileRef(record, storage=storage).apply_stored_object(
+                    remote_object
+                )
+                batch_updates += 1
             already_present += 1
             continue
 
@@ -118,11 +124,11 @@ def _sync_registered_files(
             continue
 
         try:
-            ManagedFileRef(record, storage=storage).sync_to_durable(
+            stored_object = ManagedFileRef(record, storage=storage).sync_to_durable(
                 storage_key=expected_key,
                 mime_type=getattr(record, "mime_type", None),
             )
-            remote_keys.add(expected_key)
+            remote_objects[expected_key] = stored_object
             uploaded += 1
             batch_updates += 1
         except Exception:
@@ -179,10 +185,10 @@ def _has_complete_durable_metadata(record: UploadedFile) -> bool:
     )
 
 
-def _list_remote_keys_for_user(
+def _list_remote_objects_for_user(
     storage: FsspecFileStorage | Any, user_id: int
-) -> set[str]:
-    return {stored.key for stored in storage.list(f"users/{user_id}")}
+) -> dict[str, Any]:
+    return {stored.key: stored for stored in storage.list(f"users/{user_id}")}
 
 
 def _get_lock_file_path() -> str:
