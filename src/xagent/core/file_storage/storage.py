@@ -91,6 +91,8 @@ class FsspecFileStorage:
         target_name = Path(filename or normalized_key).name or "file"
         key_digest = hashlib.sha256(normalized_key.encode("utf-8")).hexdigest()[:16]
         target_path = self._materialize_dir / key_digest / target_name
+        if target_path.exists() and target_path.is_file():
+            return target_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with self.open_read(normalized_key) as src, target_path.open("wb") as dst:
             shutil.copyfileobj(src, dst)

@@ -193,3 +193,24 @@ def test_materialize_isolates_objects_with_same_filename(monkeypatch, tmp_path):
     assert second_path.name == "report.txt"
     assert first_path.read_bytes() == b"first content"
     assert second_path.read_bytes() == b"second content"
+
+
+def test_materialize_reuses_existing_cached_file(monkeypatch, tmp_path):
+    materialize_dir = tmp_path / "materialized"
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    monkeypatch.setenv("XAGENT_FILE_MATERIALIZE_DIR", str(materialize_dir))
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    stored = storage.put_bytes(b"cached content", "users/1/uploads/file.txt")
+    first_path = storage.materialize(stored.key, "file.txt")
+
+    def fail_open_read(key):
+        raise AssertionError(f"unexpected storage read for cached file: {key}")
+
+    monkeypatch.setattr(storage, "open_read", fail_open_read)
+
+    second_path = storage.materialize(stored.key, "file.txt")
+
+    assert second_path == first_path
+    assert second_path.read_bytes() == b"cached content"
