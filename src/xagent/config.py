@@ -470,7 +470,7 @@ def get_web_search_provider() -> str:
 
     Valid values are: auto, google, tavily, exa, zhipu.
     """
-    provider = os.getenv(WEB_SEARCH_PROVIDER, "auto").strip().lower()
+    provider = (os.getenv(WEB_SEARCH_PROVIDER) or "auto").strip().lower()
     if provider in WEB_SEARCH_PROVIDERS:
         return provider
 
