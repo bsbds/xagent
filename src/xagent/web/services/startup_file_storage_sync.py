@@ -133,7 +133,7 @@ def _sync_registered_files(
                 local_path,
                 expected_key,
             )
-            raise
+            continue
 
         if batch_updates >= batch_size:
             db.commit()

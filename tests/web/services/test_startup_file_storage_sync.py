@@ -51,6 +51,20 @@ class FakeStorage:
         )
 
 
+class FailingOnceStorage(FakeStorage):
+    def __init__(self, failed_key: str):
+        super().__init__()
+        self.failed_key = failed_key
+
+    def put_file(
+        self, source: Path, key: str, content_type: str | None = None
+    ) -> StoredObject:
+        if key == self.failed_key:
+            self.put_calls.append((source, key))
+            raise RuntimeError("transient upload failure")
+        return super().put_file(source, key, content_type)
+
+
 def _session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -223,6 +237,36 @@ def test_sync_skips_non_s3_backend(tmp_path):
     assert result.skipped_backend == 1
     assert storage.list_calls == []
     assert storage.put_calls == []
+
+
+def test_sync_continues_after_single_file_upload_failure(tmp_path):
+    db = _session()
+    user = _user(db)
+    first_path = tmp_path / "uploads" / "first.txt"
+    second_path = tmp_path / "uploads" / "second.txt"
+    first_path.parent.mkdir()
+    first_path.write_text("first", encoding="utf-8")
+    second_path.write_text("second", encoding="utf-8")
+    first_record = _record(db, user=user, local_path=first_path, file_id="file-first")
+    second_record = _record(
+        db, user=user, local_path=second_path, file_id="file-second"
+    )
+    db.commit()
+    failed_key = f"users/{int(user.id)}/uploads/file-first/first.txt"
+    second_key = f"users/{int(user.id)}/uploads/file-second/second.txt"
+    storage = FailingOnceStorage(failed_key)
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(first_record)
+    db.refresh(second_record)
+    assert result.scanned == 2
+    assert result.failed == 1
+    assert result.uploaded == 1
+    assert storage.put_calls == [(first_path, failed_key), (second_path, second_key)]
+    assert first_record.storage_status == "legacy"
+    assert second_record.storage_status == "available"
+    assert second_record.storage_key == second_key
 
 
 def test_startup_sync_file_lock_prevents_second_holder(monkeypatch, tmp_path):
