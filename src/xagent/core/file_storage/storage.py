@@ -35,9 +35,10 @@ class FsspecFileStorage:
         self._makedirs_for_key(normalized_key)
         digest = hashlib.sha256()
         open_kwargs = self._write_open_kwargs(content_type)
-        with source.open("rb") as src, self._fs.open(
-            destination, "wb", **open_kwargs
-        ) as dst:
+        with (
+            source.open("rb") as src,
+            self._fs.open(destination, "wb", **open_kwargs) as dst,
+        ):
             for chunk in iter(lambda: src.read(1024 * 1024), b""):
                 digest.update(chunk)
                 dst.write(chunk)
