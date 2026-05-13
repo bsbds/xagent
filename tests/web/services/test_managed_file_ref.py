@@ -94,6 +94,7 @@ def test_open_read_streams_from_durable_when_available(monkeypatch, tmp_path):
 
     with ManagedFileRef(record).open_read() as handle:
         assert handle.read() == b"stream me"
+    assert not local_path.exists()
 
 
 def test_open_read_prefers_existing_local_file_over_durable(monkeypatch, tmp_path):

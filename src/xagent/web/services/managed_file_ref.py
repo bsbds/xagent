@@ -105,7 +105,19 @@ class ManagedFileRef:
             ) from exc
 
     def open_read(self) -> BinaryIO:
-        return self.ensure_local().open("rb")
+        path = self.local_path
+        if path.exists() and path.is_file():
+            return path.open("rb")
+
+        if not self.has_durable_object:
+            raise DurableObjectMissingError(path)
+
+        try:
+            return self.storage.open_read(self.storage_key)
+        except Exception as exc:
+            raise DurableStorageOperationError(
+                f"Failed to open durable object: {self.storage_key}"
+            ) from exc
 
     def sync_to_durable(
         self,
