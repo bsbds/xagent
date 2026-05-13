@@ -20,6 +20,7 @@ from xagent.config import (
     STORAGE_ROOT,
     UPLOADS_DIR,
     WEB_DIR,
+    WEB_SEARCH_PROVIDER,
     format_file_size,
     get_boxlite_home_dir,
     get_database_url,
@@ -36,6 +37,7 @@ from xagent.config import (
     get_storage_root,
     get_uploads_dir,
     get_web_dir,
+    get_web_search_provider,
 )
 
 
@@ -68,6 +70,25 @@ class TestEnvironmentVariableConstants:
 
     def test_max_upload_size_constant(self):
         assert MAX_UPLOAD_SIZE == "XAGENT_MAX_UPLOAD_SIZE"
+
+    def test_web_search_provider_constant(self):
+        assert WEB_SEARCH_PROVIDER == "XAGENT_WEB_SEARCH_PROVIDER"
+
+
+class TestGetWebSearchProvider:
+    """Test get_web_search_provider() function."""
+
+    def test_default_web_search_provider(self, monkeypatch):
+        monkeypatch.delenv(WEB_SEARCH_PROVIDER, raising=False)
+        assert get_web_search_provider() == "auto"
+
+    def test_normalizes_web_search_provider(self, monkeypatch):
+        monkeypatch.setenv(WEB_SEARCH_PROVIDER, " Google ")
+        assert get_web_search_provider() == "google"
+
+    def test_invalid_web_search_provider_falls_back_to_auto(self, monkeypatch):
+        monkeypatch.setenv(WEB_SEARCH_PROVIDER, "bing")
+        assert get_web_search_provider() == "auto"
 
 
 class TestGetMaxUploadSizeBytes:

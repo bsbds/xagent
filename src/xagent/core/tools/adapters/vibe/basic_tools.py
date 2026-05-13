@@ -3,6 +3,7 @@
 import logging
 from typing import TYPE_CHECKING, Any, List
 
+from .....config import get_web_search_provider
 from .factory import ToolFactory, register_tool
 
 if TYPE_CHECKING:
@@ -20,7 +21,7 @@ async def create_basic_tools(config: "BaseToolConfig") -> List[Any]:
     tools: List[Any] = []
     workspace = ToolFactory._create_workspace(config.get_workspace_config())
 
-    # Web search tool preference: Zhipu -> Tavily -> Google -> none
+    # Web search tool preference in auto mode: Zhipu -> Tavily -> Exa -> Google -> none
     zhipu_api_key = config.get_tool_credential("zhipu_web_search", "api_key")
     zhipu_base_url = config.get_tool_credential("zhipu_web_search", "base_url")
     tavily_api_key = config.get_tool_credential("tavily_web_search", "api_key")
@@ -28,20 +29,21 @@ async def create_basic_tools(config: "BaseToolConfig") -> List[Any]:
     google_cse_id = config.get_tool_credential("web_search", "cse_id")
 
     exa_api_key = config.get_tool_credential("exa_web_search", "api_key")
+    provider = get_web_search_provider()
 
-    if zhipu_api_key:
+    if provider in ("auto", "zhipu") and zhipu_api_key:
         from .zhipu_web_search import ZhipuWebSearchTool
 
         tools.append(ZhipuWebSearchTool(api_key=zhipu_api_key, base_url=zhipu_base_url))
-    elif tavily_api_key:
+    elif provider in ("auto", "tavily") and tavily_api_key:
         from .tavily_web_search import TavilyWebSearchTool
 
         tools.append(TavilyWebSearchTool(api_key=tavily_api_key))
-    elif exa_api_key:
+    elif provider in ("auto", "exa") and exa_api_key:
         from .exa_web_search import ExaWebSearchTool
 
         tools.append(ExaWebSearchTool(api_key=exa_api_key))
-    elif google_api_key and google_cse_id:
+    elif provider in ("auto", "google") and google_api_key and google_cse_id:
         from .web_search import WebSearchTool
 
         tools.append(WebSearchTool(api_key=google_api_key, cse_id=google_cse_id))

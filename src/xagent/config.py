@@ -40,10 +40,13 @@ SANDBOX_MEMORY = "SANDBOX_MEMORY"
 SANDBOX_ENV = "SANDBOX_ENV"
 SANDBOX_VOLUMES = "SANDBOX_VOLUMES"
 BOXLITE_HOME_DIR = "BOXLITE_HOME_DIR"
+WEB_SEARCH_PROVIDER = "XAGENT_WEB_SEARCH_PROVIDER"
 
 TOOL_MAX_OUTPUT_LENGTH = "XAGENT_TOOL_MAX_OUTPUT_LENGTH"
 TOOL_MAX_RECURSION_DEPTH = "XAGENT_TOOL_MAX_RECURSION_DEPTH"
 TOOL_MAX_FIELD_COUNT = "XAGENT_TOOL_MAX_FIELD_COUNT"
+
+WEB_SEARCH_PROVIDERS = {"auto", "google", "tavily", "exa", "zhipu"}
 
 
 def get_web_dir() -> Path:
@@ -456,6 +459,27 @@ def get_tool_max_output_length() -> int:
         except ValueError:
             logger.warning("Invalid TOOL_MAX_OUTPUT_LENGTH value: {env_str}")
     return 50 * 1024
+
+
+def get_web_search_provider() -> str:
+    """Get the preferred web search provider.
+
+    Priority:
+        1. XAGENT_WEB_SEARCH_PROVIDER environment variable
+        2. "auto"
+
+    Valid values are: auto, google, tavily, exa, zhipu.
+    """
+    provider = os.getenv(WEB_SEARCH_PROVIDER, "auto").strip().lower()
+    if provider in WEB_SEARCH_PROVIDERS:
+        return provider
+
+    logger.warning(
+        "Invalid %s value: %r. Falling back to 'auto'.",
+        WEB_SEARCH_PROVIDER,
+        provider,
+    )
+    return "auto"
 
 
 def get_tool_max_recursion_depth() -> int:
