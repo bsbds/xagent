@@ -118,6 +118,47 @@ def test_list_uses_detailed_find_metadata_without_per_object_info(tmp_path):
     ]
 
 
+def test_put_file_passes_content_type_to_backend_open(tmp_path):
+    class WriteHandle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def write(self, data):
+            return len(data)
+
+    class ContentTypeStorage:
+        def __init__(self):
+            self.open_kwargs = None
+
+        def open(self, path, mode, **kwargs):
+            self.open_kwargs = kwargs
+            return WriteHandle()
+
+        def makedirs(self, path, exist_ok=False):
+            return None
+
+        def info(self, path):
+            return {"size": 7}
+
+    backend = ContentTypeStorage()
+    storage = FsspecFileStorage(
+        fs=backend,
+        root="bucket/root",
+        backend="s3",
+        base_uri="s3://bucket/root",
+        materialize_dir=tmp_path,
+    )
+    source = tmp_path / "data.txt"
+    source.write_text("content", encoding="utf-8")
+
+    storage.put_file(source, "uploads/data.txt", "text/plain")
+
+    assert backend.open_kwargs == {"content_type": "text/plain"}
+
+
 def test_local_file_storage_copies_object_to_path(monkeypatch, tmp_path):
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
     get_file_storage.cache_clear()

@@ -30,12 +30,14 @@ class FsspecFileStorage:
     def put_file(
         self, source: Path, key: str, content_type: str | None = None
     ) -> StoredObject:
-        del content_type
         normalized_key = self._normalize_key(key)
         destination = self._full_path(normalized_key)
         self._makedirs_for_key(normalized_key)
         digest = hashlib.sha256()
-        with source.open("rb") as src, self._fs.open(destination, "wb") as dst:
+        open_kwargs = self._write_open_kwargs(content_type)
+        with source.open("rb") as src, self._fs.open(
+            destination, "wb", **open_kwargs
+        ) as dst:
             for chunk in iter(lambda: src.read(1024 * 1024), b""):
                 digest.update(chunk)
                 dst.write(chunk)
@@ -44,11 +46,12 @@ class FsspecFileStorage:
     def put_bytes(
         self, data: bytes, key: str, content_type: str | None = None
     ) -> StoredObject:
-        del content_type
         normalized_key = self._normalize_key(key)
         destination = self._full_path(normalized_key)
         self._makedirs_for_key(normalized_key)
-        with self._fs.open(destination, "wb") as dst:
+        with self._fs.open(
+            destination, "wb", **self._write_open_kwargs(content_type)
+        ) as dst:
             dst.write(data)
         return self._stored_object(
             normalized_key, checksum=hashlib.sha256(data).hexdigest()
@@ -144,6 +147,12 @@ class FsspecFileStorage:
     def _object_uri(self, key: str) -> str:
         quoted_key = quote(key, safe="/")
         return f"{self._base_uri}/{quoted_key}"
+
+    @staticmethod
+    def _write_open_kwargs(content_type: str | None) -> dict[str, str]:
+        if not content_type:
+            return {}
+        return {"content_type": content_type}
 
     @staticmethod
     def _normalize_key(key: str) -> str:
