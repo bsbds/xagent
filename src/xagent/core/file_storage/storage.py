@@ -34,10 +34,12 @@ class FsspecFileStorage:
         normalized_key = self._normalize_key(key)
         destination = self._full_path(normalized_key)
         self._makedirs_for_key(normalized_key)
+        digest = hashlib.sha256()
         with source.open("rb") as src, self._fs.open(destination, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-        checksum = self._sha256(source)
-        return self._stored_object(normalized_key, checksum=checksum)
+            for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                digest.update(chunk)
+                dst.write(chunk)
+        return self._stored_object(normalized_key, checksum=digest.hexdigest())
 
     def put_bytes(
         self, data: bytes, key: str, content_type: str | None = None

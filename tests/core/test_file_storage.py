@@ -38,6 +38,25 @@ def test_local_file_storage_round_trips_file(monkeypatch, tmp_path):
     assert not storage.exists(stored.key)
 
 
+def test_put_file_hashes_while_copying(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    source = tmp_path / "single-pass.txt"
+    source.write_bytes(b"hash while copying")
+
+    def fail_second_read(path: Path) -> str:
+        raise AssertionError(f"unexpected second read for checksum: {path}")
+
+    monkeypatch.setattr(storage, "_sha256", fail_second_read)
+
+    stored = storage.put_file(source, "uploads/single-pass.txt", "text/plain")
+
+    assert stored.checksum
+    assert storage.open_read(stored.key).read() == b"hash while copying"
+
+
 def test_local_file_storage_put_bytes(monkeypatch, tmp_path):
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
     get_file_storage.cache_clear()
