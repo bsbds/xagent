@@ -132,7 +132,10 @@ def test_delete_preserves_db_row_when_durable_cleanup_fails(monkeypatch, tmp_pat
     with pytest.raises(RuntimeError, match="simulated durable cleanup failure"):
         store.delete(record, delete_local=True)
 
-    assert db.query(UploadedFile).filter_by(file_id="file-delete-first").first() is not None
+    assert (
+        db.query(UploadedFile).filter_by(file_id="file-delete-first").first()
+        is not None
+    )
     assert source.exists()
     assert get_file_storage().exists(storage_key)
 
