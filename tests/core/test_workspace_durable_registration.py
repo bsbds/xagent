@@ -134,6 +134,60 @@ def test_workspace_register_file_uses_uploaded_file_store_create(
         engine.dispose()
 
 
+def test_list_all_user_files_includes_durable_only_uploads(tmp_path, mock_workspace_db):
+    # Override the global autouse fixture from tests/conftest.py for this module.
+    del mock_workspace_db
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        user = User(username="workspace-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        task = Task(id=789, user_id=user.id, title="Workspace task")
+        db.add(task)
+        db.commit()
+
+        missing_local_path = tmp_path / "uploads" / "durable-only.txt"
+        assert not missing_local_path.exists()
+        file_record = UploadedFile(
+            user_id=user.id,
+            task_id=task.id,
+            filename="durable-only.txt",
+            storage_path=str(missing_local_path),
+            storage_backend="s3",
+            storage_key=f"users/{user.id}/uploads/file-1/durable-only.txt",
+            storage_status="available",
+            mime_type="text/plain",
+            file_size=12,
+        )
+        db.add(file_record)
+        db.commit()
+        db.refresh(file_record)
+
+        workspace = TaskWorkspace(
+            id="web_task_789",
+            base_dir=str(tmp_path / "workspaces"),
+        )
+        workspace.db_session = db
+
+        result = workspace.list_all_user_files(include_workspace_files=False)
+
+        assert result["success"] is True
+        assert [file_info["file_id"] for file_info in result["files"]] == [
+            file_record.file_id
+        ]
+        assert result["files"][0]["filename"] == "durable-only.txt"
+        assert result["files"][0]["in_current_workspace"] is False
+    finally:
+        db.close()
+        engine.dispose()
+
+
 @pytest.fixture
 def mock_workspace_db():
     yield

@@ -867,7 +867,12 @@ class TaskWorkspace:
                 # Build file list from database
                 for file_record in files:
                     file_path = Path(file_record.storage_path)
-                    if file_path.exists():
+                    has_local_file = file_path.exists()
+                    has_durable_file = bool(
+                        file_record.storage_key
+                        and file_record.storage_status == "available"
+                    )
+                    if has_local_file or has_durable_file:
                         result_files.append(
                             {
                                 "file_id": file_record.file_id,
@@ -883,7 +888,7 @@ class TaskWorkspace:
                                 "in_current_workspace": file_path.is_relative_to(
                                     self.workspace_dir
                                 )
-                                if file_path.exists()
+                                if has_local_file
                                 else False,
                             }
                         )
