@@ -105,7 +105,7 @@ def test_delete_removes_local_durable_and_db_record(monkeypatch, tmp_path):
     assert db.query(UploadedFile).filter_by(file_id="file-delete").first() is None
 
 
-def test_delete_removes_db_row_before_cleanup(monkeypatch, tmp_path):
+def test_delete_preserves_db_row_when_durable_cleanup_fails(monkeypatch, tmp_path):
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
     get_file_storage.cache_clear()
     db = _session()
@@ -132,7 +132,7 @@ def test_delete_removes_db_row_before_cleanup(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="simulated durable cleanup failure"):
         store.delete(record, delete_local=True)
 
-    assert db.query(UploadedFile).filter_by(file_id="file-delete-first").first() is None
+    assert db.query(UploadedFile).filter_by(file_id="file-delete-first").first() is not None
     assert source.exists()
     assert get_file_storage().exists(storage_key)
 
