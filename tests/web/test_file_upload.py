@@ -292,6 +292,101 @@ class TestFileUpload:
         assert download.status_code == 503
         assert "durable storage" in download.json()["detail"].lower()
 
+    def test_download_registered_file_rejects_local_path_outside_uploads(
+        self, client, test_db, tmp_path, auth_headers
+    ):
+        """DB-backed download must still enforce the uploads path boundary."""
+        admin_user, test_app = test_db
+        outside_path = tmp_path / "outside.txt"
+        outside_path.write_text("outside uploads", encoding="utf-8")
+
+        db = next(test_app.dependency_overrides[get_db]())
+        try:
+            db.add(
+                UploadedFile(
+                    file_id="11111111-1111-4111-8111-111111111111",
+                    user_id=admin_user.id,
+                    filename="outside.txt",
+                    storage_path=str(outside_path),
+                    storage_status="legacy",
+                    mime_type="text/plain",
+                    file_size=outside_path.stat().st_size,
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(
+            "/api/files/download/11111111-1111-4111-8111-111111111111",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 403
+
+    def test_preview_registered_file_rejects_local_path_outside_uploads(
+        self, client, test_db, tmp_path, auth_headers
+    ):
+        """DB-backed preview must still enforce the uploads path boundary."""
+        admin_user, test_app = test_db
+        outside_path = tmp_path / "outside-preview.txt"
+        outside_path.write_text("outside uploads", encoding="utf-8")
+
+        db = next(test_app.dependency_overrides[get_db]())
+        try:
+            db.add(
+                UploadedFile(
+                    file_id="22222222-2222-4222-8222-222222222222",
+                    user_id=admin_user.id,
+                    filename="outside-preview.txt",
+                    storage_path=str(outside_path),
+                    storage_status="legacy",
+                    mime_type="text/plain",
+                    file_size=outside_path.stat().st_size,
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(
+            "/api/files/preview/22222222-2222-4222-8222-222222222222",
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 403
+
+    def test_public_preview_registered_file_rejects_local_path_outside_uploads(
+        self, client, test_db, tmp_path
+    ):
+        """Public preview must not expose registered paths outside uploads."""
+        admin_user, test_app = test_db
+        outside_path = tmp_path / "outside-public.txt"
+        outside_path.write_text("outside uploads", encoding="utf-8")
+
+        db = next(test_app.dependency_overrides[get_db]())
+        try:
+            db.add(
+                UploadedFile(
+                    file_id="33333333-3333-4333-8333-333333333333",
+                    user_id=admin_user.id,
+                    filename="outside-public.txt",
+                    storage_path=str(outside_path),
+                    storage_status="legacy",
+                    mime_type="text/plain",
+                    file_size=outside_path.stat().st_size,
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(
+            "/api/files/public/preview/33333333-3333-4333-8333-333333333333"
+        )
+
+        assert response.status_code == 403
+
     def test_preview_remote_storage_outage_returns_503_when_local_missing(
         self, client, temp_uploads_dir, auth_headers, monkeypatch
     ):

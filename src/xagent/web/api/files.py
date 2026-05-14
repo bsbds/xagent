@@ -764,6 +764,7 @@ async def download_file(
         file_ref = ManagedFileRef(file_record)
         file_name = str(file_record.filename)
         media_type = guess_media_type(file_name)
+        _ensure_under_uploads(full_path, owner_user_id)
         if full_path.exists() and full_path.is_file():
             content_disposition = (
                 "inline"
@@ -842,6 +843,7 @@ async def preview_file(
         file_ref = ManagedFileRef(file_record)
         file_name = str(file_record.filename)
         media_type = guess_media_type(file_name)
+        _ensure_under_uploads(full_path, owner_user_id)
         if file_ref.has_durable_object:
             try:
                 materialized_path = file_ref.materialize()
@@ -916,6 +918,7 @@ async def public_preview_file(
         file_ref = ManagedFileRef(file_record)
         base_path = file_ref.local_path
         owner_user_id = _file_user_id_value(file_record)
+        _ensure_under_uploads(base_path, owner_user_id)
         if file_ref.has_durable_object and not relative_path:
             try:
                 target_path = file_ref.materialize()
