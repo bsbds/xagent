@@ -5,7 +5,7 @@ from alembic import op
 from sqlalchemy.engine.reflection import Inspector
 
 revision: str = "20260509_add_durable_file_storage_fields"
-down_revision: Union[str, None] = "20260509_add_delegate_agent_ids_to_tasks"
+down_revision: Union[str, None] = "7f4d2c9a1b58"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
