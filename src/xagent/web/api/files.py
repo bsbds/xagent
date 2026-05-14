@@ -162,6 +162,50 @@ def _resolve_public_preview_target(
     return candidate
 
 
+def _find_registered_preview_asset(
+    db: Session,
+    *,
+    base_record: UploadedFile,
+    target_path: Path,
+    relative_path: str,
+) -> Optional[UploadedFile]:
+    target_path_candidates = {str(target_path)}
+    try:
+        target_path_candidates.add(str(target_path.resolve(strict=False)))
+    except OSError:
+        pass
+    try:
+        base_path = Path(str(base_record.storage_path))
+        target_path_candidates.add(str(base_path.parent / relative_path))
+    except (TypeError, ValueError):
+        pass
+    asset_record = (
+        db.query(UploadedFile)
+        .filter(
+            UploadedFile.user_id == base_record.user_id,
+            UploadedFile.storage_path.in_(target_path_candidates),
+        )
+        .first()
+    )
+    if asset_record is not None:
+        return asset_record
+
+    base_workspace_path = str(base_record.workspace_relative_path or "")
+    if not base_workspace_path:
+        return None
+    base_dir = Path(base_workspace_path).parent
+    asset_workspace_path = str((base_dir / relative_path).as_posix())
+    return (
+        db.query(UploadedFile)
+        .filter(
+            UploadedFile.user_id == base_record.user_id,
+            UploadedFile.task_id == base_record.task_id,
+            UploadedFile.workspace_relative_path == asset_workspace_path,
+        )
+        .first()
+    )
+
+
 def _to_unix_timestamp(path: Path, fallback: Any) -> int:
     if path.exists():
         return int(path.stat().st_mtime)
@@ -955,6 +999,27 @@ async def public_preview_file(
         relative_path,
         owner_user_id,
     )
+
+    if (
+        file_record is not None
+        and relative_path
+        and (not target_path.exists() or not target_path.is_file())
+    ):
+        asset_record = _find_registered_preview_asset(
+            db,
+            base_record=file_record,
+            target_path=target_path,
+            relative_path=relative_path,
+        )
+        if asset_record is not None:
+            asset_ref = ManagedFileRef(asset_record)
+            try:
+                target_path = asset_ref.ensure_local()
+            except DurableStorageOperationError as exc:
+                raise _durable_storage_unavailable() from exc
+            except DurableObjectMissingError:
+                target_path = asset_ref.local_path
+            _ensure_under_uploads(target_path, owner_user_id)
 
     if not target_path.exists() or not target_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
