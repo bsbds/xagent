@@ -1,7 +1,7 @@
+import asyncio
 from importlib import import_module
 from unittest.mock import Mock
 
-import asyncio
 import pytest
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
@@ -130,6 +130,32 @@ def test_startup_file_storage_sync_gate_exempts_health_while_sync_runs():
     assert response.json() == {"status": "ok"}
 
 
+def test_startup_file_storage_sync_gate_exempts_options_while_sync_runs():
+    app_module = import_module("xagent.web.app")
+
+    test_app = FastAPI()
+    test_app.add_middleware(app_module.FileStorageStartupSyncGateMiddleware)
+
+    @test_app.on_event("startup")
+    async def _startup() -> None:
+        import asyncio
+
+        async def _sync() -> None:
+            await asyncio.sleep(10)
+
+        test_app.state.file_storage_startup_sync_task = asyncio.create_task(_sync())
+
+    @test_app.options("/api/client")
+    async def _client_options() -> dict[str, str]:
+        return {"status": "preflight"}
+
+    with TestClient(test_app) as client:
+        response = client.options("/api/client")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "preflight"}
+
+
 def test_startup_file_storage_sync_gate_returns_503_when_sync_fails():
     app_module = import_module("xagent.web.app")
 
@@ -194,18 +220,26 @@ def test_startup_file_storage_sync_task_is_scheduled_async(monkeypatch):
     monkeypatch.setattr(
         app_module, "get_file_storage_startup_sync_enabled", lambda: True
     )
-    to_thread_mock = Mock(return_value="to-thread-coro")
+    retry_coro = Mock()
+    retry_runner_mock = Mock(return_value=retry_coro)
     sync_task = Mock()
     create_task_mock = Mock(return_value=sync_task)
-    monkeypatch.setattr(app_module.asyncio, "to_thread", to_thread_mock)
+    monkeypatch.setattr(
+        app_module,
+        "_run_file_storage_startup_sync_with_retries",
+        retry_runner_mock,
+    )
     monkeypatch.setattr(app_module.asyncio, "create_task", create_task_mock)
 
     test_app = FastAPI()
     task = app_module.start_file_storage_startup_sync_task(test_app)
 
     assert task == sync_task
-    to_thread_mock.assert_called_once_with(app_module.run_startup_file_storage_sync)
-    create_task_mock.assert_called_once_with("to-thread-coro")
+    retry_runner_mock.assert_called_once_with(
+        test_app,
+        retry_interval_seconds=app_module.FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS,
+    )
+    create_task_mock.assert_called_once_with(retry_coro)
     sync_task.add_done_callback.assert_called_once()
     assert test_app.state.file_storage_startup_sync_task == sync_task
 
@@ -236,3 +270,33 @@ async def test_startup_file_storage_sync_task_cancellation_is_not_recorded_as_fa
 
     assert test_app.state.file_storage_startup_sync_error is None
     assert test_app.state.file_storage_startup_sync_completed is False
+
+
+@pytest.mark.asyncio
+async def test_startup_file_storage_sync_task_retries_until_success(monkeypatch):
+    app_module = import_module("xagent.web.app")
+
+    test_app = FastAPI()
+    attempts = {"count": 0}
+    monkeypatch.setattr(
+        app_module, "get_file_storage_startup_sync_enabled", lambda: True
+    )
+
+    def _sync_then_recover() -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("s3 unavailable")
+
+    monkeypatch.setattr(app_module, "run_startup_file_storage_sync", _sync_then_recover)
+
+    task = app_module.start_file_storage_startup_sync_task(
+        test_app,
+        retry_interval_seconds=0,
+    )
+    assert task is not None
+
+    await task
+
+    assert attempts["count"] == 2
+    assert test_app.state.file_storage_startup_sync_error is None
+    assert test_app.state.file_storage_startup_sync_completed is True

@@ -268,3 +268,100 @@ def test_startup_file_storage_sync_runs_after_startup_but_gates_client_service(
 
     assert not app_thread.is_alive()
     assert app_errors.empty()
+
+
+def test_startup_file_storage_sync_recovers_after_initial_storage_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    minio_storage: MinioStorage,
+) -> None:
+    uploads_dir = configure_e2e_app_environment(monkeypatch, tmp_path=tmp_path)
+    disable_external_app_services(monkeypatch)
+    SessionLocal = init_e2e_db()
+
+    db = SessionLocal()
+    try:
+        user = create_e2e_user(db, username="startup-retry-user")
+        user_id = user.id
+        legacy_file_id = str(uuid4())
+        seed_registered_local_file(
+            db,
+            uploads_dir=uploads_dir,
+            user_id=user_id,
+            filename="startup-retry.txt",
+            content=b"startup retry content\n",
+            file_id=legacy_file_id,
+            mime_type="text/plain",
+            storage_status="legacy",
+        )
+    finally:
+        db.close()
+
+    first_attempt_failed = threading.Event()
+    sync_completed = threading.Event()
+    close_app = threading.Event()
+    app_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
+    app_errors: queue.Queue[BaseException] = queue.Queue()
+
+    def _configure_app_module(app_module: Any) -> None:
+        original_sync = app_module.run_startup_file_storage_sync
+        attempts = {"count": 0}
+
+        def _fail_once_then_sync() -> None:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                first_attempt_failed.set()
+                raise RuntimeError("s3 unavailable")
+            original_sync()
+            sync_completed.set()
+
+        app_module.run_startup_file_storage_sync = _fail_once_then_sync
+        app_module.FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS = 0.01
+
+    def _run_app() -> None:
+        try:
+            with run_e2e_app_client(
+                monkeypatch,
+                username=user.username,
+                user_id=user_id,
+                configure_app_module=_configure_app_module,
+            ) as app:
+                app_queue.put(app)
+                assert close_app.wait(timeout=10)
+        except BaseException as exc:
+            app_errors.put(exc)
+
+    app_thread = threading.Thread(target=_run_app, daemon=True)
+    app_thread.start()
+
+    try:
+        app = app_queue.get(timeout=5)
+        assert first_attempt_failed.wait(timeout=5)
+
+        ready_response = app.client.get("/ready")
+        assert ready_response.status_code == 503
+        assert ready_response.json()["status"] == "error"
+
+        client_response = app.client.get("/api/auth/setup-status")
+        assert client_response.status_code == 200
+        assert sync_completed.wait(timeout=5)
+
+        ready_response = app.client.get("/ready")
+        assert ready_response.status_code == 200
+        assert ready_response.json()["status"] == "ready"
+
+        legacy_record = _record(app.session_factory, legacy_file_id)
+        assert legacy_record.storage_backend == "s3"
+        assert legacy_record.storage_status == "available"
+        assert legacy_record.storage_key == (
+            f"users/{user_id}/uploads/{legacy_file_id}/startup-retry.txt"
+        )
+        assert minio_storage.object_bytes(str(legacy_record.storage_key)) == (
+            b"startup retry content\n"
+        )
+    finally:
+        close_app.set()
+        app_thread.join(timeout=10)
+
+    assert not app_thread.is_alive()
+    assert app_errors.empty()

@@ -69,6 +69,7 @@ _migration_task: asyncio.Task[None] | None = None
 _file_storage_startup_sync_task: asyncio.Task[Any] | None = None
 
 FILE_STORAGE_STARTUP_SYNC_EXEMPT_PATHS = frozenset({"/health", "/ready"})
+FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS = 5.0
 
 
 def run_startup_file_storage_sync() -> None:
@@ -90,7 +91,37 @@ def run_startup_file_storage_sync() -> None:
         db.close()
 
 
-def start_file_storage_startup_sync_task(app_instance: FastAPI) -> asyncio.Task[Any] | None:
+async def _run_file_storage_startup_sync_with_retries(
+    app_instance: FastAPI,
+    *,
+    retry_interval_seconds: float,
+) -> None:
+    while True:
+        try:
+            await asyncio.to_thread(run_startup_file_storage_sync)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            app_instance.state.file_storage_startup_sync_error = exc
+            app_instance.state.file_storage_startup_sync_completed = False
+            logger.error(
+                "Startup file storage sync failed; retrying in %s seconds: %s",
+                retry_interval_seconds,
+                exc,
+                exc_info=True,
+            )
+            await asyncio.sleep(retry_interval_seconds)
+        else:
+            app_instance.state.file_storage_startup_sync_error = None
+            app_instance.state.file_storage_startup_sync_completed = True
+            return
+
+
+def start_file_storage_startup_sync_task(
+    app_instance: FastAPI,
+    *,
+    retry_interval_seconds: float = FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS,
+) -> asyncio.Task[Any] | None:
     """Start durable file storage startup sync without blocking app startup."""
     global _file_storage_startup_sync_task
 
@@ -102,7 +133,12 @@ def start_file_storage_startup_sync_task(app_instance: FastAPI) -> asyncio.Task[
         app_instance.state.file_storage_startup_sync_completed = True
         return None
 
-    task = asyncio.create_task(asyncio.to_thread(run_startup_file_storage_sync))
+    task = asyncio.create_task(
+        _run_file_storage_startup_sync_with_retries(
+            app_instance,
+            retry_interval_seconds=retry_interval_seconds,
+        )
+    )
     _file_storage_startup_sync_task = task
     app_instance.state.file_storage_startup_sync_task = task
     app_instance.state.file_storage_startup_sync_completed = False
@@ -168,6 +204,9 @@ class FileStorageStartupSyncGateMiddleware:
         if path in FILE_STORAGE_STARTUP_SYNC_EXEMPT_PATHS:
             await self.app(scope, receive, send)
             return
+        if scope_type == "http" and str(scope.get("method") or "").upper() == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
 
         app_instance = scope.get("app")
         if isinstance(app_instance, FastAPI):
@@ -214,7 +253,10 @@ async def readiness_check() -> JSONResponse:
     if task is not None and not task.done():
         return JSONResponse(
             status_code=503,
-            content={"status": "starting", "detail": "Startup file storage sync running"},
+            content={
+                "status": "starting",
+                "detail": "Startup file storage sync running",
+            },
         )
     return JSONResponse(status_code=200, content={"status": "ready"})
 
