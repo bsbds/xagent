@@ -53,6 +53,11 @@ def _fetch_file_record(session_factory: sessionmaker[Session], file_id: str) -> 
         db.close()
 
 
+def _wait_for_startup_file_storage_sync(client: TestClient) -> None:
+    response = client.get("/api/auth/setup-status")
+    assert response.status_code == 200
+
+
 def _receive_until_task_completed(websocket: Any) -> dict[str, Any]:
     for _ in range(200):
         message = websocket.receive_json()
@@ -102,6 +107,7 @@ def test_task_uploads_agent_outputs_and_startup_sync_persist_to_minio(
     startup_repair_file_id = persistence_app.startup_repair_file_id
     token = persistence_app.token
 
+    _wait_for_startup_file_storage_sync(client)
     startup_repair_record = _fetch_file_record(session_factory, startup_repair_file_id)
     assert startup_repair_record.storage_backend == "s3"
     assert startup_repair_record.storage_status == "available"
