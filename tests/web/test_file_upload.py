@@ -746,6 +746,59 @@ class TestFileManagement:
             # If upload failed, skip delete test
             pytest.skip("Upload failed, skipping delete test")
 
+    def test_delete_file_keeps_record_when_durable_cleanup_fails(
+        self, client, test_db, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        """Durable cleanup failure should not orphan the object by deleting the row."""
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        admin_user, test_app = test_db
+        upload_response = client.post(
+            "/api/files/upload",
+            files={"file": ("delete-fails.txt", b"delete fails", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload_response.status_code == 200
+        file_id = upload_response.json()["file_id"]
+
+        db = next(test_app.dependency_overrides[get_db]())
+        try:
+            record = (
+                db.query(UploadedFile)
+                .filter(
+                    UploadedFile.user_id == admin_user.id,
+                    UploadedFile.file_id == file_id,
+                )
+                .one()
+            )
+            storage_key = str(record.storage_key)
+            local_path = Path(str(record.storage_path))
+        finally:
+            db.close()
+
+        real_delete = FsspecFileStorage.delete
+
+        def fail_target_delete(self, key):
+            if key == storage_key:
+                raise RuntimeError("simulated durable delete failure")
+            real_delete(self, key)
+
+        monkeypatch.setattr(FsspecFileStorage, "delete", fail_target_delete)
+
+        response = client.delete(f"/api/files/{file_id}", headers=auth_headers)
+
+        assert response.status_code == 503
+        assert local_path.exists()
+        db = next(test_app.dependency_overrides[get_db]())
+        try:
+            assert (
+                db.query(UploadedFile).filter(UploadedFile.file_id == file_id).first()
+                is not None
+            )
+        finally:
+            db.close()
+
     def test_delete_file_not_found(self, client, test_db, auth_headers):
         """Test deleting non-existent file"""
         response = client.delete("/api/files/nonexistent.txt", headers=auth_headers)

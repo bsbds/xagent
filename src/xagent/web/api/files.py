@@ -1023,20 +1023,23 @@ async def delete_file(
     if file_record:
         storage_key = str(file_record.storage_key or "")
         storage_status = str(file_record.storage_status or "")
+        if storage_key and storage_status == "available":
+            try:
+                get_file_storage().delete(storage_key)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to clean up durable file before deleting row: %s",
+                    storage_key,
+                )
+                raise _durable_storage_unavailable() from exc
+
         db.delete(file_record)
         db.commit()
-        # TODO: Replace this best-effort cleanup with a strict delete lifecycle
-        # using tombstones/status and a retryable reconciler.
         try:
             if file_path.exists() and file_path.is_file():
                 file_path.unlink()
         except OSError:
             logger.warning("Failed to clean up deleted local file: %s", file_path)
-        try:
-            if storage_key and storage_status == "available":
-                get_file_storage().delete(storage_key)
-        except Exception:
-            logger.warning("Failed to clean up deleted durable file: %s", storage_key)
     elif file_path.exists() and file_path.is_file():
         file_path.unlink()
 

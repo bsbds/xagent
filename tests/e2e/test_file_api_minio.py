@@ -286,7 +286,7 @@ def test_delete_removes_uploaded_file_from_db_local_disk_and_minio(
             db.close()
 
 
-def test_delete_removes_db_row_when_best_effort_durable_cleanup_fails(
+def test_delete_keeps_db_row_when_durable_cleanup_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     minio_storage: MinioStorage,
@@ -326,9 +326,9 @@ def test_delete_removes_db_row_when_best_effort_durable_cleanup_fails(
         assert minio_storage.exists(storage_key)
 
         delete = app.client.delete(f"/api/files/{file_id}", headers=app.headers)
-        assert delete.status_code == 200
+        assert delete.status_code == 503
 
-        assert not local_path.exists()
+        assert local_path.exists()
         assert minio_storage.exists(storage_key)
         assert minio_storage.object_bytes(storage_key) == b"source from minio\n"
 
@@ -336,7 +336,7 @@ def test_delete_removes_db_row_when_best_effort_durable_cleanup_fails(
         try:
             assert (
                 db.query(UploadedFile).filter(UploadedFile.file_id == file_id).first()
-                is None
+                is not None
             )
         finally:
             db.close()
