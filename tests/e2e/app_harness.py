@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Callable
 
 import jwt
 import pytest
@@ -185,6 +185,7 @@ def run_e2e_app_client(
     *,
     username: str,
     user_id: int,
+    configure_app_module: Callable[[ModuleType], None] | None = None,
 ) -> Iterator[E2EAppClient]:
     from xagent.providers.vector_store.lancedb import clear_connection_cache
 
@@ -193,6 +194,8 @@ def run_e2e_app_client(
     clear_connection_cache()
     app_module = importlib.import_module("xagent.web.app")
     app_module = importlib.reload(app_module)
+    if configure_app_module is not None:
+        configure_app_module(app_module)
 
     try:
         with TestClient(app_module.app) as client:

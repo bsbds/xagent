@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -117,6 +120,9 @@ def test_startup_sync_repairs_only_files_that_need_durable_storage(
         username=user.username,
         user_id=user_id,
     ) as app:
+        setup_response = app.client.get("/api/auth/setup-status")
+        assert setup_response.status_code == 200
+
         legacy_record = _record(app.session_factory, legacy_file_id)
         existing_record = _record(app.session_factory, existing_file_id)
         missing_remote_record = _record(app.session_factory, missing_remote_file_id)
@@ -142,3 +148,123 @@ def test_startup_sync_repairs_only_files_that_need_durable_storage(
 
         assert missing_local_record.storage_key == missing_local_key
         assert not minio_storage.exists(missing_local_key)
+
+
+def test_startup_file_storage_sync_runs_after_startup_but_gates_client_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    minio_storage: MinioStorage,
+) -> None:
+    uploads_dir = configure_e2e_app_environment(monkeypatch, tmp_path=tmp_path)
+    disable_external_app_services(monkeypatch)
+    SessionLocal = init_e2e_db()
+
+    db = SessionLocal()
+    try:
+        user = create_e2e_user(db, username="startup-gate-user")
+        user_id = user.id
+        legacy_file_id = str(uuid4())
+        seed_registered_local_file(
+            db,
+            uploads_dir=uploads_dir,
+            user_id=user_id,
+            filename="startup-gate.txt",
+            content=b"startup gate content\n",
+            file_id=legacy_file_id,
+            mime_type="text/plain",
+            storage_status="legacy",
+        )
+    finally:
+        db.close()
+
+    sync_started = threading.Event()
+    release_sync = threading.Event()
+    close_app = threading.Event()
+    client_request_started = threading.Event()
+    client_request_completed = threading.Event()
+    app_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
+    app_errors: queue.Queue[BaseException] = queue.Queue()
+    request_errors: queue.Queue[BaseException] = queue.Queue()
+    request_responses: queue.Queue[Any] = queue.Queue(maxsize=1)
+
+    def _configure_app_module(app_module: Any) -> None:
+        original_sync = app_module.run_startup_file_storage_sync
+
+        def _delayed_startup_sync() -> None:
+            sync_started.set()
+            assert release_sync.wait(timeout=10)
+            original_sync()
+
+        app_module.run_startup_file_storage_sync = _delayed_startup_sync
+
+    def _run_app() -> None:
+        try:
+            with run_e2e_app_client(
+                monkeypatch,
+                username=user.username,
+                user_id=user_id,
+                configure_app_module=_configure_app_module,
+            ) as app:
+                app_queue.put(app)
+                assert close_app.wait(timeout=10)
+        except BaseException as exc:
+            app_errors.put(exc)
+
+    app_thread = threading.Thread(target=_run_app, daemon=True)
+    app_thread.start()
+
+    try:
+        app = app_queue.get(timeout=5)
+        assert sync_started.wait(timeout=5)
+
+        health_response = app.client.get("/health")
+        assert health_response.status_code == 200
+
+        ready_response = app.client.get("/ready")
+        assert ready_response.status_code == 503
+        assert ready_response.json()["status"] == "starting"
+
+        def _make_client_request() -> None:
+            try:
+                client_request_started.set()
+                response = app.client.get("/api/auth/setup-status")
+                request_responses.put(response)
+            except BaseException as exc:
+                request_errors.put(exc)
+            finally:
+                client_request_completed.set()
+
+        request_thread = threading.Thread(target=_make_client_request, daemon=True)
+        request_thread.start()
+
+        assert client_request_started.wait(timeout=5)
+        assert not client_request_completed.wait(timeout=0.2)
+
+        release_sync.set()
+        request_thread.join(timeout=10)
+        assert not request_thread.is_alive()
+        assert request_errors.empty()
+
+        client_response = request_responses.get_nowait()
+        assert client_response.status_code == 200
+
+        ready_response = app.client.get("/ready")
+        assert ready_response.status_code == 200
+        assert ready_response.json()["status"] == "ready"
+
+        legacy_record = _record(app.session_factory, legacy_file_id)
+        assert legacy_record.storage_backend == "s3"
+        assert legacy_record.storage_status == "available"
+        assert legacy_record.storage_key == (
+            f"users/{user_id}/uploads/{legacy_file_id}/startup-gate.txt"
+        )
+        assert minio_storage.object_bytes(str(legacy_record.storage_key)) == (
+            b"startup gate content\n"
+        )
+    finally:
+        release_sync.set()
+        close_app.set()
+        app_thread.join(timeout=10)
+
+    assert not app_thread.is_alive()
+    assert app_errors.empty()

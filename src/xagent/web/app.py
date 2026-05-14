@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..config import (
     get_agent_runtime,
@@ -65,6 +66,9 @@ app = FastAPI(
 
 # Track background migration task for graceful shutdown cleanup.
 _migration_task: asyncio.Task[None] | None = None
+_file_storage_startup_sync_task: asyncio.Task[Any] | None = None
+
+FILE_STORAGE_STARTUP_SYNC_EXEMPT_PATHS = frozenset({"/health", "/ready"})
 
 
 def run_startup_file_storage_sync() -> None:
@@ -86,10 +90,133 @@ def run_startup_file_storage_sync() -> None:
         db.close()
 
 
+def start_file_storage_startup_sync_task(app_instance: FastAPI) -> asyncio.Task[Any] | None:
+    """Start durable file storage startup sync without blocking app startup."""
+    global _file_storage_startup_sync_task
+
+    app_instance.state.file_storage_startup_sync_task = None
+    app_instance.state.file_storage_startup_sync_error = None
+
+    if not get_file_storage_startup_sync_enabled():
+        logger.info("Startup file storage sync is disabled")
+        app_instance.state.file_storage_startup_sync_completed = True
+        return None
+
+    task = asyncio.create_task(asyncio.to_thread(run_startup_file_storage_sync))
+    _file_storage_startup_sync_task = task
+    app_instance.state.file_storage_startup_sync_task = task
+    app_instance.state.file_storage_startup_sync_completed = False
+
+    def _record_file_storage_sync_result(done_task: asyncio.Task[Any]) -> None:
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            app_instance.state.file_storage_startup_sync_error = None
+            app_instance.state.file_storage_startup_sync_completed = False
+        except Exception as exc:  # noqa: BLE001
+            app_instance.state.file_storage_startup_sync_error = exc
+            app_instance.state.file_storage_startup_sync_completed = False
+            logger.error("Startup file storage sync failed: %s", exc, exc_info=True)
+        else:
+            app_instance.state.file_storage_startup_sync_error = None
+            app_instance.state.file_storage_startup_sync_completed = True
+
+    task.add_done_callback(_record_file_storage_sync_result)
+    logger.info("Started background startup file storage sync task")
+    return task
+
+
+async def wait_for_file_storage_startup_sync(app_instance: FastAPI) -> None:
+    """Wait until durable file storage startup sync has completed successfully."""
+    task = getattr(app_instance.state, "file_storage_startup_sync_task", None)
+    if task is None:
+        error = getattr(app_instance.state, "file_storage_startup_sync_error", None)
+        if error is not None:
+            raise error
+        return
+
+    try:
+        await task
+    except Exception as exc:  # noqa: BLE001
+        app_instance.state.file_storage_startup_sync_error = exc
+        app_instance.state.file_storage_startup_sync_completed = False
+        raise
+
+    error = getattr(app_instance.state, "file_storage_startup_sync_error", None)
+    if error is not None:
+        raise error
+
+
+class FileStorageStartupSyncGateMiddleware:
+    """Gate client traffic until durable file storage startup sync completes."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        scope_type = scope.get("type")
+        if scope_type not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+
+        path = str(scope.get("path") or "")
+        if path in FILE_STORAGE_STARTUP_SYNC_EXEMPT_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        app_instance = scope.get("app")
+        if isinstance(app_instance, FastAPI):
+            try:
+                await wait_for_file_storage_startup_sync(app_instance)
+            except Exception:
+                if scope_type == "websocket":
+                    await send(
+                        {
+                            "type": "websocket.close",
+                            "code": 1013,
+                            "reason": "Startup file storage sync failed",
+                        }
+                    )
+                    return
+
+                response = JSONResponse(
+                    status_code=503,
+                    content={"detail": "Startup file storage sync failed"},
+                )
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
+
+
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     """Health check endpoint for container probes."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def readiness_check() -> JSONResponse:
+    """Readiness check that reflects startup file storage sync status."""
+    task = getattr(app.state, "file_storage_startup_sync_task", None)
+    error = getattr(app.state, "file_storage_startup_sync_error", None)
+
+    if error is not None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": "Startup file storage sync failed"},
+        )
+    if task is not None and not task.done():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "starting", "detail": "Startup file storage sync running"},
+        )
+    return JSONResponse(status_code=200, content={"status": "ready"})
 
 
 # Add global exception handler
@@ -223,6 +350,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(FileStorageStartupSyncGateMiddleware)
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -271,7 +399,7 @@ async def startup_event() -> None:
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
-    run_startup_file_storage_sync()
+    start_file_storage_startup_sync_task(app)
 
     initialize_langfuse()
 
@@ -697,9 +825,16 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global _migration_task
+    global _file_storage_startup_sync_task, _migration_task
 
     flush_langfuse()
+
+    if _file_storage_startup_sync_task and not _file_storage_startup_sync_task.done():
+        logger.info("Cancelling background startup file storage sync task...")
+        _file_storage_startup_sync_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _file_storage_startup_sync_task
+    _file_storage_startup_sync_task = None
 
     if _migration_task and not _migration_task.done():
         logger.info("Cancelling background LanceDB migration task...")
