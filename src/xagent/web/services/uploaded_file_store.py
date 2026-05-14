@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -144,7 +145,10 @@ class UploadedFileStore:
             self.db.flush()
         else:
             unchanged = self._has_current_durable_object(
-                file_record, file_size=file_size, mime_type=mime_type
+                file_record,
+                storage_path=storage_path,
+                file_size=file_size,
+                mime_type=mime_type,
             )
             file_record.filename = filename  # type: ignore[assignment]
             file_record.file_size = int(file_size)  # type: ignore[assignment]
@@ -177,6 +181,7 @@ class UploadedFileStore:
     def _has_current_durable_object(
         file_record: UploadedFile,
         *,
+        storage_path: Path,
         file_size: int,
         mime_type: str | None,
     ) -> bool:
@@ -186,9 +191,20 @@ class UploadedFileStore:
             return False
         if int(getattr(file_record, "file_size", 0) or 0) != int(file_size):
             return False
+        checksum = getattr(file_record, "checksum", None)
+        if checksum and checksum != UploadedFileStore._sha256(storage_path):
+            return False
         if mime_type is None:
             return True
         return getattr(file_record, "mime_type", None) == mime_type
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _delete_local(

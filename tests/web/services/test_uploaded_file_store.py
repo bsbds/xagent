@@ -203,6 +203,43 @@ def test_upsert_by_storage_path_reuses_record_and_refreshes_durable(
         assert handle.read() == b"second"
 
 
+def test_upsert_by_storage_path_refreshes_same_size_rewrite(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+    db = _session()
+    user = _user(db)
+    source = tmp_path / "uploads" / "kb.md"
+    source.parent.mkdir()
+    source.write_text("old-data", encoding="utf-8")
+    store = UploadedFileStore(db)
+
+    first = store.upsert_by_storage_path(
+        user_id=int(user.id),
+        filename="kb.md",
+        storage_path=source,
+        mime_type="text/markdown",
+        file_size=source.stat().st_size,
+    )
+    first_key = str(first.storage_key)
+    old_checksum = str(first.checksum)
+    db.commit()
+
+    source.write_text("new-data", encoding="utf-8")
+    second = store.upsert_by_storage_path(
+        user_id=int(user.id),
+        filename="kb.md",
+        storage_path=source,
+        mime_type="text/markdown",
+        file_size=source.stat().st_size,
+    )
+    db.commit()
+
+    assert second.id == first.id
+    assert second.checksum != old_checksum
+    with get_file_storage().open_read(first_key) as handle:
+        assert handle.read() == b"new-data"
+
+
 def test_upsert_by_storage_path_skips_durable_sync_when_file_unchanged(
     monkeypatch, tmp_path
 ):
