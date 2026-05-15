@@ -98,11 +98,16 @@ class UploadedFileStore:
         )
         self.db.add(file_record)
         self.db.flush()
-        self.sync_existing(
-            file_record,
-            storage_key=storage_key,
-            mime_type=str(file_record.mime_type),
-        )
+        try:
+            self.sync_existing(
+                file_record,
+                storage_key=storage_key,
+                mime_type=str(file_record.mime_type),
+            )
+        except Exception:
+            self.db.delete(file_record)
+            self.db.flush()
+            raise
         return file_record
 
     def sync_existing(

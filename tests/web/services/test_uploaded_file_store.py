@@ -282,7 +282,7 @@ def test_upsert_by_storage_path_skips_durable_sync_when_file_unchanged(
     assert second.storage_status == "available"
 
 
-def test_create_from_local_path_rolls_back_record_when_durable_write_fails(
+def test_create_from_local_path_removes_record_when_durable_write_fails(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
@@ -309,5 +309,5 @@ def test_create_from_local_path_rolls_back_record_when_durable_write_fails(
             mime_type="text/plain",
         )
 
-    db.rollback()
+    db.commit()
     assert db.query(UploadedFile).filter_by(file_id="file-output").first() is None
