@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from ...artifact_refs.observation import format_tool_result_for_observation
 from .components import (
     COMPONENT_LOADERS,
     ExecutionComponent,
@@ -182,13 +183,21 @@ class ExecutionContext:
         memory.snapshot = snapshot
 
     def _format_tool_result(self, tool_name: str, result: Any) -> str:
-        if isinstance(result, dict):
+        if isinstance(result, dict) and isinstance(result.get("artifacts"), list):
+            formatted = format_tool_result_for_observation(tool_name, result)
+        elif isinstance(result, dict):
             formatted = result.get("output", result)
         else:
             formatted = result
         return f"Tool {tool_name} returned: {formatted}"
 
     def _sanitize_tool_result_for_context(self, tool_name: str, result: Any) -> Any:
+        if isinstance(result, dict) and isinstance(result.get("artifacts"), list):
+            sanitized = dict(result)
+            if sanitized.get("file_id"):
+                sanitized.pop("image_path", None)
+            return sanitized
+
         if tool_name != "read_file" or not isinstance(result, str):
             return result
         if self._looks_like_binary_text(result):

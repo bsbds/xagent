@@ -158,6 +158,15 @@ class TestImageGenerationToolCore:
         assert result["usage"] == {"input_tokens": 10, "output_tokens": 20}
         assert result["request_id"] == "req1"
         assert result["saved_to_workspace"] is True
+        assert result["artifacts"] == [
+            {
+                "type": "image",
+                "file_id": "test-file-id",
+                "filename": result["image_path"].split("/")[-1],
+                "mime_type": "image/jpeg",
+                "display": "inline",
+            }
+        ]
 
         # Verify the first model was used (default behavior)
         mock_image_models["model1"].generate_image.assert_called_once_with(
@@ -236,6 +245,9 @@ class TestImageGenerationToolCore:
         assert result["image_path"] is not None
         assert result["saved_to_workspace"] is True
         assert "generated_image_" in result["image_path"]
+        assert result["artifacts"][0]["file_id"] == "test-file-id"
+        assert "preview_url" not in result["artifacts"][0]
+        assert "markdown_ref" not in result["artifacts"][0]
 
     @pytest.mark.asyncio
     @patch("aiohttp.ClientSession.get")
@@ -475,6 +487,10 @@ class TestImageGenerationToolCore:
         assert result["usage"] == {"input_tokens": 15, "output_tokens": 25}
         assert result["request_id"] == "edit_req1"
         assert result["saved_to_workspace"] is True
+        assert result["artifacts"][0]["type"] == "image"
+        assert result["artifacts"][0]["file_id"] == "test-file-id"
+        assert "preview_url" not in result["artifacts"][0]
+        assert "markdown_ref" not in result["artifacts"][0]
 
         # Verify the model's edit_image was called
         mock_image_models["model1"].edit_image.assert_called_once_with(

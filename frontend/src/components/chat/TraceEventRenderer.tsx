@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -16,7 +16,7 @@ import {
   Shield,
   MessageSquare,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, getApiUrl, getFilePublicPreviewUrl } from '@/lib/utils';
 import { useApp } from '@/contexts/app-context-chat';
 import { useI18n } from '@/contexts/i18n-context';
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
@@ -36,6 +36,15 @@ interface ToolResult {
   output?: string;
   error?: string;
   message?: string;
+  artifacts?: ToolArtifact[];
+}
+
+interface ToolArtifact {
+  type?: string;
+  file_id?: string;
+  filename?: string;
+  preview_url?: string;
+  display?: string;
 }
 
 interface TraceEvent {
@@ -82,16 +91,17 @@ interface StepAction {
   title: string;
   status: 'running' | 'completed' | 'failed';
   timestamp: number;
-  data: {
-    model?: string;
-    tool?: string;
-    args?: any;
-    code?: string;
-    output?: any;
-    reasoning?: string;
-    error?: any;
-    tool_calls?: any;
-    sandboxed?: boolean;
+    data: {
+      model?: string;
+      tool?: string;
+      args?: any;
+      code?: string;
+      output?: any;
+      artifacts?: ToolArtifact[];
+      reasoning?: string;
+      error?: any;
+      tool_calls?: any;
+      sandboxed?: boolean;
   };
 }
 
@@ -336,6 +346,13 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
         if (action) {
           action.status = 'completed';
           action.data.output = output;
+          if (
+            typeof result === 'object' &&
+            result !== null &&
+            Array.isArray((result as any).artifacts)
+          ) {
+            action.data.artifacts = (result as any).artifacts;
+          }
         } else {
           // Fallback
           step.actions.push({
@@ -344,7 +361,16 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
             title: t('traceEventRenderer.toolExecutionFinished'),
             status: 'completed',
             timestamp,
-            data: { output, sandboxed: !!event.data?.sandboxed }
+            data: {
+              output,
+              artifacts:
+                typeof result === 'object' &&
+                  result !== null &&
+                  Array.isArray((result as any).artifacts)
+                  ? (result as any).artifacts
+                  : undefined,
+              sandboxed: !!event.data?.sandboxed
+            }
           });
         }
       }
@@ -464,8 +490,44 @@ const CopyButton = ({ text, title }: { text: string, title?: string }) => {
   );
 };
 
+const getArtifactPreviewUrl = (artifact: ToolArtifact) => {
+  const apiUrl = getApiUrl();
+  if (artifact.preview_url) {
+    if (/^https?:\/\//.test(artifact.preview_url)) {
+      return artifact.preview_url;
+    }
+    return `${apiUrl}${artifact.preview_url.startsWith('/') ? '' : '/'}${artifact.preview_url}`;
+  }
+  if (artifact.file_id) {
+    return getFilePublicPreviewUrl(artifact.file_id, apiUrl);
+  }
+  return '';
+};
+
+const ToolArtifactsDisplay = ({ artifacts }: { artifacts?: ToolArtifact[] }) => {
+  const imageArtifacts = (artifacts || []).filter(
+    artifact => artifact?.type === 'image' && (artifact.preview_url || artifact.file_id)
+  );
+
+  if (imageArtifacts.length === 0) return null;
+
+  return (
+    <div className="mt-4 grid gap-3">
+      {imageArtifacts.map((artifact, index) => (
+        <img
+          key={`${artifact.file_id || artifact.preview_url || index}`}
+          src={getArtifactPreviewUrl(artifact)}
+          alt={artifact.filename || 'generated image'}
+          className="max-w-full rounded-lg border border-border/50 bg-muted/20"
+        />
+      ))}
+    </div>
+  );
+};
+
 const ToolOutputDisplay = ({ action, isRunning, t, onFileClick, onAgentClick }: { action: StepAction, isRunning: boolean, t: any, onFileClick?: (filePath: string, fileName: string) => void, onAgentClick?: (agentId: string, agentName: string) => void }) => (
   <>
+    <ToolArtifactsDisplay artifacts={action.data.artifacts} />
     {action.data.output !== undefined && action.data.output !== '' && (
       <div className="mt-4 flex flex-col gap-1.5">
         <div className="text-xs text-muted-foreground px-1 flex justify-between items-center">

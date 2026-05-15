@@ -1,9 +1,17 @@
+import React from "react"
 import { Loader2, XIcon } from "lucide-react"
 import { DocxPreviewRenderer } from "@/components/file/docx-preview-renderer"
 import { ExcelPreviewRenderer } from "@/components/file/excel-preview-renderer"
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer"
 import { useI18n } from "@/contexts/i18n-context"
-import { getApiUrl, isHtmlFile, isMarkdownFile, isCsvFile } from "@/lib/utils"
+import {
+  getApiUrl,
+  getFilePublicPreviewUrl,
+  getFileRelativePreviewUrl,
+  isHtmlFile,
+  isMarkdownFile,
+  isCsvFile,
+} from "@/lib/utils"
 
 interface FileViewerProps {
   fileName: string
@@ -35,8 +43,15 @@ export function FileViewer({
       /(src|href)=["']([^"']+)["']/g,
       (match, attr, path) => {
         if (path.match(/^(https?:\/|data:|\/\/|#)/)) return match
+        if (path.startsWith("file:")) {
+          const fileRef = path.replace(/^file:/, "")
+          return `${attr}="${getFilePublicPreviewUrl(fileRef, apiUrl)}"`
+        }
+        if (path.startsWith("/api/files/public/preview/")) {
+          return `${attr}="${apiUrl}${path}"`
+        }
 
-        return `${attr}="${apiUrl}/api/files/public/preview/${encodeURIComponent(fileId)}?relative_path=${encodeURIComponent(path)}"`
+        return `${attr}="${getFileRelativePreviewUrl(fileId, path, apiUrl)}"`
       }
     )
   }

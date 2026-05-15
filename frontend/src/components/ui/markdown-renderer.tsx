@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import type { Components } from 'react-markdown'
-import { getApiUrl } from '@/lib/utils'
+import { getApiUrl, getFilePublicPreviewUrl } from '@/lib/utils'
 import { apiRequest } from '@/lib/api-wrapper'
 import { AgentCard } from '@/components/chat/AgentCard'
 import { useI18n } from '@/contexts/i18n-context'
@@ -181,7 +181,7 @@ function MarkdownFileImage({
   [key: string]: any
 }) {
   const apiUrl = getApiUrl()
-  const publicUrl = `${apiUrl}/api/files/public/preview/${encodeURIComponent(filePath)}`
+  const publicUrl = getFilePublicPreviewUrl(filePath, apiUrl)
   const [resolvedUrl, setResolvedUrl] = React.useState(publicUrl)
 
   React.useEffect(() => {

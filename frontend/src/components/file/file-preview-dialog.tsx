@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button"
 import { FileText, ChevronLeft, ChevronRight } from "lucide-react"
 import { useApp } from "@/contexts/app-context-chat"
-import { getApiUrl } from "@/lib/utils"
+import { getApiUrl, getFilePublicPreviewUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
 import { FileViewer } from "@/components/file/file-viewer"
@@ -152,7 +152,7 @@ export function FilePreviewDialog({ open, onOpenChange }: FilePreviewDialogProps
       if (isPptxFile) {
         fileUrl = `${apiUrl}/api/files/preview/${encodeURIComponent(filePreview.fileId)}`
       } else {
-        fileUrl = `${apiUrl}/api/files/public/preview/${encodeURIComponent(filePreview.fileId)}`
+        fileUrl = getFilePublicPreviewUrl(filePreview.fileId, apiUrl)
       }
 
       // Open in new window/tab

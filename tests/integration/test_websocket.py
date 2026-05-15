@@ -537,6 +537,22 @@ class TestWebSocket(unittest.IsolatedAsyncioTestCase):
         rewritten = _rewrite_file_links_to_file_id(output_text, {})
         self.assertEqual(rewritten, output_text)
 
+    async def test_rewrite_file_links_preserves_unmapped_absolute_paths(self):
+        from xagent.web.api.websocket import _rewrite_file_links_to_file_id
+
+        absolute_image_path = (
+            "/Users/bsbds/workspace/xagent_1/src/xagent/web/uploads/"
+            "user_1/web_task_15/output/generated_image_9836e259.png"
+        )
+        output_text = (
+            f"Image: ![generated image]({absolute_image_path})\n"
+            f"Link: [generated image]({absolute_image_path})"
+        )
+
+        rewritten = _rewrite_file_links_to_file_id(output_text, {})
+
+        self.assertEqual(rewritten, output_text)
+
     async def test_websocket_trace_handler_integration(self):
         """测试WebSocket追踪处理器集成"""
         print("\n=== 测试WebSocket追踪处理器集成 ===")

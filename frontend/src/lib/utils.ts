@@ -11,6 +11,18 @@ export function getApiUrl(): string {
   return apiUrl
 }
 
+export function getFilePublicPreviewUrl(fileId: string, apiUrl = getApiUrl()): string {
+  return `${apiUrl}/api/files/public/preview/${encodeURIComponent(fileId)}`
+}
+
+export function getFileRelativePreviewUrl(
+  fileId: string,
+  relativePath: string,
+  apiUrl = getApiUrl(),
+): string {
+  return `${getFilePublicPreviewUrl(fileId, apiUrl)}?relative_path=${encodeURIComponent(relativePath)}`
+}
+
 export function getUploadApiUrl(): string {
   // Direct-to-backend URL for file uploads. The Next.js dev-server proxy
   // (rewrites in next.config.mjs) buffers entire multipart bodies into Node

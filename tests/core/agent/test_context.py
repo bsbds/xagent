@@ -50,6 +50,65 @@ def test_create_context() -> None:
     assert ctx.memory_snapshot == {"summary": "hello"}
 
 
+def test_sanitize_tool_result_for_context_hides_image_path_when_artifact_exists() -> (
+    None
+):
+    ctx = ExecutionContext()
+
+    sanitized = ctx._sanitize_tool_result_for_context(
+        "generate_image",
+        {
+            "success": True,
+            "image_path": "/Users/example/uploads/generated_image.png",
+            "file_id": "582e7b79-4de9-4905-b73b-7d5a70ad64fe",
+            "artifacts": [
+                {
+                    "type": "image",
+                    "file_id": "582e7b79-4de9-4905-b73b-7d5a70ad64fe",
+                    "filename": "generated_image.png",
+                    "display": "inline",
+                }
+            ],
+        },
+    )
+
+    assert "image_path" not in sanitized
+    assert "display_guidance" not in sanitized
+    assert sanitized["artifacts"] == [
+        {
+            "type": "image",
+            "file_id": "582e7b79-4de9-4905-b73b-7d5a70ad64fe",
+            "filename": "generated_image.png",
+            "display": "inline",
+        }
+    ]
+
+
+def test_format_tool_result_uses_shared_image_artifact_observation() -> None:
+    ctx = ExecutionContext()
+
+    content = ctx._format_tool_result(
+        "generate_image",
+        {
+            "success": True,
+            "file_id": "582e7b79-4de9-4905-b73b-7d5a70ad64fe",
+            "artifacts": [
+                {
+                    "type": "image",
+                    "file_id": "582e7b79-4de9-4905-b73b-7d5a70ad64fe",
+                    "filename": "generated_image.png",
+                }
+            ],
+        },
+    )
+
+    assert (
+        "![generated_image.png](file:582e7b79-4de9-4905-b73b-7d5a70ad64fe)" in content
+    )
+    assert "file preview service" in content
+    assert "/api/files/public/preview/" not in content
+
+
 def test_memory_enrichment_uses_web_user_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
