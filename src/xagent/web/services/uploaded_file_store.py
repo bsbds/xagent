@@ -127,6 +127,10 @@ class UploadedFileStore:
         storage_path: Path,
         mime_type: str | None,
         file_size: int,
+        storage_key: str | None = None,
+        task_id: int | None = None,
+        workspace_relative_path: str | None = None,
+        workspace_category: str | None = None,
     ) -> UploadedFile:
         storage_path_str = str(storage_path)
         file_record = (
@@ -140,10 +144,21 @@ class UploadedFileStore:
                 user_id=user_id,
                 filename=filename,
                 mime_type=mime_type,
+                task_id=task_id,
+                workspace_relative_path=workspace_relative_path,
+                workspace_category=workspace_category,
             )
             self.db.add(file_record)
             self.db.flush()
         else:
+            if storage_key is not None:
+                file_record.storage_key = storage_key  # type: ignore[assignment]
+            if task_id is not None:
+                file_record.task_id = task_id  # type: ignore[assignment]
+            if workspace_relative_path is not None:
+                file_record.workspace_relative_path = workspace_relative_path  # type: ignore[assignment]
+            if workspace_category is not None:
+                file_record.workspace_category = workspace_category  # type: ignore[assignment]
             unchanged = self._has_current_durable_object(
                 file_record,
                 storage_path=storage_path,
@@ -158,7 +173,9 @@ class UploadedFileStore:
                 self.db.flush()
                 return file_record
 
-        return self.sync_existing(file_record, mime_type=mime_type)
+        return self.sync_existing(
+            file_record, storage_key=storage_key, mime_type=mime_type
+        )
 
     def delete(
         self,
@@ -192,7 +209,9 @@ class UploadedFileStore:
         if int(getattr(file_record, "file_size", 0) or 0) != int(file_size):
             return False
         checksum = getattr(file_record, "checksum", None)
-        if checksum and checksum != UploadedFileStore._sha256(storage_path):
+        if not checksum:
+            return False
+        if checksum != UploadedFileStore._sha256(storage_path):
             return False
         if mime_type is None:
             return True

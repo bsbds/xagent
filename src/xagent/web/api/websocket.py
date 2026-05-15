@@ -854,6 +854,29 @@ def _normalize_file_outputs(
                 db.rollback()
                 raise
 
+        else:
+            try:
+                file_record = UploadedFileStore(db).upsert_by_storage_path(
+                    user_id=task_user_id,
+                    filename=item_filename or resolved_path.name,
+                    storage_path=resolved_path,
+                    mime_type=None,
+                    file_size=resolved_path.stat().st_size,
+                    storage_key=build_task_output_storage_key(
+                        task_user_id,
+                        task_id,
+                        str(file_record.file_id),
+                        workspace_relative_path,
+                    ),
+                    task_id=task_id,
+                    workspace_relative_path=workspace_relative_path,
+                    workspace_category=workspace_category,
+                )
+                changed = True
+            except DurableStorageOperationError:
+                db.rollback()
+                raise
+
         final_file_id = str(file_record.file_id)
         final_filename = item_filename or str(file_record.filename)
 

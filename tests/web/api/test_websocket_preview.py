@@ -10,6 +10,7 @@ from tests.utils.langfuse_execution_fakes import (
     DeterministicReActLLM,
     FakeLangfuseClient,
 )
+from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.api.websocket import (
     _normalize_file_outputs,
     handle_build_preview_execution,
@@ -19,7 +20,10 @@ from xagent.web.models.model import Model as DBModel
 from xagent.web.models.task import Task
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
-from xagent.web.services.managed_file_ref import DurableStorageOperationError
+from xagent.web.services.managed_file_ref import (
+    DurableStorageOperationError,
+    build_task_output_storage_key,
+)
 
 
 @pytest.mark.asyncio
@@ -138,6 +142,61 @@ def test_normalize_file_outputs_rolls_back_when_durable_storage_fails(
     finally:
         db.close()
         engine.dispose()
+
+
+def test_normalize_file_outputs_refreshes_existing_output_row(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+    engine = create_engine("sqlite:///:memory:")
+    SessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(engine)
+    db = SessionLocal()
+    try:
+        user = User(username="ws-refresh-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        task = Task(id=654, user_id=user.id, title="Output refresh task")
+        db.add(task)
+        db.commit()
+
+        uploads_dir = tmp_path / "uploads"
+        output_path = uploads_dir / "user_1" / "web_task_654" / "output" / "report.txt"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_text("old-data", encoding="utf-8")
+        monkeypatch.setattr(
+            "xagent.web.api.websocket.get_uploads_dir", lambda: uploads_dir
+        )
+
+        _normalize_file_outputs(
+            db,
+            task_id=654,
+            task_user_id=int(user.id),
+            file_outputs=[str(output_path)],
+        )
+        record = db.query(UploadedFile).filter_by(task_id=654).one()
+        storage_key = build_task_output_storage_key(
+            int(user.id),
+            654,
+            str(record.file_id),
+            "output/report.txt",
+        )
+
+        output_path.write_text("new-data", encoding="utf-8")
+        _normalize_file_outputs(
+            db,
+            task_id=654,
+            task_user_id=int(user.id),
+            file_outputs=[str(output_path)],
+        )
+
+        db.refresh(record)
+        assert record.checksum is not None
+        with get_file_storage().open_read(storage_key) as handle:
+            assert handle.read() == b"new-data"
+    finally:
+        db.close()
+        engine.dispose()
+        get_file_storage.cache_clear()
 
 
 @pytest.mark.asyncio
