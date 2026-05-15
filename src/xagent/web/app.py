@@ -437,7 +437,7 @@ app.include_router(v1_router)
 @app.on_event("startup")
 async def startup_event() -> None:
     global _migration_task
-    logger.info("Agent runtime configured: v2")
+    logger.info("Agent runtime configured: %s", get_agent_runtime())
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
