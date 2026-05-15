@@ -4,6 +4,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from .managed_file_ref import ManagedFileRef, build_upload_storage_key
 logger = logging.getLogger(__name__)
 
 _sync_lock = threading.Lock()
+_FILE_LOCK_RETRY_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -56,12 +58,7 @@ def sync_registered_files_to_durable_storage(
 
     file_lock = None
     try:
-        file_lock = _acquire_file_lock()
-        if file_lock is None:
-            logger.info(
-                "Startup file storage sync is already running in another process"
-            )
-            return StartupFileStorageSyncResult(locked=True)
+        file_lock = _acquire_file_lock_after_contention()
 
         return _sync_registered_files(
             db,
@@ -72,6 +69,21 @@ def sync_registered_files_to_durable_storage(
         if file_lock is not None:
             _release_file_lock(file_lock)
         _sync_lock.release()
+
+
+def _acquire_file_lock_after_contention() -> Any:
+    file_lock = _acquire_file_lock()
+    while file_lock is None:
+        logger.info(
+            "Startup file storage sync is already running in another process; waiting"
+        )
+        _wait_for_lock_holder()
+        file_lock = _acquire_file_lock()
+    return file_lock
+
+
+def _wait_for_lock_holder() -> None:
+    time.sleep(_FILE_LOCK_RETRY_INTERVAL_SECONDS)
 
 
 def _sync_registered_files(

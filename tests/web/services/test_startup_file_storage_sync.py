@@ -326,3 +326,48 @@ def test_startup_sync_file_lock_can_be_reacquired(monkeypatch, tmp_path):
     second_lock = _acquire_file_lock()
     assert second_lock is not None
     _release_file_lock(second_lock)
+
+
+def test_sync_waits_for_file_lock_then_runs_idempotent_pass(monkeypatch, tmp_path):
+    db = _session()
+    user = _user(db)
+    local_path = tmp_path / "uploads" / "input.txt"
+    local_path.parent.mkdir()
+    local_path.write_text("content", encoding="utf-8")
+    record = _record(db, user=user, local_path=local_path, file_id="file-123")
+    db.commit()
+    storage = FakeStorage()
+
+    import xagent.web.services.startup_file_storage_sync as sync_module
+
+    lock = object()
+    attempts = 0
+    waits: list[None] = []
+
+    def acquire_after_contention():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return None
+        return lock
+
+    monkeypatch.setattr(sync_module, "_acquire_file_lock", acquire_after_contention)
+    monkeypatch.setattr(sync_module, "_release_file_lock", lambda acquired: None)
+    monkeypatch.setattr(
+        sync_module,
+        "_wait_for_lock_holder",
+        lambda: waits.append(None),
+        raising=False,
+    )
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(record)
+    expected_key = f"users/{int(user.id)}/uploads/file-123/input.txt"
+    assert attempts == 2
+    assert waits == [None]
+    assert result.locked is False
+    assert result.scanned == 1
+    assert result.uploaded == 1
+    assert storage.put_calls == [(local_path, expected_key)]
+    assert record.storage_status == "available"
