@@ -1,4 +1,7 @@
+import hashlib
 from pathlib import Path
+
+import pytest
 
 from xagent.core.file_storage.factory import get_file_storage
 from xagent.core.file_storage.storage import FsspecFileStorage
@@ -159,6 +162,103 @@ def test_put_file_passes_content_type_to_backend_open(tmp_path):
     assert backend.open_kwargs == {"content_type": "text/plain"}
 
 
+def test_s3_put_bytes_persists_sha256_metadata(tmp_path):
+    class WriteHandle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def write(self, data):
+            return len(data)
+
+    class S3LikeStorage:
+        def __init__(self):
+            self.copy_kwargs = None
+
+        def open(self, path, mode, **kwargs):
+            return WriteHandle()
+
+        def makedirs(self, path, exist_ok=False):
+            return None
+
+        def info(self, path):
+            return {"size": 4}
+
+        def copy(self, source, destination, **kwargs):
+            self.copy_kwargs = kwargs
+
+    backend = S3LikeStorage()
+    storage = FsspecFileStorage(
+        fs=backend,
+        root="bucket/root",
+        backend="s3",
+        base_uri="s3://bucket/root",
+        materialize_dir=tmp_path,
+    )
+
+    storage.put_bytes(b"data", "uploads/data.txt", "text/plain")
+
+    assert backend.copy_kwargs == {
+        "Metadata": {
+            "xagent-sha256": "3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"
+        },
+        "MetadataDirective": "REPLACE",
+        "ContentType": "text/plain",
+    }
+
+
+def test_s3_content_hash_reads_sha256_metadata(tmp_path):
+    class S3LikeStorage:
+        def split_path(self, path):
+            assert path == "bucket/root/uploads/data.txt"
+            return "bucket", "root/uploads/data.txt", None
+
+        def call_s3(self, method, **kwargs):
+            assert method == "head_object"
+            assert kwargs == {"Bucket": "bucket", "Key": "root/uploads/data.txt"}
+            return {
+                "Metadata": {"xagent-sha256": "sha256-value"},
+                "ETag": "etag-value",
+            }
+
+        def info(self, path):
+            raise AssertionError(f"unexpected info fallback: {path}")
+
+    storage = FsspecFileStorage(
+        fs=S3LikeStorage(),
+        root="bucket/root",
+        backend="s3",
+        base_uri="s3://bucket/root",
+        materialize_dir=tmp_path,
+    )
+
+    assert storage.content_hash("uploads/data.txt") == "sha256-value"
+
+
+def test_s3_content_hash_reads_native_sha256_checksum(tmp_path):
+    class S3LikeStorage:
+        def split_path(self, path):
+            return "bucket", "root/uploads/data.txt", None
+
+        def call_s3(self, method, **kwargs):
+            return {"ChecksumSHA256": "native-sha256"}
+
+        def info(self, path):
+            raise AssertionError(f"unexpected info fallback: {path}")
+
+    storage = FsspecFileStorage(
+        fs=S3LikeStorage(),
+        root="bucket/root",
+        backend="s3",
+        base_uri="s3://bucket/root",
+        materialize_dir=tmp_path,
+    )
+
+    assert storage.content_hash("uploads/data.txt") == "native-sha256"
+
+
 def test_local_file_storage_copies_object_to_path(monkeypatch, tmp_path):
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
     get_file_storage.cache_clear()
@@ -216,6 +316,28 @@ def test_materialize_reuses_existing_cached_file(monkeypatch, tmp_path):
     assert second_path.read_bytes() == b"cached content"
 
 
+def test_materialize_uses_content_hash_in_cache_path(monkeypatch, tmp_path):
+    materialize_dir = tmp_path / "materialized"
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    monkeypatch.setenv("XAGENT_FILE_MATERIALIZE_DIR", str(materialize_dir))
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    content = b"cache identity"
+    stored = storage.put_bytes(content, "users/1/uploads/file.txt")
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    materialized = storage.materialize(stored.key, "file.txt")
+
+    assert materialized == (
+        materialize_dir
+        / hashlib.sha256(stored.key.encode("utf-8")).hexdigest()[:16]
+        / content_hash
+        / "file.txt"
+    )
+    assert not list(materialize_dir.rglob("*.metadata.json"))
+
+
 def test_materialize_refreshes_cached_file_when_object_changes(monkeypatch, tmp_path):
     materialize_dir = tmp_path / "materialized"
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
@@ -229,5 +351,22 @@ def test_materialize_refreshes_cached_file_when_object_changes(monkeypatch, tmp_
     storage.put_bytes(b"new-data", stored.key)
     second_path = storage.materialize(stored.key, "file.txt")
 
-    assert second_path == first_path
+    assert second_path != first_path
     assert second_path.read_bytes() == b"new-data"
+
+
+def test_content_hash_raises_when_backend_hash_is_unavailable(tmp_path):
+    class HashlessStorage:
+        def info(self, path):
+            return {"size": 4, "type": "file"}
+
+    storage = FsspecFileStorage(
+        fs=HashlessStorage(),
+        root="bucket/root",
+        backend="memory",
+        base_uri="memory://bucket/root",
+        materialize_dir=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="content hash"):
+        storage.content_hash("users/1/uploads/file.txt")

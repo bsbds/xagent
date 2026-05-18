@@ -42,6 +42,10 @@ class MinioStorage:
         with self.fs.open(f"{self.bucket}/{self.prefix}/{key}", "rb") as handle:
             return handle.read()
 
+    def object_info(self, key: str) -> dict[str, Any]:
+        bucket_key = f"{self.prefix}/{key}"
+        return self.fs.call_s3("head_object", Bucket=self.bucket, Key=bucket_key)
+
     def put_object(
         self,
         key: str,

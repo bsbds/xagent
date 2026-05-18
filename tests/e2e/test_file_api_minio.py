@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -107,7 +108,7 @@ def test_download_and_preview_materialize_uploaded_file_from_minio(
     minio_storage: MinioStorage,
 ) -> None:
     uploads_dir = configure_e2e_app_environment(monkeypatch, tmp_path=tmp_path)
-    del uploads_dir, minio_storage
+    del uploads_dir
     disable_external_app_services(monkeypatch)
     SessionLocal = init_e2e_db()
     db = SessionLocal()
@@ -125,6 +126,11 @@ def test_download_and_preview_materialize_uploaded_file_from_minio(
         file_id = uploaded["file_id"]
         record = _record(app.session_factory, file_id)
         local_path = Path(str(record.storage_path))
+        storage_key = str(record.storage_key)
+        durable_sha256 = str(record.checksum)
+        assert minio_storage.object_info(storage_key)["Metadata"] == {
+            "xagent-sha256": durable_sha256
+        }
         assert local_path.exists()
         local_path.unlink()
 
@@ -144,6 +150,15 @@ def test_download_and_preview_materialize_uploaded_file_from_minio(
         assert preview.status_code == 200
         assert preview.content == b"source from minio\n"
         assert not local_path.exists()
+        expected_materialized = (
+            tmp_path
+            / "materialized"
+            / hashlib.sha256(storage_key.encode("utf-8")).hexdigest()[:16]
+            / durable_sha256
+            / "source.txt"
+        )
+        assert expected_materialized.read_bytes() == b"source from minio\n"
+        assert not list((tmp_path / "materialized").rglob("*.metadata.json"))
 
 
 def test_public_preview_relative_asset_restores_durable_only_file_from_minio(

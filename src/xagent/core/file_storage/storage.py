@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 from urllib.parse import quote
 
 from .types import StoredObject
+
+_SHA256_METADATA_KEY = "xagent-sha256"
 
 
 class FsspecFileStorage:
@@ -35,15 +37,18 @@ class FsspecFileStorage:
         destination = self._full_path(normalized_key)
         self._makedirs_for_key(normalized_key)
         digest = hashlib.sha256()
-        open_kwargs = self._write_open_kwargs(content_type)
         with (
             source.open("rb") as src,
-            self._fs.open(destination, "wb", **open_kwargs) as dst,
+            self._fs.open(
+                destination, "wb", **self._write_open_kwargs(content_type)
+            ) as dst,
         ):
             for chunk in iter(lambda: src.read(1024 * 1024), b""):
                 digest.update(chunk)
                 dst.write(chunk)
-        return self._stored_object(normalized_key, checksum=digest.hexdigest())
+        checksum = digest.hexdigest()
+        self._store_content_hash(normalized_key, checksum, content_type=content_type)
+        return self._stored_object(normalized_key, checksum=checksum)
 
     def put_bytes(
         self, data: bytes, key: str, content_type: str | None = None
@@ -55,9 +60,9 @@ class FsspecFileStorage:
             destination, "wb", **self._write_open_kwargs(content_type)
         ) as dst:
             dst.write(data)
-        return self._stored_object(
-            normalized_key, checksum=hashlib.sha256(data).hexdigest()
-        )
+        checksum = hashlib.sha256(data).hexdigest()
+        self._store_content_hash(normalized_key, checksum, content_type=content_type)
+        return self._stored_object(normalized_key, checksum=checksum)
 
     def open_read(self, key: str) -> BinaryIO:
         return cast(
@@ -70,6 +75,26 @@ class FsspecFileStorage:
 
     def stat(self, key: str) -> StoredObject:
         return self._stored_object(self._normalize_key(key))
+
+    def content_hash(self, key: str) -> str:
+        normalized_key = self._normalize_key(key)
+        if self._backend == "file":
+            return self._sha256(Path(self._full_path(normalized_key)))
+
+        metadata_hash = self._metadata_content_hash(normalized_key)
+        if metadata_hash:
+            return metadata_hash
+
+        info_hash = self._info_content_hash(
+            self._fs.info(self._full_path(normalized_key))
+        )
+        if info_hash:
+            return info_hash
+
+        raise RuntimeError(
+            f"Durable storage backend {self._backend!r} did not provide a content hash "
+            f"for {normalized_key!r}"
+        )
 
     def list(self, prefix: str) -> list[StoredObject]:
         normalized_prefix = self._normalize_key(prefix).rstrip("/")
@@ -92,19 +117,19 @@ class FsspecFileStorage:
         normalized_key = self._normalize_key(key)
         target_name = Path(filename or normalized_key).name or "file"
         key_digest = hashlib.sha256(normalized_key.encode("utf-8")).hexdigest()[:16]
-        target_path = self._materialize_dir / key_digest / target_name
-        metadata_path = target_path.with_suffix(target_path.suffix + ".metadata.json")
-        metadata = self._materialize_metadata(normalized_key)
-        if (
-            target_path.exists()
-            and target_path.is_file()
-            and self._read_materialize_metadata(metadata_path) == metadata
-        ):
+        target_path = (
+            self._materialize_dir
+            / key_digest
+            / self.content_hash(normalized_key)
+            / target_name
+        )
+        if target_path.exists() and target_path.is_file():
             return target_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.open_read(normalized_key) as src, target_path.open("wb") as dst:
+        temp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+        with self.open_read(normalized_key) as src, temp_path.open("wb") as dst:
             shutil.copyfileobj(src, dst)
-        metadata_path.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+        temp_path.replace(target_path)
         return target_path
 
     def copy_to_path(self, key: str, target_path: Path) -> Path:
@@ -172,25 +197,45 @@ class FsspecFileStorage:
             raise ValueError(f"Invalid storage key: {key!r}")
         return normalized
 
-    def _materialize_metadata(self, key: str) -> dict[str, Any]:
-        info = self._fs.info(self._full_path(key))
-        return {
-            "key": key,
-            "size": int(info.get("size", 0)),
-            "etag": info.get("ETag") or info.get("etag"),
-            "checksum": info.get("checksum"),
-            "mtime": info.get("mtime") or info.get("modified"),
-            "version_id": info.get("version_id") or info.get("VersionId"),
+    def _store_content_hash(
+        self, key: str, checksum: str, *, content_type: str | None
+    ) -> None:
+        if self._backend != "s3" or not hasattr(self._fs, "copy"):
+            return
+        copy_kwargs = {
+            "Metadata": {_SHA256_METADATA_KEY: checksum},
+            "MetadataDirective": "REPLACE",
         }
+        if content_type:
+            copy_kwargs["ContentType"] = content_type
+        self._fs.copy(
+            self._full_path(key),
+            self._full_path(key),
+            **copy_kwargs,
+        )
+
+    def _metadata_content_hash(self, key: str) -> str | None:
+        if self._backend != "s3" or not hasattr(self._fs, "call_s3"):
+            return None
+        bucket, object_key, _version_id = self._fs.split_path(self._full_path(key))
+        head = self._fs.call_s3("head_object", Bucket=bucket, Key=object_key)
+        metadata = head.get("Metadata") or {}
+        value = metadata.get(_SHA256_METADATA_KEY)
+        if value:
+            return str(value)
+        return self._info_content_hash(head)
 
     @staticmethod
-    def _read_materialize_metadata(path: Path) -> dict[str, Any] | None:
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return None
-        if isinstance(loaded, dict):
-            return loaded
+    def _info_content_hash(info: dict[str, Any]) -> str | None:
+        for key in (
+            "checksum",
+            "ChecksumSHA256",
+            "checksum_sha256",
+            _SHA256_METADATA_KEY,
+        ):
+            value = info.get(key)
+            if value:
+                return str(value)
         return None
 
     @staticmethod
