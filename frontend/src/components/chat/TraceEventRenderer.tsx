@@ -341,17 +341,19 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
         }
 
         step.output = output;
+        const artifacts =
+          typeof result === 'object' &&
+          result !== null &&
+          Array.isArray(result.artifacts)
+            ? result.artifacts
+            : undefined;
 
         const action = findLastRunningAction(step, 'tool');
         if (action) {
           action.status = 'completed';
           action.data.output = output;
-          if (
-            typeof result === 'object' &&
-            result !== null &&
-            Array.isArray((result as any).artifacts)
-          ) {
-            action.data.artifacts = (result as any).artifacts;
+          if (artifacts) {
+            action.data.artifacts = artifacts;
           }
         } else {
           // Fallback
@@ -363,12 +365,7 @@ function useProcessedSteps(events: TraceEvent[]): ProcessedStep[] {
             timestamp,
             data: {
               output,
-              artifacts:
-                typeof result === 'object' &&
-                  result !== null &&
-                  Array.isArray((result as any).artifacts)
-                  ? (result as any).artifacts
-                  : undefined,
+              artifacts,
               sandboxed: !!event.data?.sandboxed
             }
           });
