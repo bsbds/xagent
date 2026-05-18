@@ -70,7 +70,7 @@ _file_storage_startup_sync_task: asyncio.Task[Any] | None = None
 
 FILE_STORAGE_STARTUP_SYNC_EXEMPT_PATHS = frozenset({"/health", "/ready"})
 FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS = 5.0
-FILE_STORAGE_STARTUP_SYNC_GATE_POLL_INTERVAL_SECONDS = 0.05
+FILE_STORAGE_STARTUP_SYNC_GATE_POLL_INTERVAL_SECONDS = 0.25
 
 
 def run_startup_file_storage_sync() -> None:
