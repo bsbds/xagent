@@ -273,6 +273,40 @@ def test_local_file_storage_copies_object_to_path(monkeypatch, tmp_path):
     assert target.read_bytes() == b"restore me"
 
 
+def test_copy_to_path_does_not_publish_partial_file_on_read_failure(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    target = tmp_path / "restored" / "data.txt"
+
+    class FailingRead:
+        def __init__(self):
+            self._returned_partial = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self, size=-1):
+            if not self._returned_partial:
+                self._returned_partial = True
+                return b"partial"
+            raise OSError("durable read failed")
+
+    monkeypatch.setattr(storage, "open_read", lambda key: FailingRead())
+
+    with pytest.raises(OSError, match="durable read failed"):
+        storage.copy_to_path("copies/data.txt", target)
+
+    assert not target.exists()
+    assert list(target.parent.iterdir()) == []
+
+
 def test_materialize_isolates_objects_with_same_filename(monkeypatch, tmp_path):
     materialize_dir = tmp_path / "materialized"
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())

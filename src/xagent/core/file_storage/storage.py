@@ -134,8 +134,14 @@ class FsspecFileStorage:
 
     def copy_to_path(self, key: str, target_path: Path) -> Path:
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.open_read(key) as src, target_path.open("wb") as dst:
-            shutil.copyfileobj(src, dst)
+        temp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+        try:
+            with self.open_read(key) as src, temp_path.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+            temp_path.replace(target_path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
         return target_path
 
     def _full_path(self, key: str) -> str:
