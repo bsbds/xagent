@@ -176,6 +176,15 @@ class TestFileStorageConfig:
 
         assert get_file_storage_uri() == "file:///custom/storage/files"
 
+    def test_default_file_storage_uri_resolves_relative_storage_root(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv(FILE_STORAGE_URI, raising=False)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv(STORAGE_ROOT, ".xagent")
+
+        assert get_file_storage_uri() == (tmp_path / ".xagent" / "files").as_uri()
+
     def test_file_storage_uri_with_env_var(self, monkeypatch):
         monkeypatch.setenv(FILE_STORAGE_URI, "s3://bucket/prefix")
 

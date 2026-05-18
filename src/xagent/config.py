@@ -300,7 +300,7 @@ def get_file_storage_uri() -> str:
     if env_value:
         return env_value
 
-    return (get_storage_root() / "files").as_uri()
+    return (get_storage_root().expanduser().resolve() / "files").as_uri()
 
 
 def get_file_storage_options() -> dict[str, Any]:
