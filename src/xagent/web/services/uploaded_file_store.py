@@ -156,19 +156,23 @@ class UploadedFileStore:
             self.db.add(file_record)
             self.db.flush()
         else:
-            if storage_key is not None:
-                file_record.storage_key = storage_key  # type: ignore[assignment]
             if task_id is not None:
                 file_record.task_id = task_id  # type: ignore[assignment]
             if workspace_relative_path is not None:
                 file_record.workspace_relative_path = workspace_relative_path  # type: ignore[assignment]
             if workspace_category is not None:
                 file_record.workspace_category = workspace_category  # type: ignore[assignment]
-            unchanged = self._has_current_durable_object(
-                file_record,
-                storage_path=storage_path,
-                file_size=file_size,
-                mime_type=mime_type,
+            durable_key_changed = storage_key is not None and storage_key != getattr(
+                file_record, "storage_key", None
+            )
+            unchanged = (
+                self._has_current_durable_object(
+                    file_record,
+                    storage_path=storage_path,
+                    file_size=file_size,
+                    mime_type=mime_type,
+                )
+                and not durable_key_changed
             )
             file_record.filename = filename  # type: ignore[assignment]
             file_record.file_size = int(file_size)  # type: ignore[assignment]
@@ -177,6 +181,8 @@ class UploadedFileStore:
             if unchanged:
                 self.db.flush()
                 return file_record
+            if storage_key is not None:
+                file_record.storage_key = storage_key  # type: ignore[assignment]
 
         return self.sync_existing(
             file_record, storage_key=storage_key, mime_type=mime_type
