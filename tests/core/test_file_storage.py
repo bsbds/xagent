@@ -214,3 +214,20 @@ def test_materialize_reuses_existing_cached_file(monkeypatch, tmp_path):
 
     assert second_path == first_path
     assert second_path.read_bytes() == b"cached content"
+
+
+def test_materialize_refreshes_cached_file_when_object_changes(monkeypatch, tmp_path):
+    materialize_dir = tmp_path / "materialized"
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    monkeypatch.setenv("XAGENT_FILE_MATERIALIZE_DIR", str(materialize_dir))
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    stored = storage.put_bytes(b"old-data", "users/1/uploads/file.txt")
+    first_path = storage.materialize(stored.key, "file.txt")
+
+    storage.put_bytes(b"new-data", stored.key)
+    second_path = storage.materialize(stored.key, "file.txt")
+
+    assert second_path == first_path
+    assert second_path.read_bytes() == b"new-data"

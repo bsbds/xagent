@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from pathlib import Path
 from typing import Any, BinaryIO, cast
@@ -92,11 +93,18 @@ class FsspecFileStorage:
         target_name = Path(filename or normalized_key).name or "file"
         key_digest = hashlib.sha256(normalized_key.encode("utf-8")).hexdigest()[:16]
         target_path = self._materialize_dir / key_digest / target_name
-        if target_path.exists() and target_path.is_file():
+        metadata_path = target_path.with_suffix(target_path.suffix + ".metadata.json")
+        metadata = self._materialize_metadata(normalized_key)
+        if (
+            target_path.exists()
+            and target_path.is_file()
+            and self._read_materialize_metadata(metadata_path) == metadata
+        ):
             return target_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with self.open_read(normalized_key) as src, target_path.open("wb") as dst:
             shutil.copyfileobj(src, dst)
+        metadata_path.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
         return target_path
 
     def copy_to_path(self, key: str, target_path: Path) -> Path:
@@ -163,6 +171,27 @@ class FsspecFileStorage:
         if not normalized or ".." in Path(normalized).parts:
             raise ValueError(f"Invalid storage key: {key!r}")
         return normalized
+
+    def _materialize_metadata(self, key: str) -> dict[str, Any]:
+        info = self._fs.info(self._full_path(key))
+        return {
+            "key": key,
+            "size": int(info.get("size", 0)),
+            "etag": info.get("ETag") or info.get("etag"),
+            "checksum": info.get("checksum"),
+            "mtime": info.get("mtime") or info.get("modified"),
+            "version_id": info.get("version_id") or info.get("VersionId"),
+        }
+
+    @staticmethod
+    def _read_materialize_metadata(path: Path) -> dict[str, Any] | None:
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+        if isinstance(loaded, dict):
+            return loaded
+        return None
 
     @staticmethod
     def _sha256(path: Path) -> str:
