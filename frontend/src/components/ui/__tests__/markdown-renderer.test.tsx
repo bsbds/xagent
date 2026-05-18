@@ -7,6 +7,8 @@ const apiRequestMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/lib/utils', () => ({
   getApiUrl: () => 'http://api.local',
+  getFilePublicPreviewUrl: (fileId: string, apiUrl = 'http://api.local') =>
+    `${apiUrl}/api/files/public/preview/${encodeURIComponent(fileId)}`,
 }))
 
 vi.mock('@/lib/api-wrapper', () => ({
