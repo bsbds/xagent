@@ -12,6 +12,12 @@ from ...config import (
 )
 from .storage import FsspecFileStorage
 
+_DEFAULT_S3_CONFIG_KWARGS = {
+    "connect_timeout": 3,
+    "read_timeout": 10,
+    "retries": {"max_attempts": 1},
+}
+
 
 @lru_cache
 def get_file_storage() -> FsspecFileStorage:
@@ -20,6 +26,8 @@ def get_file_storage() -> FsspecFileStorage:
     options = get_file_storage_options()
     parsed = urlparse(uri)
     backend = parsed.scheme or "file"
+    if backend == "s3":
+        options = _with_default_s3_config_kwargs(options)
 
     try:
         fs, root = fsspec.core.url_to_fs(uri, **options)
@@ -37,3 +45,18 @@ def get_file_storage() -> FsspecFileStorage:
         base_uri=uri,
         materialize_dir=get_file_materialize_dir(),
     )
+
+
+def _with_default_s3_config_kwargs(options: dict) -> dict:
+    config_kwargs = options.get("config_kwargs")
+    if config_kwargs is None:
+        return {**options, "config_kwargs": dict(_DEFAULT_S3_CONFIG_KWARGS)}
+    if not isinstance(config_kwargs, dict):
+        return options
+    return {
+        **options,
+        "config_kwargs": {
+            **_DEFAULT_S3_CONFIG_KWARGS,
+            **config_kwargs,
+        },
+    }

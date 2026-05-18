@@ -1,8 +1,10 @@
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
+import xagent.core.file_storage.factory as file_storage_factory
 from xagent.core.file_storage.factory import get_file_storage
 from xagent.core.file_storage.storage import FsspecFileStorage
 
@@ -40,6 +42,75 @@ def test_local_file_storage_round_trips_file(monkeypatch, tmp_path):
 
     storage.delete(stored.key)
     assert not storage.exists(stored.key)
+
+
+def test_s3_file_storage_uses_bounded_client_timeouts(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    class DummyStorage:
+        pass
+
+    def fake_url_to_fs(uri: str, **options: object):
+        captured["uri"] = uri
+        captured["options"] = options
+        return DummyStorage(), "bucket/root"
+
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", "s3://bucket/root")
+    monkeypatch.setenv("XAGENT_FILE_MATERIALIZE_DIR", str(tmp_path))
+    monkeypatch.delenv("XAGENT_FILE_STORAGE_OPTIONS", raising=False)
+    monkeypatch.setattr(file_storage_factory.fsspec.core, "url_to_fs", fake_url_to_fs)
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+
+    assert storage._backend == "s3"
+    assert captured["options"] == {
+        "config_kwargs": {
+            "connect_timeout": 3,
+            "read_timeout": 10,
+            "retries": {"max_attempts": 1},
+        }
+    }
+
+
+def test_s3_file_storage_keeps_explicit_client_timeout_overrides(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    class DummyStorage:
+        pass
+
+    def fake_url_to_fs(uri: str, **options: object):
+        captured["options"] = options
+        return DummyStorage(), "bucket/root"
+
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", "s3://bucket/root")
+    monkeypatch.setenv("XAGENT_FILE_MATERIALIZE_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "XAGENT_FILE_STORAGE_OPTIONS",
+        json.dumps(
+            {
+                "endpoint_url": "http://minio:9000",
+                "config_kwargs": {
+                    "connect_timeout": 1,
+                    "read_timeout": 2,
+                    "retries": {"max_attempts": 3},
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(file_storage_factory.fsspec.core, "url_to_fs", fake_url_to_fs)
+    get_file_storage.cache_clear()
+
+    get_file_storage()
+
+    assert captured["options"] == {
+        "endpoint_url": "http://minio:9000",
+        "config_kwargs": {
+            "connect_timeout": 1,
+            "read_timeout": 2,
+            "retries": {"max_attempts": 3},
+        },
+    }
 
 
 def test_put_file_hashes_while_copying(monkeypatch, tmp_path):
