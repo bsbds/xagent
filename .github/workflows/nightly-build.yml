@@ -52,6 +52,17 @@ jobs:
           echo "nightly_version=$NIGHTLY_VERSION" >> "$GITHUB_OUTPUT"
           echo "build_time=$BUILD_TIME" >> "$GITHUB_OUTPUT"
 
+      - name: Free GitHub-hosted runner disk space
+        if: runner.environment == 'github-hosted'
+        uses: endersonmenezes/free-disk-space@e6ed9b02e683a3b55ed0252f1ee469ce3b39a885
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          rm_cmd: rmz
+          rmz_version: "3.1.1"
+
       - name: Build and push backend nightly image
         uses: docker/build-push-action@v6
         with:
