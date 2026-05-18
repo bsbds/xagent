@@ -70,6 +70,7 @@ _file_storage_startup_sync_task: asyncio.Task[Any] | None = None
 
 FILE_STORAGE_STARTUP_SYNC_EXEMPT_PATHS = frozenset({"/health", "/ready"})
 FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS = 5.0
+FILE_STORAGE_STARTUP_SYNC_GATE_POLL_INTERVAL_SECONDS = 0.05
 
 
 def run_startup_file_storage_sync() -> None:
@@ -120,7 +121,7 @@ async def _run_file_storage_startup_sync_with_retries(
 def start_file_storage_startup_sync_task(
     app_instance: FastAPI,
     *,
-    retry_interval_seconds: float = FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS,
+    retry_interval_seconds: float | None = None,
 ) -> asyncio.Task[Any] | None:
     """Start durable file storage startup sync without blocking app startup."""
     global _file_storage_startup_sync_task
@@ -133,10 +134,15 @@ def start_file_storage_startup_sync_task(
         app_instance.state.file_storage_startup_sync_completed = True
         return None
 
+    resolved_retry_interval_seconds = (
+        FILE_STORAGE_STARTUP_SYNC_RETRY_INTERVAL_SECONDS
+        if retry_interval_seconds is None
+        else retry_interval_seconds
+    )
     task = asyncio.create_task(
         _run_file_storage_startup_sync_with_retries(
             app_instance,
-            retry_interval_seconds=retry_interval_seconds,
+            retry_interval_seconds=resolved_retry_interval_seconds,
         )
     )
     _file_storage_startup_sync_task = task
@@ -164,23 +170,39 @@ def start_file_storage_startup_sync_task(
 
 async def wait_for_file_storage_startup_sync(app_instance: FastAPI) -> None:
     """Wait until durable file storage startup sync has completed successfully."""
-    task = getattr(app_instance.state, "file_storage_startup_sync_task", None)
-    if task is None:
+    while True:
         error = getattr(app_instance.state, "file_storage_startup_sync_error", None)
         if error is not None:
             raise error
-        return
 
-    try:
-        await task
-    except Exception as exc:  # noqa: BLE001
-        app_instance.state.file_storage_startup_sync_error = exc
-        app_instance.state.file_storage_startup_sync_completed = False
-        raise
+        task = getattr(app_instance.state, "file_storage_startup_sync_task", None)
+        if task is None:
+            return
 
-    error = getattr(app_instance.state, "file_storage_startup_sync_error", None)
-    if error is not None:
-        raise error
+        if task.done():
+            try:
+                await task
+            except Exception as exc:  # noqa: BLE001
+                app_instance.state.file_storage_startup_sync_error = exc
+                app_instance.state.file_storage_startup_sync_completed = False
+                raise
+
+            error = getattr(app_instance.state, "file_storage_startup_sync_error", None)
+            if error is not None:
+                raise error
+            return
+
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=FILE_STORAGE_STARTUP_SYNC_GATE_POLL_INTERVAL_SECONDS,
+            )
+        except TimeoutError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            app_instance.state.file_storage_startup_sync_error = exc
+            app_instance.state.file_storage_startup_sync_completed = False
+            raise
 
 
 class FileStorageStartupSyncGateMiddleware:

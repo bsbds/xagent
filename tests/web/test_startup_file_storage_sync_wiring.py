@@ -182,6 +182,36 @@ def test_startup_file_storage_sync_gate_returns_503_when_sync_fails():
     assert response.json()["detail"] == "Startup file storage sync failed"
 
 
+@pytest.mark.asyncio
+async def test_startup_file_storage_sync_wait_fails_fast_during_retry_loop():
+    app_module = import_module("xagent.web.app")
+
+    test_app = FastAPI()
+    error = RuntimeError("s3 unavailable")
+
+    async def _retry_loop() -> None:
+        test_app.state.file_storage_startup_sync_error = error
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(_retry_loop())
+    test_app.state.file_storage_startup_sync_task = task
+
+    try:
+        await asyncio.sleep(0)
+
+        with pytest.raises(RuntimeError, match="s3 unavailable"):
+            await asyncio.wait_for(
+                app_module.wait_for_file_storage_startup_sync(test_app),
+                timeout=0.1,
+            )
+
+        assert not task.done()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 def test_startup_file_storage_sync_gate_waits_for_websocket_connections():
     app_module = import_module("xagent.web.app")
 

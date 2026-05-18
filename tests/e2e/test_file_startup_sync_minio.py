@@ -342,9 +342,16 @@ def test_startup_file_storage_sync_recovers_after_initial_storage_failure(
         assert ready_response.status_code == 503
         assert ready_response.json()["status"] == "error"
 
-        client_response = app.client.get("/api/auth/setup-status")
-        assert client_response.status_code == 200
+        failed_client_response = app.client.get("/api/auth/setup-status")
+        assert failed_client_response.status_code == 503
+        assert failed_client_response.json()["detail"] == (
+            "Startup file storage sync failed"
+        )
+
         assert sync_completed.wait(timeout=5)
+
+        recovered_client_response = app.client.get("/api/auth/setup-status")
+        assert recovered_client_response.status_code == 200
 
         ready_response = app.client.get("/ready")
         assert ready_response.status_code == 200
