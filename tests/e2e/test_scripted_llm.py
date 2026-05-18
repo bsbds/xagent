@@ -39,7 +39,10 @@ def test_load_scripted_responses_converts_enveloped_entries(tmp_path):
     )
 
     assert load_scripted_responses(responses_path) == [
-        '{"type": "tool_call", "reasoning": "Use a tool."}',
+        {
+            "content": '{"type": "tool_call", "reasoning": "Use a tool."}',
+            "done": False,
+        },
         {
             "type": "tool_call",
             "tool_calls": [

@@ -105,7 +105,10 @@ def _json_text_response(entry: dict[str, Any], path: Path, index: int) -> str:
         raise ValueError(
             f"Scripted LLM response {index} json_text content must be an object or array: {path}"
         )
-    return json.dumps(content)
+    serialized = json.dumps(content)
+    if isinstance(content, dict) and content.get("type") == "tool_call":
+        return {"content": serialized, "done": False}
+    return serialized
 
 
 def _tool_call_response(entry: dict[str, Any]) -> dict[str, Any]:
