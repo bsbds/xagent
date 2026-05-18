@@ -1,0 +1,250 @@
+import React, { useEffect, useState } from 'react'
+import { FileText, Loader2 } from 'lucide-react'
+
+import { DocxPreviewRenderer } from '@/components/file/docx-preview-renderer'
+import { ExcelPreviewRenderer } from '@/components/file/excel-preview-renderer'
+import { apiRequest } from '@/lib/api-wrapper'
+import { cn, getApiUrl } from '@/lib/utils'
+import {
+  arrayBufferToBase64,
+  getInlineFilePreviewKind,
+  getInlineFilePreviewUrl,
+  isPreviewableInlineFileKind,
+  type InlineFilePreviewSource,
+  UUID_PATTERN,
+} from './inline-file-preview-utils'
+
+type InlineFilePreviewProps = {
+  source: InlineFilePreviewSource
+  className?: string
+  imageClassName?: string
+  onFileClick?: (filePath: string, fileName: string) => void
+}
+
+const fileNameFromSource = (source: InlineFilePreviewSource) =>
+  source.filename || source.fileId?.split('/').pop() || 'artifact'
+
+function InlineImagePreview({
+  source,
+  previewUrl,
+  filename,
+  imageClassName,
+  onFileClick,
+}: {
+  source: InlineFilePreviewSource
+  previewUrl: string
+  filename: string
+  imageClassName?: string
+  onFileClick?: (filePath: string, fileName: string) => void
+}) {
+  const apiUrl = getApiUrl()
+  const [resolvedUrl, setResolvedUrl] = useState(previewUrl)
+
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let isCancelled = false
+
+    setResolvedUrl(previewUrl)
+
+    const runFallback = async () => {
+      if (!source.fileId || source.previewUrl || UUID_PATTERN.test(source.fileId)) return
+      try {
+        const response = await apiRequest(
+          `${apiUrl}/api/files/preview/${encodeURIComponent(source.fileId)}`,
+          {
+            cache: 'no-cache',
+            headers: {
+              'Cache-Control': 'no-cache',
+              Pragma: 'no-cache',
+            },
+          }
+        )
+        if (!response.ok) return
+        const blob = await response.blob()
+        objectUrl = URL.createObjectURL(blob)
+        if (!isCancelled) {
+          setResolvedUrl(objectUrl)
+        }
+      } catch {
+        return
+      }
+    }
+
+    void runFallback()
+
+    return () => {
+      isCancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [apiUrl, previewUrl, source.fileId, source.previewUrl])
+
+  const handleClick = (event: React.MouseEvent<HTMLImageElement>) => {
+    if (!onFileClick || !source.fileId) return
+    event.preventDefault()
+    onFileClick(source.fileId, filename)
+  }
+
+  return (
+    <img
+      src={resolvedUrl}
+      alt={filename}
+      title={filename}
+      data-file-path={source.fileId}
+      className={imageClassName || 'max-w-full rounded-lg border border-border/50 bg-muted/20'}
+      onClick={handleClick}
+    />
+  )
+}
+
+function InlineOfficeContent({
+  kind,
+  previewUrl,
+  filename,
+}: {
+  kind: 'presentation' | 'document' | 'spreadsheet'
+  previewUrl: string
+  filename: string
+}) {
+  const [base64Content, setBase64Content] = useState('')
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    if (!previewUrl || kind === 'presentation') return
+
+    let isCancelled = false
+
+    const loadPreview = async () => {
+      try {
+        const response = await apiRequest(previewUrl, {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache',
+            Pragma: 'no-cache',
+          },
+        })
+        if (!response.ok) {
+          throw new Error(`Failed to load file preview: ${response.status}`)
+        }
+        const buffer = await response.arrayBuffer()
+        if (!isCancelled) {
+          setBase64Content(arrayBufferToBase64(buffer))
+          setError(false)
+        }
+      } catch {
+        if (!isCancelled) {
+          setBase64Content('')
+          setError(true)
+        }
+      }
+    }
+
+    void loadPreview()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [kind, previewUrl])
+
+  if (kind === 'presentation') {
+    return (
+      <iframe
+        src={previewUrl}
+        title={filename}
+        className="h-[360px] w-full border-0 bg-background"
+      />
+    )
+  }
+
+  if (error) {
+    return <div className="p-3 text-xs text-muted-foreground">Failed to load preview.</div>
+  }
+
+  if (!base64Content) {
+    return (
+      <div className="flex h-32 items-center justify-center text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+      </div>
+    )
+  }
+
+  if (kind === 'document') {
+    return <DocxPreviewRenderer base64Content={base64Content} />
+  }
+
+  return <ExcelPreviewRenderer base64Content={base64Content} />
+}
+
+export function InlineFilePreview({
+  source,
+  className,
+  imageClassName,
+  onFileClick,
+}: InlineFilePreviewProps) {
+  const apiUrl = getApiUrl()
+  const kind = getInlineFilePreviewKind(source)
+  const previewUrl = getInlineFilePreviewUrl(source, apiUrl)
+  const filename = fileNameFromSource(source)
+  const canOpenFilePreview = Boolean(onFileClick && source.fileId)
+
+  const handleOpenPreview = (event: React.MouseEvent<HTMLElement>) => {
+    if (!onFileClick || !source.fileId) return
+    event.preventDefault()
+    onFileClick(source.fileId, filename)
+  }
+
+  if (!previewUrl) return null
+
+  if (kind === 'image') {
+    return (
+      <InlineImagePreview
+        source={source}
+        previewUrl={previewUrl}
+        filename={filename}
+        imageClassName={imageClassName}
+        onFileClick={onFileClick}
+      />
+    )
+  }
+
+  if (!isPreviewableInlineFileKind(kind)) {
+    return (
+      <a
+        href={canOpenFilePreview ? '#' : previewUrl}
+        target={canOpenFilePreview ? undefined : '_blank'}
+        rel={canOpenFilePreview ? undefined : 'noreferrer'}
+        onClick={canOpenFilePreview ? handleOpenPreview : undefined}
+        className={cn(
+          'flex items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-foreground hover:bg-muted/40',
+          className
+        )}
+      >
+        <FileText className="h-4 w-4 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">{filename}</span>
+      </a>
+    )
+  }
+
+  return (
+    <div
+      className={cn('overflow-hidden rounded-md border border-border/50 bg-background', className)}
+      data-inline-file-preview-wrapper
+    >
+      <div className="flex items-center gap-2 border-b border-border/50 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <FileText className="h-4 w-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{filename}</span>
+        <a
+          href={canOpenFilePreview ? '#' : previewUrl}
+          target={canOpenFilePreview ? undefined : '_blank'}
+          rel={canOpenFilePreview ? undefined : 'noreferrer'}
+          onClick={canOpenFilePreview ? handleOpenPreview : undefined}
+          className="shrink-0 text-foreground hover:underline"
+        >
+          Open
+        </a>
+      </div>
+      <div className="h-[360px] overflow-auto">
+        <InlineOfficeContent kind={kind} previewUrl={previewUrl} filename={filename} />
+      </div>
+    </div>
+  )
+}

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from xagent.core.tools.core.javascript_executor import JavaScriptExecutorCore
 from xagent.core.workspace import TaskWorkspace
 
+from ...artifacts import build_generated_file_metadata
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 from .function import FunctionTool
 from .sandboxed_tool.sandbox_config import sandbox_config
@@ -37,6 +38,9 @@ class JavaScriptExecutorResult(BaseModel):
     success: bool = Field(description="Whether the execution was successful")
     output: str = Field(description="Output from the execution")
     error: str = Field(default="", description="Error message if execution failed")
+    generated_files: list[str] = Field(default_factory=list)
+    file_refs: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class JavaScriptExecutorTool(AbstractBaseTool):
@@ -84,6 +88,17 @@ class JavaScriptExecutorTool(AbstractBaseTool):
         if self._workspace and working_directory:
             with self._workspace.auto_register_files():
                 result = executor.execute_code(exec_args.code, packages=pkg_list)
+            if result.get("success"):
+                generated_paths = [
+                    self._workspace.resolve_path(file_name)
+                    for file_name in result.get("generated_files", [])
+                ]
+                result.update(
+                    build_generated_file_metadata(
+                        workspace=self._workspace,
+                        file_paths=generated_paths,
+                    )
+                )
         else:
             result = executor.execute_code(exec_args.code, packages=pkg_list)
 

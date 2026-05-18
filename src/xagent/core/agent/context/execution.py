@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from ...artifact_refs.observation import format_tool_result_for_observation
+from ...tools.artifacts import format_tool_result_for_observation
 from ..language import dag_step_language_rules, response_language_rules
 from .components import (
     COMPONENT_LOADERS,

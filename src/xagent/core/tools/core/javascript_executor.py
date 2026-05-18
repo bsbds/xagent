@@ -340,7 +340,20 @@ class JavaScriptExecutorCore:
 
         # Find generated files (they're already in the right place)
         generated_files = []
-        for ext in ["*.pptx", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.pdf"]:
+        for ext in [
+            "*.csv",
+            "*.docx",
+            "*.gif",
+            "*.jpeg",
+            "*.jpg",
+            "*.pdf",
+            "*.png",
+            "*.pptx",
+            "*.svg",
+            "*.webp",
+            "*.xls",
+            "*.xlsx",
+        ]:
             for file in exec_dir.glob(ext):
                 # Only count files created during this execution (not script.js)
                 if file.name != "script.js":

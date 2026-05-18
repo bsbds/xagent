@@ -5,11 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from xagent.core.tools.adapters.vibe.javascript_executor import JavaScriptExecutorTool
 from xagent.core.tools.core.javascript_executor import (
     JavaScriptExecutorCore,
     execute_javascript,
     get_javascript_executor_tool,
 )
+from xagent.core.workspace import TaskWorkspace
 
 
 class TestJavaScriptExecutorCore:
@@ -474,3 +476,31 @@ console.log('File created');
             assert output_file.read_text() == "Hello from JavaScript!"
             # Check that generated_files is populated
             assert "test_file.pdf" in result.get("generated_files", [])
+
+
+class TestJavaScriptExecutorToolArtifacts:
+    """Test workspace-bound JavaScript executor generated file artifacts."""
+
+    def test_generated_pptx_file_returns_inline_artifact(self, tmp_path):
+        workspace = TaskWorkspace("test_js_pptx", str(tmp_path))
+        executor = JavaScriptExecutorTool(workspace=workspace)
+
+        result = executor.run_json_sync(
+            {
+                "code": "const fs = require('fs'); fs.writeFileSync('slides.pptx', 'pptx');",
+            }
+        )
+
+        assert result["success"] is True
+        assert result["generated_files"] == ["slides.pptx"]
+        assert result["file_refs"][0]["filename"] == "slides.pptx"
+        assert result["file_refs"][0]["file_id"]
+        assert result["artifacts"] == [
+            {
+                "type": "presentation",
+                "file_id": result["file_refs"][0]["file_id"],
+                "filename": "slides.pptx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "display": "inline",
+            }
+        ]
