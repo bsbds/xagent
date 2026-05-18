@@ -105,19 +105,23 @@ def get_default_task_execution_mode(
 ) -> str:
     """Get the default UI execution mode for a newly-created task.
 
-    Standalone v2 tasks default to auto so simple prompts can answer directly
-    while complex prompts can still route into ReAct or DAG. v1 keeps the legacy
-    standalone DAG default for compatibility. Agent Builder tasks keep balanced
-    in both runtimes because the agent's explicit tool/KB setup is usually
+    Standalone tasks default to auto so simple prompts can answer directly while
+    complex prompts can still route into ReAct or DAG. Explicit v1 deployments
+    keep the legacy standalone DAG default for compatibility. Agent Builder
+    tasks keep balanced because the agent's explicit tool/KB setup is usually
     better served by ReAct.
     """
     if agent_id is not None:
         return "balanced"
 
-    runtime = (agent_runtime or get_agent_runtime()).strip().lower()
-    if runtime == "v2":
-        return "auto"
-    return "think"
+    if agent_runtime is not None:
+        runtime = agent_runtime.strip().lower()
+    else:
+        runtime = (os.getenv(AGENT_RUNTIME) or "").strip().lower()
+
+    if runtime == "v1":
+        return "think"
+    return "auto"
 
 
 def get_task_lease_ttl_seconds() -> int:

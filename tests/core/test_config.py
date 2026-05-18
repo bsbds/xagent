@@ -338,6 +338,10 @@ class TestGetAgentPatternForExecutionMode:
 class TestGetDefaultTaskExecutionMode:
     """Test default task execution mode selection."""
 
+    def test_default_standalone_defaults_to_auto(self, monkeypatch):
+        monkeypatch.delenv(AGENT_RUNTIME, raising=False)
+        assert get_default_task_execution_mode() == "auto"
+
     def test_v1_standalone_defaults_to_think(self, monkeypatch):
         monkeypatch.setenv(AGENT_RUNTIME, "v1")
         assert get_default_task_execution_mode() == "think"
