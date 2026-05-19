@@ -51,6 +51,43 @@ class FakeStorage:
         )
 
 
+class HashAwareFakeStorage(FakeStorage):
+    def __init__(
+        self,
+        existing_keys: set[str] | None = None,
+        *,
+        missing_hash_keys: set[str] | None = None,
+    ):
+        super().__init__(existing_keys)
+        self.missing_hash_keys = set(missing_hash_keys or set())
+        self.stat_calls: list[str] = []
+        self.content_hash_calls: list[str] = []
+
+    def stat(self, key: str) -> StoredObject:
+        self.stat_calls.append(key)
+        if key in self.missing_hash_keys:
+            return StoredObject(
+                backend=self.backend,
+                key=key,
+                uri=f"s3://bucket/{key}",
+                size=1,
+            )
+        return StoredObject(
+            backend=self.backend,
+            key=key,
+            uri=f"s3://bucket/{key}",
+            size=1,
+            checksum=f"sha256:{key}",
+            etag="etag",
+        )
+
+    def content_hash(self, key: str) -> str:
+        self.content_hash_calls.append(key)
+        if key in self.missing_hash_keys:
+            raise RuntimeError("missing content hash")
+        return f"sha256:{key}"
+
+
 class FailingOnceStorage(FakeStorage):
     def __init__(self, failed_key: str):
         super().__init__()
@@ -186,6 +223,65 @@ def test_sync_refreshes_metadata_when_remote_key_present_but_record_incomplete(
     assert record.storage_key == key
     assert record.storage_uri == f"s3://bucket/{key}"
     assert record.storage_status == "available"
+
+
+def test_sync_reuploads_remote_key_without_hash_when_local_file_exists(tmp_path):
+    db = _session()
+    user = _user(db)
+    local_path = tmp_path / "uploads" / "input.txt"
+    local_path.parent.mkdir()
+    local_path.write_text("content", encoding="utf-8")
+    key = f"users/{int(user.id)}/uploads/file-123/input.txt"
+    record = _record(
+        db,
+        user=user,
+        local_path=local_path,
+        file_id="file-123",
+        storage_key=key,
+        storage_status="legacy",
+    )
+    db.commit()
+    storage = HashAwareFakeStorage({key}, missing_hash_keys={key})
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(record)
+    assert result.already_present == 1
+    assert result.uploaded == 1
+    assert storage.stat_calls == [key]
+    assert storage.content_hash_calls == [key]
+    assert storage.put_calls == [(local_path, key)]
+    assert record.storage_status == "available"
+    assert record.checksum == "checksum"
+
+
+def test_sync_does_not_mark_remote_key_without_hash_available_when_local_missing(
+    tmp_path,
+):
+    db = _session()
+    user = _user(db)
+    local_path = tmp_path / "uploads" / "missing.txt"
+    key = f"users/{int(user.id)}/uploads/file-123/missing.txt"
+    record = _record(
+        db,
+        user=user,
+        local_path=local_path,
+        file_id="file-123",
+        storage_key=key,
+        storage_status="legacy",
+    )
+    db.commit()
+    storage = HashAwareFakeStorage({key}, missing_hash_keys={key})
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(record)
+    assert result.already_present == 0
+    assert result.uploaded == 0
+    assert result.skipped_missing_local == 1
+    assert storage.put_calls == []
+    assert record.storage_status == "legacy"
+    assert record.checksum is None
 
 
 def test_sync_reuploads_available_row_when_remote_key_is_missing(tmp_path):

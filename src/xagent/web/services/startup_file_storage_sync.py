@@ -118,9 +118,18 @@ def _sync_registered_files(
         remote_object = remote_objects.get(expected_key)
         if remote_object is not None:
             if not _has_complete_durable_metadata(record):
-                ManagedFileRef(record, storage=storage).apply_stored_object(
-                    remote_object
-                )
+                adopt_result = ManagedFileRef(
+                    record, storage=storage
+                ).adopt_existing_object(expected_key)
+                if adopt_result == "missing":
+                    local_path = Path(str(getattr(record, "storage_path", "")))
+                    if not local_path.exists() or not local_path.is_file():
+                        skipped_missing_local += 1
+                    else:
+                        failed += 1
+                    continue
+                if adopt_result == "uploaded":
+                    uploaded += 1
                 batch_updates += 1
             already_present += 1
             continue

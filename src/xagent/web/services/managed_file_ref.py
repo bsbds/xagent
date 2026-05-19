@@ -3,7 +3,7 @@ from __future__ import annotations
 import mimetypes
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 
 from ...core.file_storage import FsspecFileStorage, StoredObject, get_file_storage
 from ..models.uploaded_file import UploadedFile
@@ -151,6 +151,44 @@ class ManagedFileRef:
         self.apply_stored_object(stored_object)
         setattr(self.record, "file_size", path.stat().st_size)
         return stored_object
+
+    def adopt_existing_object(
+        self, expected_key: str
+    ) -> Literal["adopted", "uploaded", "missing"]:
+        local_path = self.local_path
+        try:
+            stored_object = self.storage.stat(expected_key)
+            checksum = stored_object.checksum or self.storage.content_hash(expected_key)
+        except Exception:
+            if local_path.exists() and local_path.is_file():
+                self.sync_to_durable(
+                    storage_key=expected_key,
+                    mime_type=getattr(self.record, "mime_type", None),
+                )
+                return "uploaded"
+            return "missing"
+
+        if local_path.exists() and local_path.is_file():
+            local_size = local_path.stat().st_size
+            remote_size = int(getattr(stored_object, "size", 0) or 0)
+            if remote_size and remote_size != local_size:
+                self.sync_to_durable(
+                    storage_key=expected_key,
+                    mime_type=getattr(self.record, "mime_type", None),
+                )
+                return "uploaded"
+
+        self.apply_stored_object(
+            StoredObject(
+                backend=stored_object.backend,
+                key=stored_object.key,
+                uri=stored_object.uri,
+                size=stored_object.size,
+                checksum=checksum,
+                etag=stored_object.etag,
+            )
+        )
+        return "adopted"
 
     def apply_stored_object(self, stored_object: StoredObject) -> None:
         setattr(self.record, "storage_backend", stored_object.backend)
