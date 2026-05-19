@@ -131,9 +131,7 @@ class TaskWorkspace:
 
         # Check if file already exists in database
         resolved_db_session = db_session or self.db_session
-        existing_file_id = self._get_file_id_from_db(
-            resolved_path, resolved_db_session
-        )
+        existing_file_id = self._get_file_id_from_db(resolved_path, resolved_db_session)
         if existing_file_id:
             self._sync_existing_file_record(
                 existing_file_id, resolved_path, resolved_db_session
@@ -256,18 +254,28 @@ class TaskWorkspace:
             if record is None:
                 return
 
-            try:
-                relative_path = str(file_path.relative_to(self.workspace_dir))
-            except ValueError:
-                relative_path = file_path.name
-            category = relative_path.split("/", 1)[0] if relative_path else "workspace"
-
             mime_type, _ = mimetypes.guess_type(file_path.name)
             if not mime_type:
                 mime_type = "application/octet-stream"
 
             task_id = getattr(record, "task_id", None)
             user_id = int(getattr(record, "user_id"))
+
+            try:
+                relative_path = str(file_path.relative_to(self.workspace_dir))
+            except ValueError:
+                UploadedFileStore(db).sync_existing(
+                    record,
+                    storage_key=getattr(record, "storage_key", None),
+                    mime_type=getattr(record, "mime_type", None) or mime_type,
+                )
+                if should_close:
+                    db.commit()
+                else:
+                    db.flush()
+                return
+
+            category = relative_path.split("/", 1)[0] if relative_path else "workspace"
             storage_key = _build_workspace_storage_key(
                 user_id,
                 int(task_id) if task_id is not None else 0,
@@ -819,9 +827,7 @@ class TaskWorkspace:
             changed_files.update(
                 file_path
                 for file_path in files_after & files_before
-                if self._get_file_id_from_db(
-                    file_path, self.db_session
-                ) is not None
+                if self._get_file_id_from_db(file_path, self.db_session) is not None
             )
 
             for file_path in changed_files:

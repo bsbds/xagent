@@ -229,6 +229,74 @@ def test_auto_register_files_resyncs_modified_existing_file(
         engine.dispose()
 
 
+def test_workspace_register_file_resyncs_external_file_without_reclassifying_upload(
+    monkeypatch, tmp_path, mock_workspace_db
+):
+    # Override the global autouse fixture from tests/conftest.py for this module.
+    del mock_workspace_db
+    object_root = tmp_path / "objects"
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+    get_file_storage.cache_clear()
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        user = User(username="workspace-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        task = Task(id=656, user_id=user.id, title="Workspace task")
+        db.add(task)
+        db.commit()
+
+        external_dir = tmp_path / "external-uploads"
+        external_dir.mkdir()
+        external_path = external_dir / "source.txt"
+        external_path.write_text("old upload", encoding="utf-8")
+
+        from xagent.web.services.uploaded_file_store import UploadedFileStore
+
+        record = UploadedFileStore(db).create_from_local_path(
+            local_path=external_path,
+            user_id=int(user.id),
+            task_id=int(task.id),
+            filename="source.txt",
+            mime_type="text/plain",
+        )
+        file_id = str(record.file_id)
+        original_storage_key = str(record.storage_key)
+        db.commit()
+
+        workspace = TaskWorkspace(
+            id="web_task_656",
+            base_dir=str(tmp_path / "workspaces"),
+            allowed_external_dirs=[str(external_dir)],
+        )
+
+        external_path.write_text("new upload", encoding="utf-8")
+        second_file_id = workspace.register_file(
+            str(external_path), file_id=file_id, db_session=db
+        )
+        db.commit()
+
+        assert second_file_id == file_id
+        db.refresh(record)
+        assert record.storage_key == original_storage_key
+        assert record.workspace_relative_path is None
+        assert record.workspace_category is None
+        assert record.file_size == len("new upload")
+
+        object_files = [path for path in object_root.rglob("*") if path.is_file()]
+        assert len(object_files) == 1
+        assert object_files[0].read_text(encoding="utf-8") == "new upload"
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_list_all_user_files_includes_durable_only_uploads(tmp_path, mock_workspace_db):
     # Override the global autouse fixture from tests/conftest.py for this module.
     del mock_workspace_db

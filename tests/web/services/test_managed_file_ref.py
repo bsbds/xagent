@@ -1,12 +1,12 @@
 import pytest
 
 from xagent.core.file_storage.factory import get_file_storage
+from xagent.core.file_storage.types import StoredObject
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.services.managed_file_ref import (
     DurableStorageOperationError,
     ManagedFileRef,
 )
-from xagent.core.file_storage.types import StoredObject
 
 
 def _configure_storage(monkeypatch, tmp_path):
