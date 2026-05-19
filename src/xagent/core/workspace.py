@@ -378,6 +378,22 @@ class TaskWorkspace:
             self.current_task_id is not None and record_task_id == self.current_task_id
         )
 
+    def _file_record_scope_allowed_for_workspace(self, record: Any) -> bool:
+        owner_user_id = self.owner_user_id
+        if owner_user_id is None:
+            return True
+
+        record_user_id = getattr(record, "user_id", None)
+        if record_user_id != owner_user_id:
+            return False
+
+        record_task_id = getattr(record, "task_id", None)
+        if record_task_id is None:
+            return True
+        return (
+            self.current_task_id is not None and record_task_id == self.current_task_id
+        )
+
     def resolve_file_id(self, file_id: str) -> Optional[Path]:
         file_id = str(file_id).strip()
         if not file_id:
@@ -433,10 +449,7 @@ class TaskWorkspace:
                     and getattr(record, "storage_key", None)
                     and getattr(record, "storage_status", None) == "available"
                 ):
-                    durable_scope_path = Path(str(record.storage_path))
-                    if not self._file_record_allowed_for_workspace(
-                        record, durable_scope_path
-                    ):
+                    if not self._file_record_scope_allowed_for_workspace(record):
                         logger.warning(
                             "Rejected durable file_id outside workspace scope: %s",
                             file_id,
