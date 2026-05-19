@@ -87,7 +87,12 @@ def run_startup_file_storage_sync() -> None:
     SessionLocal = get_session_local()
     db = SessionLocal()
     try:
-        sync_registered_files_to_durable_storage(db)
+        result = sync_registered_files_to_durable_storage(db)
+        if result.failed:
+            raise RuntimeError(
+                "Startup file storage sync failed for "
+                f"{result.failed} registered file(s)"
+            )
     finally:
         db.close()
 
