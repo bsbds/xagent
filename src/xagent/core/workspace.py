@@ -425,6 +425,15 @@ class TaskWorkspace:
                     and getattr(record, "storage_key", None)
                     and getattr(record, "storage_status", None) == "available"
                 ):
+                    durable_scope_path = Path(str(record.storage_path))
+                    if not self._file_record_allowed_for_workspace(
+                        record, durable_scope_path
+                    ):
+                        logger.warning(
+                            "Rejected durable file_id outside workspace scope: %s",
+                            file_id,
+                        )
+                        return None
                     from ..web.services.managed_file_ref import ManagedFileRef
 
                     return ManagedFileRef(record).materialize()

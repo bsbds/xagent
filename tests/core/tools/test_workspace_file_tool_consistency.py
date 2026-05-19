@@ -350,6 +350,53 @@ class TestWorkspaceFileToolConsistency:
 
         assert workspace.resolve_file_id("foreign-file") is None
 
+    def test_resolve_file_id_rejects_durable_only_other_user_records(
+        self, tmp_path, mocker
+    ):
+        """Test durable-only DB file_id lookup is scoped to the workspace owner."""
+        missing_local = tmp_path / "missing-other-user.txt"
+        workspace = TaskWorkspace("web_task_10", str(tmp_path))
+        workspace.owner_user_id = 1
+
+        class FakeQuery:
+            def filter(self, *_args):
+                return self
+
+            def first(self):
+                return SimpleNamespace(
+                    file_id="foreign-file",
+                    user_id=2,
+                    task_id=None,
+                    storage_path=str(missing_local),
+                    storage_key="users/2/uploads/foreign-file/private.txt",
+                    storage_status="available",
+                )
+
+        class FakeSession:
+            def query(self, *_args):
+                return FakeQuery()
+
+            def close(self):
+                pass
+
+        class UnexpectedManagedFileRef:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def materialize(self):
+                raise AssertionError("unauthorized durable file was materialized")
+
+        mocker.patch(
+            "xagent.core.storage.manager.create_db_session",
+            return_value=FakeSession(),
+        )
+        mocker.patch(
+            "xagent.web.services.managed_file_ref.ManagedFileRef",
+            UnexpectedManagedFileRef,
+        )
+
+        assert workspace.resolve_file_id("foreign-file") is None
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
