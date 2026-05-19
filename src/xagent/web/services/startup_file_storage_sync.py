@@ -118,9 +118,18 @@ def _sync_registered_files(
         remote_object = remote_objects.get(expected_key)
         if remote_object is not None:
             if not _has_complete_durable_metadata(record):
-                adopt_result = ManagedFileRef(
-                    record, storage=storage
-                ).adopt_existing_object(expected_key)
+                try:
+                    adopt_result = ManagedFileRef(
+                        record, storage=storage
+                    ).adopt_existing_object(expected_key)
+                except Exception:
+                    failed += 1
+                    logger.exception(
+                        "Failed startup durable adoption for file_id=%s key=%s",
+                        getattr(record, "file_id", None),
+                        expected_key,
+                    )
+                    continue
                 if adopt_result == "missing":
                     local_path = Path(str(getattr(record, "storage_path", "")))
                     if not local_path.exists() or not local_path.is_file():
@@ -203,6 +212,7 @@ def _has_complete_durable_metadata(record: UploadedFile) -> bool:
         getattr(record, "storage_key", None)
         and getattr(record, "storage_backend", None) == "s3"
         and getattr(record, "storage_status", None) == "available"
+        and getattr(record, "checksum", None)
     )
 
 

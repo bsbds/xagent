@@ -191,6 +191,10 @@ class ManagedFileRef:
         return "adopted"
 
     def apply_stored_object(self, stored_object: StoredObject) -> None:
+        if not stored_object.checksum:
+            raise ValueError(
+                f"Cannot mark durable object available without checksum: {stored_object.key}"
+            )
         setattr(self.record, "storage_backend", stored_object.backend)
         setattr(self.record, "storage_key", stored_object.key)
         setattr(self.record, "storage_uri", stored_object.uri)

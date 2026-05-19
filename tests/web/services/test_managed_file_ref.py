@@ -6,6 +6,7 @@ from xagent.web.services.managed_file_ref import (
     DurableStorageOperationError,
     ManagedFileRef,
 )
+from xagent.core.file_storage.types import StoredObject
 
 
 def _configure_storage(monkeypatch, tmp_path):
@@ -151,6 +152,23 @@ def test_sync_to_durable_accepts_custom_storage_key(monkeypatch, tmp_path):
 
     assert stored.key == "users/7/tasks/42/outputs/file-output/output/report.txt"
     assert record.storage_key == stored.key
+
+
+def test_apply_stored_object_rejects_missing_checksum(tmp_path):
+    record = _record(tmp_path / "uploads" / "object.txt")
+    stored_object = StoredObject(
+        backend="s3",
+        key="users/7/uploads/file-123/object.txt",
+        uri="s3://bucket/users/7/uploads/file-123/object.txt",
+        size=12,
+        checksum=None,
+    )
+
+    with pytest.raises(ValueError, match="checksum"):
+        ManagedFileRef(record).apply_stored_object(stored_object)
+
+    assert record.storage_status == "legacy"
+    assert record.storage_key is None
 
 
 def test_missing_local_and_missing_durable_key_raises(tmp_path):

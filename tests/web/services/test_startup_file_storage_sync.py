@@ -15,9 +15,15 @@ from xagent.web.services.startup_file_storage_sync import (
 
 
 class FakeStorage:
-    def __init__(self, existing_keys: set[str] | None = None, backend: str = "s3"):
+    def __init__(
+        self,
+        existing_keys: set[str] | None = None,
+        backend: str = "s3",
+        object_sizes: dict[str, int] | None = None,
+    ):
         self.backend = backend
         self.existing_keys = set(existing_keys or set())
+        self.object_sizes = object_sizes or {}
         self.list_calls: list[str] = []
         self.put_calls: list[tuple[Path, str]] = []
 
@@ -29,7 +35,7 @@ class FakeStorage:
                 backend=self.backend,
                 key=key,
                 uri=f"s3://bucket/{key}",
-                size=1,
+                size=self.object_sizes.get(key, 0),
             )
             for key in sorted(self.existing_keys)
             if key.startswith(normalized + "/") or key == normalized
@@ -47,6 +53,16 @@ class FakeStorage:
             uri=f"s3://bucket/{key}",
             size=source.stat().st_size,
             checksum="checksum",
+            etag="etag",
+        )
+
+    def stat(self, key: str) -> StoredObject:
+        return StoredObject(
+            backend=self.backend,
+            key=key,
+            uri=f"s3://bucket/{key}",
+            size=self.object_sizes.get(key, 0),
+            checksum=f"sha256:{key}",
             etag="etag",
         )
 
@@ -70,13 +86,13 @@ class HashAwareFakeStorage(FakeStorage):
                 backend=self.backend,
                 key=key,
                 uri=f"s3://bucket/{key}",
-                size=1,
+                size=self.object_sizes.get(key, 0),
             )
         return StoredObject(
             backend=self.backend,
             key=key,
             uri=f"s3://bucket/{key}",
-            size=1,
+            size=self.object_sizes.get(key, 0),
             checksum=f"sha256:{key}",
             etag="etag",
         )
@@ -86,6 +102,20 @@ class HashAwareFakeStorage(FakeStorage):
         if key in self.missing_hash_keys:
             raise RuntimeError("missing content hash")
         return f"sha256:{key}"
+
+
+class FailingAdoptionStorage(HashAwareFakeStorage):
+    def __init__(self, existing_keys: set[str], failed_key: str):
+        super().__init__(existing_keys, missing_hash_keys={failed_key})
+        self.failed_key = failed_key
+
+    def put_file(
+        self, source: Path, key: str, content_type: str | None = None
+    ) -> StoredObject:
+        if key == self.failed_key:
+            self.put_calls.append((source, key))
+            raise RuntimeError("adoption upload failure")
+        return super().put_file(source, key, content_type)
 
 
 class FailingOnceStorage(FakeStorage):
@@ -178,6 +208,7 @@ def test_sync_does_not_upload_when_remote_key_is_present(tmp_path):
         storage_key=key,
         storage_uri=f"s3://bucket/{key}",
         storage_status="available",
+        checksum="checksum",
     )
     db.commit()
     storage = FakeStorage({key})
@@ -189,6 +220,38 @@ def test_sync_does_not_upload_when_remote_key_is_present(tmp_path):
     assert result.already_present == 1
     assert result.uploaded == 0
     assert storage.put_calls == []
+    assert record.storage_status == "available"
+
+
+def test_sync_revalidates_available_row_without_checksum(tmp_path):
+    db = _session()
+    user = _user(db)
+    local_path = tmp_path / "uploads" / "input.txt"
+    local_path.parent.mkdir()
+    local_path.write_text("content", encoding="utf-8")
+    key = f"users/{int(user.id)}/uploads/file-123/input.txt"
+    record = _record(
+        db,
+        user=user,
+        local_path=local_path,
+        file_id="file-123",
+        storage_backend="s3",
+        storage_key=key,
+        storage_uri=f"s3://bucket/{key}",
+        storage_status="available",
+        checksum=None,
+    )
+    db.commit()
+    storage = HashAwareFakeStorage({key})
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(record)
+    assert result.scanned == 1
+    assert result.already_present == 1
+    assert result.uploaded == 0
+    assert storage.stat_calls == [key]
+    assert record.checksum == f"sha256:{key}"
     assert record.storage_status == "available"
 
 
@@ -284,6 +347,47 @@ def test_sync_does_not_mark_remote_key_without_hash_available_when_local_missing
     assert record.checksum is None
 
 
+def test_sync_continues_when_remote_adoption_reupload_fails(tmp_path):
+    db = _session()
+    user = _user(db)
+    first_path = tmp_path / "uploads" / "first.txt"
+    second_path = tmp_path / "uploads" / "second.txt"
+    first_path.parent.mkdir()
+    first_path.write_text("first", encoding="utf-8")
+    second_path.write_text("second", encoding="utf-8")
+    first_key = f"users/{int(user.id)}/uploads/file-first/first.txt"
+    second_key = f"users/{int(user.id)}/uploads/file-second/second.txt"
+    first_record = _record(
+        db,
+        user=user,
+        local_path=first_path,
+        file_id="file-first",
+        storage_key=first_key,
+        storage_status="legacy",
+    )
+    second_record = _record(
+        db,
+        user=user,
+        local_path=second_path,
+        file_id="file-second",
+        storage_key=second_key,
+        storage_status="legacy",
+    )
+    db.commit()
+    storage = FailingAdoptionStorage({first_key, second_key}, failed_key=first_key)
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(first_record)
+    db.refresh(second_record)
+    assert result.scanned == 2
+    assert result.failed == 1
+    assert result.already_present == 1
+    assert first_record.storage_status == "legacy"
+    assert second_record.storage_status == "available"
+    assert second_record.checksum == f"sha256:{second_key}"
+
+
 def test_sync_reuploads_available_row_when_remote_key_is_missing(tmp_path):
     db = _session()
     user = _user(db)
@@ -300,6 +404,7 @@ def test_sync_reuploads_available_row_when_remote_key_is_missing(tmp_path):
         storage_key=key,
         storage_uri=f"s3://bucket/{key}",
         storage_status="available",
+        checksum="checksum",
     )
     db.commit()
     storage = FakeStorage()
