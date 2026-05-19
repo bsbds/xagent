@@ -159,14 +159,12 @@ class ManagedFileRef:
         try:
             stored_object = self.storage.stat(expected_key)
             checksum = stored_object.checksum or self.storage.content_hash(expected_key)
-        except Exception:
-            if local_path.exists() and local_path.is_file():
-                self.sync_to_durable(
-                    storage_key=expected_key,
-                    mime_type=getattr(self.record, "mime_type", None),
-                )
-                return "uploaded"
+        except FileNotFoundError:
             return "missing"
+        except Exception as exc:
+            raise DurableStorageOperationError(
+                f"Failed to inspect durable object metadata: {expected_key}"
+            ) from exc
 
         if local_path.exists() and local_path.is_file():
             local_size = local_path.stat().st_size

@@ -104,20 +104,6 @@ class HashAwareFakeStorage(FakeStorage):
         return f"sha256:{key}"
 
 
-class FailingAdoptionStorage(HashAwareFakeStorage):
-    def __init__(self, existing_keys: set[str], failed_key: str):
-        super().__init__(existing_keys, missing_hash_keys={failed_key})
-        self.failed_key = failed_key
-
-    def put_file(
-        self, source: Path, key: str, content_type: str | None = None
-    ) -> StoredObject:
-        if key == self.failed_key:
-            self.put_calls.append((source, key))
-            raise RuntimeError("adoption upload failure")
-        return super().put_file(source, key, content_type)
-
-
 class FailingOnceStorage(FakeStorage):
     def __init__(self, failed_key: str):
         super().__init__()
@@ -288,7 +274,7 @@ def test_sync_refreshes_metadata_when_remote_key_present_but_record_incomplete(
     assert record.storage_status == "available"
 
 
-def test_sync_reuploads_remote_key_without_hash_when_local_file_exists(tmp_path):
+def test_sync_does_not_overwrite_remote_key_when_metadata_lookup_fails(tmp_path):
     db = _session()
     user = _user(db)
     local_path = tmp_path / "uploads" / "input.txt"
@@ -309,16 +295,17 @@ def test_sync_reuploads_remote_key_without_hash_when_local_file_exists(tmp_path)
     result = sync_registered_files_to_durable_storage(db, storage=storage)
 
     db.refresh(record)
-    assert result.already_present == 1
-    assert result.uploaded == 1
+    assert result.already_present == 0
+    assert result.uploaded == 0
+    assert result.failed == 1
     assert storage.stat_calls == [key]
     assert storage.content_hash_calls == [key]
-    assert storage.put_calls == [(local_path, key)]
-    assert record.storage_status == "available"
-    assert record.checksum == "checksum"
+    assert storage.put_calls == []
+    assert record.storage_status == "legacy"
+    assert record.checksum is None
 
 
-def test_sync_does_not_mark_remote_key_without_hash_available_when_local_missing(
+def test_sync_reports_remote_metadata_lookup_failure_when_local_missing(
     tmp_path,
 ):
     db = _session()
@@ -341,13 +328,14 @@ def test_sync_does_not_mark_remote_key_without_hash_available_when_local_missing
     db.refresh(record)
     assert result.already_present == 0
     assert result.uploaded == 0
-    assert result.skipped_missing_local == 1
+    assert result.skipped_missing_local == 0
+    assert result.failed == 1
     assert storage.put_calls == []
     assert record.storage_status == "legacy"
     assert record.checksum is None
 
 
-def test_sync_continues_when_remote_adoption_reupload_fails(tmp_path):
+def test_sync_continues_when_remote_metadata_lookup_fails(tmp_path):
     db = _session()
     user = _user(db)
     first_path = tmp_path / "uploads" / "first.txt"
@@ -374,7 +362,9 @@ def test_sync_continues_when_remote_adoption_reupload_fails(tmp_path):
         storage_status="legacy",
     )
     db.commit()
-    storage = FailingAdoptionStorage({first_key, second_key}, failed_key=first_key)
+    storage = HashAwareFakeStorage(
+        {first_key, second_key}, missing_hash_keys={first_key}
+    )
 
     result = sync_registered_files_to_durable_storage(db, storage=storage)
 
@@ -383,6 +373,7 @@ def test_sync_continues_when_remote_adoption_reupload_fails(tmp_path):
     assert result.scanned == 2
     assert result.failed == 1
     assert result.already_present == 1
+    assert storage.put_calls == []
     assert first_record.storage_status == "legacy"
     assert second_record.storage_status == "available"
     assert second_record.checksum == f"sha256:{second_key}"
