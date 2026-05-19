@@ -12,6 +12,21 @@ uv run --project . --group test python -m pytest tests/e2e --run-special -q
 
 This document maps the expected durable file storage behavior to the e2e tests that cover it.
 
+The durable file storage implementation is a first-phase, local-first persistence
+layer with casual consistency across local disk, the `uploaded_files` table, and
+S3/MinIO. It does not try to provide distributed transaction semantics. The
+normal contract is:
+
+- Local files are preferred when present.
+- Durable storage is the fallback when the registered local file is missing.
+- DB rows are marked `storage_status = "available"` only after durable storage
+  returns object metadata with a checksum.
+- Startup repair reconciles DB-registered files into durable storage where local
+  bytes or existing durable objects make repair possible.
+- Transient durable-storage failures should fail closed and be retried; known
+  unrecoverable local+remote data loss is surfaced later as a missing file rather
+  than blocking all app startup.
+
 ### Expected Behavior And Coverage
 
 #### Startup Sync
@@ -41,8 +56,9 @@ This document maps the expected durable file storage behavior to the e2e tests t
 
 - Deleting a file removes the DB row, local file, and S3/MinIO object.
   Covered by: `tests/e2e/test_file_api_minio.py::test_delete_removes_uploaded_file_from_db_local_disk_and_minio`
-- A durable storage cleanup failure does not block DB-first delete; orphaned S3/MinIO objects are treated as best-effort cleanup leaks.
-  Covered by: `tests/e2e/test_file_api_minio.py::test_delete_removes_db_row_when_best_effort_durable_cleanup_fails`
+- A durable storage cleanup failure fails the delete request with HTTP 503 and
+  keeps the DB row, local file, and S3/MinIO object so the delete can be retried.
+  Covered by: `tests/e2e/test_file_api_minio.py::test_delete_keeps_db_row_when_durable_cleanup_fails`
 - Another user cannot download, preview, or delete a file they do not own, and the S3/MinIO object remains intact.
   Covered by: `tests/e2e/test_file_api_minio.py::test_file_routes_reject_cross_user_access_and_keep_minio_object`
 
@@ -80,6 +96,9 @@ This document maps the expected durable file storage behavior to the e2e tests t
 - LLM behavior is deterministic through `tests/e2e/scripted_llm.py` and JSON response fixtures.
 - These tests do not cover a full remote S3 outage during app startup; that should be covered by a smaller service/integration test if needed.
 - E2E outage tests cover upload, download, preview, delete, and WebSocket output persistence under durable storage failures by monkeypatching the storage layer while using the real FastAPI app, DB, and Docker MinIO configuration.
+- Delete outage tests assert fail-closed behavior: user-facing delete does not
+  remove the DB row when durable cleanup fails, and stale KB reconciliation can
+  retry cleanup later.
 
 ### Production Durability Gaps (TODO)
 
@@ -88,4 +107,10 @@ These e2e tests verify the normal durable-storage contract, but they do not prov
 - Crash consistency is not covered. For example, a process crash after writing an object to S3/MinIO but before committing the `uploaded_files` row could leave an orphan durable object; a crash after DB metadata is committed but before local cleanup or response completion could leave partial local state.
 - Read integrity verification is not covered. The storage layer records checksum metadata on write, but these tests do not assert checksum validation when materializing or downloading from durable storage.
 - Concurrent writer and multi-process repair behavior is not covered beyond startup lock acquisition. Tests should cover duplicate uploads, repeated startup sync, and races between startup repair, user download, and delete.
-- Object lifecycle cleanup is not covered. Tests allow orphaned S3/MinIO objects when best-effort cleanup fails and do not assert cleanup or reconciliation for objects that have no committed DB row.
+- Object lifecycle cleanup is not covered. A process crash or late failure can
+  still leave orphaned S3/MinIO objects, and these tests do not assert cleanup or
+  reconciliation for objects that have no committed DB row.
+- S3 checksum metadata repair is not covered. If object bytes are written but
+  checksum metadata attachment fails, startup repair may see the object but
+  refuse to mark the DB row available until metadata can be inspected or the
+  object is manually repaired.
