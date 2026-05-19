@@ -25,6 +25,8 @@ GENERATED_ARTIFACT_EXTENSIONS = {
     ".xlsx",
 }
 
+GeneratedArtifactSnapshot = dict[Path, tuple[int, int]]
+
 
 def artifact_type_for_filename(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
@@ -160,13 +162,34 @@ def build_generated_file_metadata(
 
 
 def scan_generated_artifact_files(root: str | Path) -> set[Path]:
+    return set(snapshot_generated_artifact_files(root))
+
+
+def snapshot_generated_artifact_files(root: str | Path) -> GeneratedArtifactSnapshot:
     root_path = Path(root)
     if not root_path.exists():
-        return set()
+        return {}
+
+    snapshot: GeneratedArtifactSnapshot = {}
+    for file_path in root_path.rglob("*"):
+        if (
+            not file_path.is_file()
+            or any(part.startswith(".") for part in file_path.parts)
+            or file_path.suffix.lower() not in GENERATED_ARTIFACT_EXTENSIONS
+        ):
+            continue
+        file_stat = file_path.stat()
+        snapshot[file_path] = (file_stat.st_mtime_ns, file_stat.st_size)
+
+    return snapshot
+
+
+def changed_generated_artifact_files(
+    before: GeneratedArtifactSnapshot,
+    after: GeneratedArtifactSnapshot,
+) -> set[Path]:
     return {
         file_path
-        for file_path in root_path.rglob("*")
-        if file_path.is_file()
-        and not any(part.startswith(".") for part in file_path.parts)
-        and file_path.suffix.lower() in GENERATED_ARTIFACT_EXTENSIONS
+        for file_path, file_snapshot in after.items()
+        if before.get(file_path) != file_snapshot
     }

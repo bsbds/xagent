@@ -137,6 +137,39 @@ class TestPythonExecutorTool:
         assert result["artifacts"][0]["file_id"] == result["file_refs"][0]["file_id"]
         assert result["artifacts"][0]["display"] == "inline"
 
+    def test_overwritten_generated_file_returns_inline_artifact(self, tmp_path):
+        """Test overwritten generated files are exposed as inline artifacts."""
+        workspace = TaskWorkspace("test_python_overwrite_docx", str(tmp_path))
+        executor = PythonExecutorTool(workspace=workspace)
+
+        first_result = executor.run_json_sync(
+            {
+                "code": "from pathlib import Path\nPath('report.docx').write_bytes(b'first')",
+                "capture_output": True,
+            }
+        )
+        second_result = executor.run_json_sync(
+            {
+                "code": "from pathlib import Path\nPath('report.docx').write_bytes(b'second version')",
+                "capture_output": True,
+            }
+        )
+
+        assert first_result["success"] is True
+        assert second_result["success"] is True
+        assert second_result["generated_files"] == ["report.docx"]
+        assert second_result["file_refs"][0]["filename"] == "report.docx"
+        assert second_result["file_refs"][0]["file_id"]
+        assert second_result["artifacts"] == [
+            {
+                "type": "document",
+                "file_id": second_result["file_refs"][0]["file_id"],
+                "filename": "report.docx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "display": "inline",
+            }
+        ]
+
     def test_syntax_error(self, python_executor):
         """Test handling of syntax errors"""
         result = python_executor.run_json_sync(
