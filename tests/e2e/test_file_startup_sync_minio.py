@@ -19,6 +19,7 @@ from tests.e2e.app_harness import (
     seed_registered_local_file,
 )
 from tests.e2e.minio_harness import MinioStorage, run_minio_storage
+from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.models.uploaded_file import UploadedFile
 
 pytestmark = [pytest.mark.e2e, pytest.mark.docker]
@@ -63,7 +64,11 @@ def test_startup_sync_repairs_only_files_that_need_durable_storage(
         missing_local_key = (
             f"users/{user_id}/uploads/{missing_local_file_id}/missing-local.txt"
         )
-        minio_storage.put_object(existing_key, b"already durable\n")
+        existing_object = get_file_storage().put_bytes(
+            b"already durable\n",
+            existing_key,
+            content_type="text/plain",
+        )
 
         legacy = seed_registered_local_file(
             db,
@@ -83,8 +88,11 @@ def test_startup_sync_repairs_only_files_that_need_durable_storage(
             content=b"local should not overwrite remote\n",
             file_id=existing_file_id,
             mime_type="text/plain",
-            storage_backend="s3",
-            storage_key=existing_key,
+            storage_backend=existing_object.backend,
+            storage_key=existing_object.key,
+            storage_uri=existing_object.uri,
+            checksum=existing_object.checksum,
+            etag=existing_object.etag,
             storage_status="available",
         )
         seed_registered_local_file(
