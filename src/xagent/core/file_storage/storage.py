@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 from urllib.parse import quote
@@ -126,15 +126,21 @@ class FsspecFileStorage:
         if target_path.exists() and target_path.is_file():
             return target_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
-        with self.open_read(normalized_key) as src, temp_path.open("wb") as dst:
-            shutil.copyfileobj(src, dst)
-        temp_path.replace(target_path)
-        return target_path
+        return self._copy_to_path_atomic(normalized_key, target_path)
 
     def copy_to_path(self, key: str, target_path: Path) -> Path:
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = target_path.with_name(f".{target_path.name}.{os.getpid()}.tmp")
+        return self._copy_to_path_atomic(self._normalize_key(key), target_path)
+
+    def _copy_to_path_atomic(self, key: str, target_path: Path) -> Path:
+        temp_file = tempfile.NamedTemporaryFile(
+            dir=target_path.parent,
+            prefix=f".{target_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        temp_path = Path(temp_file.name)
+        temp_file.close()
         try:
             with self.open_read(key) as src, temp_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst)

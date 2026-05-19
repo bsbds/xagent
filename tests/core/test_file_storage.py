@@ -1,5 +1,7 @@
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -376,6 +378,69 @@ def test_copy_to_path_does_not_publish_partial_file_on_read_failure(
 
     assert not target.exists()
     assert list(target.parent.iterdir()) == []
+
+
+def test_copy_to_path_uses_unique_temp_file_per_attempt(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
+
+    storage = get_file_storage()
+    stored = storage.put_bytes(b"restore me", "copies/data.txt")
+    target = tmp_path / "restored" / "data.txt"
+    wait_at_open = threading.Barrier(2)
+    resume_reads = threading.Event()
+
+    class BlockingRead:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            wait_at_open.wait(timeout=5)
+            resume_reads.wait(timeout=5)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self._handle.close()
+            return None
+
+        def read(self, size=-1):
+            return self._handle.read(size)
+
+    original_open_read = storage.open_read
+
+    def blocking_open_read(key):
+        return BlockingRead(original_open_read(key))
+
+    monkeypatch.setattr(storage, "open_read", blocking_open_read)
+
+    errors = []
+
+    def copy_attempt():
+        try:
+            storage.copy_to_path(stored.key, target)
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=copy_attempt)
+    second = threading.Thread(target=copy_attempt)
+    first.start()
+    second.start()
+
+    deadline = time.monotonic() + 5
+    while len(list(target.parent.glob(".data.txt.*.tmp"))) < 2:
+        if time.monotonic() > deadline:
+            break
+        time.sleep(0.01)
+
+    assert len(list(target.parent.glob(".data.txt.*.tmp"))) == 2
+
+    resume_reads.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert errors == []
+    assert target.read_bytes() == b"restore me"
+    assert list(target.parent.glob(".data.txt.*.tmp")) == []
 
 
 def test_materialize_isolates_objects_with_same_filename(monkeypatch, tmp_path):
