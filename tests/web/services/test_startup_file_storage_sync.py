@@ -229,6 +229,7 @@ def test_sync_revalidates_available_row_without_checksum(tmp_path):
     )
     db.commit()
     storage = HashAwareFakeStorage({key})
+    storage.object_sizes[key] = local_path.stat().st_size
 
     result = sync_registered_files_to_durable_storage(db, storage=storage)
 
@@ -259,7 +260,7 @@ def test_sync_refreshes_metadata_when_remote_key_present_but_record_incomplete(
         storage_status="legacy",
     )
     db.commit()
-    storage = FakeStorage({key})
+    storage = FakeStorage({key}, object_sizes={key: local_path.stat().st_size})
 
     result = sync_registered_files_to_durable_storage(db, storage=storage)
 
@@ -303,6 +304,34 @@ def test_sync_repairs_hashless_remote_object_from_local_file(tmp_path):
     assert storage.put_calls == [(local_path, key)]
     assert record.storage_status == "available"
     assert record.checksum == "checksum"
+
+
+def test_sync_refreshes_when_remote_size_is_zero_but_local_file_is_not(tmp_path):
+    db = _session()
+    user = _user(db)
+    local_path = tmp_path / "uploads" / "input.txt"
+    local_path.parent.mkdir()
+    local_path.write_text("content", encoding="utf-8")
+    key = f"users/{int(user.id)}/uploads/file-123/input.txt"
+    record = _record(
+        db,
+        user=user,
+        local_path=local_path,
+        file_id="file-123",
+        storage_key=key,
+        storage_status="legacy",
+    )
+    db.commit()
+    storage = FakeStorage({key}, object_sizes={key: 0})
+
+    result = sync_registered_files_to_durable_storage(db, storage=storage)
+
+    db.refresh(record)
+    assert result.already_present == 1
+    assert result.uploaded == 1
+    assert result.failed == 0
+    assert storage.put_calls == [(local_path, key)]
+    assert record.storage_status == "available"
 
 
 def test_sync_reports_remote_metadata_lookup_failure_when_local_missing(

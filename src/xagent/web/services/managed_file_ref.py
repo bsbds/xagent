@@ -168,8 +168,9 @@ class ManagedFileRef:
 
         if local_exists:
             local_size = local_path.stat().st_size
-            remote_size = int(getattr(stored_object, "size", 0) or 0)
-            if remote_size and remote_size != local_size:
+            remote_size_raw = getattr(stored_object, "size", None)
+            remote_size = None if remote_size_raw is None else int(remote_size_raw)
+            if remote_size is not None and remote_size != local_size:
                 self.sync_to_durable(
                     storage_key=expected_key,
                     mime_type=getattr(self.record, "mime_type", None),

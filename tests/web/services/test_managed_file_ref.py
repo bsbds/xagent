@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from xagent.core.file_storage.factory import get_file_storage
@@ -189,6 +191,38 @@ class FailingStorage:
         raise RuntimeError("remote preview unavailable")
 
 
+class ZeroSizeStorage:
+    def __init__(self):
+        self.stat_calls: list[str] = []
+        self.put_calls: list[tuple[Path, str]] = []
+
+    def stat(self, key):
+        self.stat_calls.append(key)
+        return StoredObject(
+            backend="s3",
+            key=key,
+            uri=f"s3://bucket/{key}",
+            size=0,
+            checksum="remote-zero",
+            etag="etag",
+        )
+
+    def put_file(self, source, key, content_type=None):
+        del content_type
+        self.put_calls.append((source, key))
+        return StoredObject(
+            backend="s3",
+            key=key,
+            uri=f"s3://bucket/{key}",
+            size=source.stat().st_size,
+            checksum="refreshed",
+            etag="etag",
+        )
+
+    def content_hash(self, key):
+        return f"hash:{key}"
+
+
 def test_sync_to_durable_wraps_remote_write_failure(tmp_path):
     source = tmp_path / "uploads" / "sync-fails.txt"
     source.parent.mkdir()
@@ -228,3 +262,27 @@ def test_materialize_wraps_remote_preview_failure_when_local_missing(tmp_path):
         DurableStorageOperationError, match="materialize durable object"
     ):
         ManagedFileRef(record, storage=FailingStorage()).materialize()
+
+
+def test_adopt_existing_object_refreshes_zero_size_remote_object_from_local_file(
+    tmp_path,
+):
+    local_path = tmp_path / "uploads" / "payload.txt"
+    local_path.parent.mkdir()
+    local_path.write_text("payload", encoding="utf-8")
+    record = _record(
+        local_path,
+        storage_backend="s3",
+        storage_key="users/7/uploads/file-123/payload.txt",
+        storage_status="legacy",
+    )
+
+    storage = ZeroSizeStorage()
+    result = ManagedFileRef(record, storage=storage).adopt_existing_object(
+        record.storage_key
+    )
+
+    assert result == "uploaded"
+    assert storage.stat_calls == [record.storage_key]
+    assert storage.put_calls == [(local_path, record.storage_key)]
+    assert record.checksum == "refreshed"
