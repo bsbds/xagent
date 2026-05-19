@@ -274,7 +274,7 @@ def test_sync_refreshes_metadata_when_remote_key_present_but_record_incomplete(
     assert record.storage_status == "available"
 
 
-def test_sync_does_not_overwrite_remote_key_when_metadata_lookup_fails(tmp_path):
+def test_sync_repairs_hashless_remote_object_from_local_file(tmp_path):
     db = _session()
     user = _user(db)
     local_path = tmp_path / "uploads" / "input.txt"
@@ -295,14 +295,14 @@ def test_sync_does_not_overwrite_remote_key_when_metadata_lookup_fails(tmp_path)
     result = sync_registered_files_to_durable_storage(db, storage=storage)
 
     db.refresh(record)
-    assert result.already_present == 0
-    assert result.uploaded == 0
-    assert result.failed == 1
+    assert result.already_present == 1
+    assert result.uploaded == 1
+    assert result.failed == 0
     assert storage.stat_calls == [key]
-    assert storage.content_hash_calls == [key]
-    assert storage.put_calls == []
-    assert record.storage_status == "legacy"
-    assert record.checksum is None
+    assert storage.content_hash_calls == []
+    assert storage.put_calls == [(local_path, key)]
+    assert record.storage_status == "available"
+    assert record.checksum == "checksum"
 
 
 def test_sync_reports_remote_metadata_lookup_failure_when_local_missing(
@@ -365,16 +365,19 @@ def test_sync_continues_when_remote_metadata_lookup_fails(tmp_path):
     storage = HashAwareFakeStorage(
         {first_key, second_key}, missing_hash_keys={first_key}
     )
+    storage.object_sizes[second_key] = second_path.stat().st_size
 
     result = sync_registered_files_to_durable_storage(db, storage=storage)
 
     db.refresh(first_record)
     db.refresh(second_record)
     assert result.scanned == 2
-    assert result.failed == 1
-    assert result.already_present == 1
-    assert storage.put_calls == []
-    assert first_record.storage_status == "legacy"
+    assert result.failed == 0
+    assert result.already_present == 2
+    assert result.uploaded == 1
+    assert storage.put_calls == [(first_path, first_key)]
+    assert first_record.storage_status == "available"
+    assert first_record.checksum == "checksum"
     assert second_record.storage_status == "available"
     assert second_record.checksum == f"sha256:{second_key}"
 

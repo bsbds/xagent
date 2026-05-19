@@ -156,9 +156,9 @@ class ManagedFileRef:
         self, expected_key: str
     ) -> Literal["adopted", "uploaded", "missing"]:
         local_path = self.local_path
+        local_exists = local_path.exists() and local_path.is_file()
         try:
             stored_object = self.storage.stat(expected_key)
-            checksum = stored_object.checksum or self.storage.content_hash(expected_key)
         except FileNotFoundError:
             return "missing"
         except Exception as exc:
@@ -166,7 +166,7 @@ class ManagedFileRef:
                 f"Failed to inspect durable object metadata: {expected_key}"
             ) from exc
 
-        if local_path.exists() and local_path.is_file():
+        if local_exists:
             local_size = local_path.stat().st_size
             remote_size = int(getattr(stored_object, "size", 0) or 0)
             if remote_size and remote_size != local_size:
@@ -175,6 +175,21 @@ class ManagedFileRef:
                     mime_type=getattr(self.record, "mime_type", None),
                 )
                 return "uploaded"
+            if not stored_object.checksum:
+                self.sync_to_durable(
+                    storage_key=expected_key,
+                    mime_type=getattr(self.record, "mime_type", None),
+                )
+                return "uploaded"
+
+        checksum = stored_object.checksum
+        if not checksum:
+            try:
+                checksum = self.storage.content_hash(expected_key)
+            except Exception as exc:
+                raise DurableStorageOperationError(
+                    f"Failed to inspect durable object metadata: {expected_key}"
+                ) from exc
 
         self.apply_stored_object(
             StoredObject(
