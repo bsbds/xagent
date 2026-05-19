@@ -130,8 +130,14 @@ class TaskWorkspace:
             )
 
         # Check if file already exists in database
-        existing_file_id = self._get_file_id_from_db(resolved_path, db_session)
+        resolved_db_session = db_session or self.db_session
+        existing_file_id = self._get_file_id_from_db(
+            resolved_path, resolved_db_session
+        )
         if existing_file_id:
+            self._sync_existing_file_record(
+                existing_file_id, resolved_path, resolved_db_session
+            )
             return existing_file_id
 
         # Generate new file_id if not provided
@@ -223,6 +229,74 @@ class TaskWorkspace:
             if should_close:
                 db.rollback()
             raise  # Re-raise so caller knows registration failed
+        finally:
+            if should_close and db is not None:
+                db.close()
+
+    def _sync_existing_file_record(
+        self, file_id: str, file_path: Path, db_session: Any = None
+    ) -> None:
+        """Sync an existing UploadedFile row with current local bytes."""
+        from .storage.manager import create_db_session
+
+        if db_session:
+            db = db_session
+            should_close = False
+        else:
+            db = self.db_session if self.db_session else create_db_session()
+            should_close = self.db_session is None
+
+        try:
+            from ..web.models.uploaded_file import UploadedFile
+            from ..web.services.uploaded_file_store import UploadedFileStore
+
+            record = (
+                db.query(UploadedFile).filter(UploadedFile.file_id == file_id).first()
+            )
+            if record is None:
+                return
+
+            try:
+                relative_path = str(file_path.relative_to(self.workspace_dir))
+            except ValueError:
+                relative_path = file_path.name
+            category = relative_path.split("/", 1)[0] if relative_path else "workspace"
+
+            mime_type, _ = mimetypes.guess_type(file_path.name)
+            if not mime_type:
+                mime_type = "application/octet-stream"
+
+            task_id = getattr(record, "task_id", None)
+            user_id = int(getattr(record, "user_id"))
+            storage_key = _build_workspace_storage_key(
+                user_id,
+                int(task_id) if task_id is not None else 0,
+                file_id,
+                relative_path,
+            )
+            if task_id is None:
+                storage_key = getattr(record, "storage_key", None) or storage_key
+
+            UploadedFileStore(db).upsert_by_storage_path(
+                user_id=user_id,
+                filename=file_path.name,
+                storage_path=file_path,
+                mime_type=mime_type,
+                file_size=file_path.stat().st_size,
+                storage_key=storage_key,
+                task_id=int(task_id) if task_id is not None else None,
+                workspace_relative_path=relative_path,
+                workspace_category=category,
+            )
+            if should_close:
+                db.commit()
+            else:
+                db.flush()
+        except Exception as e:
+            logger.error(f"Failed to sync existing file record: {e}")
+            if should_close:
+                db.rollback()
+            raise
         finally:
             if should_close and db is not None:
                 db.close()
@@ -730,11 +804,18 @@ class TaskWorkspace:
         try:
             yield self
         finally:
-            # Scan files after operation and register new ones
+            # Scan files after operation and register new/modified files.
             files_after = self._scan_all_files()
-            new_files = files_after - files_before
+            changed_files = files_after - files_before
+            changed_files.update(
+                file_path
+                for file_path in files_after & files_before
+                if self._get_file_id_from_db(
+                    file_path, self.db_session
+                ) is not None
+            )
 
-            for file_path in new_files:
+            for file_path in changed_files:
                 try:
                     file_id = self.register_file(str(file_path))
                     # Store path -> file_id mapping

@@ -134,6 +134,101 @@ def test_workspace_register_file_uses_uploaded_file_store_create(
         engine.dispose()
 
 
+def test_workspace_register_file_resyncs_existing_modified_file(
+    monkeypatch, tmp_path, mock_workspace_db
+):
+    # Override the global autouse fixture from tests/conftest.py for this module.
+    del mock_workspace_db
+    object_root = tmp_path / "objects"
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+    get_file_storage.cache_clear()
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        user = User(username="workspace-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        task = Task(id=654, user_id=user.id, title="Workspace task")
+        db.add(task)
+        db.commit()
+
+        workspace = TaskWorkspace(
+            id="web_task_654", base_dir=str(tmp_path / "workspaces")
+        )
+        output_path = workspace.output_dir / "report.txt"
+        output_path.write_text("old", encoding="utf-8")
+
+        file_id = workspace.register_file(str(output_path), db_session=db)
+        db.commit()
+
+        output_path.write_text("new content", encoding="utf-8")
+        second_file_id = workspace.register_file(str(output_path), db_session=db)
+        db.commit()
+
+        assert second_file_id == file_id
+        record = db.query(UploadedFile).filter(UploadedFile.file_id == file_id).one()
+        assert record.file_size == len("new content")
+        assert record.storage_status == "available"
+
+        object_files = [path for path in object_root.rglob("*") if path.is_file()]
+        assert len(object_files) == 1
+        assert object_files[0].read_text(encoding="utf-8") == "new content"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_auto_register_files_resyncs_modified_existing_file(
+    monkeypatch, tmp_path, mock_workspace_db
+):
+    # Override the global autouse fixture from tests/conftest.py for this module.
+    del mock_workspace_db
+    object_root = tmp_path / "objects"
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+    get_file_storage.cache_clear()
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        user = User(username="workspace-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        task = Task(id=655, user_id=user.id, title="Workspace task")
+        db.add(task)
+        db.commit()
+
+        workspace = TaskWorkspace(
+            id="web_task_655", base_dir=str(tmp_path / "workspaces")
+        )
+        output_path = workspace.output_dir / "report.txt"
+        output_path.write_text("old", encoding="utf-8")
+        file_id = workspace.register_file(str(output_path), db_session=db)
+        db.commit()
+
+        workspace.db_session = db
+        with workspace.auto_register_files():
+            output_path.write_text("new content", encoding="utf-8")
+        db.commit()
+
+        record = db.query(UploadedFile).filter(UploadedFile.file_id == file_id).one()
+        assert record.file_size == len("new content")
+        object_files = [path for path in object_root.rglob("*") if path.is_file()]
+        assert len(object_files) == 1
+        assert object_files[0].read_text(encoding="utf-8") == "new content"
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_list_all_user_files_includes_durable_only_uploads(tmp_path, mock_workspace_db):
     # Override the global autouse fixture from tests/conftest.py for this module.
     del mock_workspace_db
