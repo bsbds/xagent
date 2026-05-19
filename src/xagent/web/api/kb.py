@@ -818,15 +818,30 @@ def _refresh_existing_file_if_changed(
         )
 
     # Mark succeeded - now atomically replace the file
-    _atomic_replace_file(temp_file_path, existing_path)
-    file_record = _upsert_uploaded_file_record(
-        db_session,
-        user_id=user_id,
-        filename=filename,
-        storage_path=existing_path,
-        mime_type="text/markdown",
-        file_size=existing_path.stat().st_size,
+    backup_path = existing_path.with_name(
+        f"{existing_path.name}.rollback-{uuid.uuid4().hex}"
     )
+    shutil.copy2(existing_path, backup_path)
+    try:
+        _atomic_replace_file(temp_file_path, existing_path)
+        file_record = _upsert_uploaded_file_record(
+            db_session,
+            user_id=user_id,
+            filename=filename,
+            storage_path=existing_path,
+            mime_type="text/markdown",
+            file_size=existing_path.stat().st_size,
+        )
+    except Exception:
+        _restore_ingest_file_backup(
+            file_path=existing_path,
+            backup_path=backup_path,
+            had_existing_file=True,
+        )
+        raise
+    finally:
+        if backup_path.exists():
+            backup_path.unlink()
     processed_urls[url_hash] = str(file_record.file_id)
 
     logger.info(

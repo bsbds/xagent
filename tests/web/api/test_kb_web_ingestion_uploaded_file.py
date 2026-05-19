@@ -35,6 +35,7 @@ from xagent.web.api.kb import (
     _get_file_sha256,
     _mark_uploaded_file_for_reindex,
     _normalize_web_title_for_filename,
+    _refresh_existing_file_if_changed,
     _upsert_uploaded_file_record,
     _WebFileLock,
     kb_router,
@@ -392,6 +393,66 @@ class TestWebIngestionUploadedFilePersistence:
                         persistent_file.unlink()
                     # Verify cleanup happened
                     assert not persistent_file.exists()
+
+    def test_refresh_existing_file_restores_local_file_when_durable_sync_fails(
+        self,
+        db_session: Session,
+        test_user: User,
+        mock_user: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+        monkeypatch.setenv(
+            "XAGENT_FILE_MATERIALIZE_DIR", str(tmp_path / "materialized")
+        )
+        get_file_storage.cache_clear()
+
+        temp_dir = tmp_path / "ingest"
+        temp_dir.mkdir()
+        existing_path = temp_dir / "existing.md"
+        existing_path.write_text("old content", encoding="utf-8")
+        temp_file_path = temp_dir / "incoming.md"
+        temp_file_path.write_text("new content", encoding="utf-8")
+
+        existing_record = _upsert_uploaded_file_record(
+            db_session,
+            user_id=int(mock_user.id),
+            filename="existing.md",
+            storage_path=existing_path,
+            mime_type="text/markdown",
+            file_size=existing_path.stat().st_size,
+        )
+
+        def failing_upsert(*_args, **_kwargs):
+            raise RuntimeError("durable sync failed")
+
+        with patch(
+            "xagent.web.api.kb._mark_uploaded_file_for_reindex", return_value=True
+        ):
+            with patch(
+                "xagent.web.api.kb._atomic_replace_file",
+                wraps=_atomic_replace_file,
+            ) as atomic_replace:
+                with patch(
+                    "xagent.web.api.kb._upsert_uploaded_file_record",
+                    side_effect=failing_upsert,
+                ):
+                    with pytest.raises(RuntimeError, match="durable sync failed"):
+                        _refresh_existing_file_if_changed(
+                            existing_record=existing_record,
+                            temp_file_path=temp_file_path,
+                            db_session=db_session,
+                            user_id=int(mock_user.id),
+                            url="https://example.com/page",
+                            filename="existing.md",
+                            url_hash="hash",
+                            processed_urls={},
+                            context="cross-session",
+                        )
+
+        assert atomic_replace.called
+        assert existing_path.read_text(encoding="utf-8") == "old content"
 
     def test_in_memory_cache_deduplication(
         self, db_session: Session, test_user: User, mock_user: MagicMock
