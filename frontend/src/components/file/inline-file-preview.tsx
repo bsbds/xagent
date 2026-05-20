@@ -153,6 +153,7 @@ function InlineOfficeContent({
       <iframe
         src={previewUrl}
         title={filename}
+        sandbox=""
         className="h-[360px] w-full border-0 bg-background"
       />
     )

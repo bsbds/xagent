@@ -77,6 +77,7 @@ describe('InlineFilePreview', () => {
       'src',
       'http://api.local/api/files/public/preview/slides-file-id'
     )
+    expect(screen.getByTitle('slides.pptx')).toHaveAttribute('sandbox', '')
   })
 
   it('opens inline previews through the file preview callback when available', () => {
