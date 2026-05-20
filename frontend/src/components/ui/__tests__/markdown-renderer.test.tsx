@@ -28,6 +28,17 @@ vi.mock('@/components/file/excel-preview-renderer', () => ({
   ),
 }))
 
+vi.mock('@/contexts/i18n-context', () => ({
+  useI18n: () => ({
+    t: (key: string) => {
+      if (key === 'files.previewDialog.buttons.open') return 'Open'
+      if (key === 'files.previewDialog.errors.loadFailed') return 'Failed to load preview.'
+      if (key === 'markdownRenderer.loadAgentDetailsFailed') return key
+      return key
+    },
+  }),
+}))
+
 import { MarkdownRenderer } from '../markdown-renderer'
 
 describe('MarkdownRenderer', () => {

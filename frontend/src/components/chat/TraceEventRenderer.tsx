@@ -489,7 +489,7 @@ const CopyButton = ({ text, title }: { text: string, title?: string }) => {
   );
 };
 
-const ToolArtifactsDisplay = ({ artifacts, onFileClick }: { artifacts?: ToolArtifact[]; onFileClick?: (filePath: string, fileName: string) => void }) => {
+const ToolArtifactsDisplay = ({ artifacts, onFileClick, t }: { artifacts?: ToolArtifact[]; onFileClick?: (filePath: string, fileName: string) => void; t: (key: string) => string }) => {
   const displayArtifacts = (artifacts || []).filter(
     artifact => artifact && (artifact.preview_url || artifact.file_id) && (artifact.display === undefined || artifact.display === 'inline')
   );
@@ -508,6 +508,8 @@ const ToolArtifactsDisplay = ({ artifacts, onFileClick }: { artifacts?: ToolArti
             mimeType: artifact.mime_type,
             type: artifact.type,
           }}
+          openLabel={t('files.previewDialog.buttons.open')}
+          loadErrorText={t('files.previewDialog.errors.loadFailed')}
           onFileClick={onFileClick}
         />
       ))}
@@ -517,7 +519,7 @@ const ToolArtifactsDisplay = ({ artifacts, onFileClick }: { artifacts?: ToolArti
 
 const ToolOutputDisplay = ({ action, isRunning, t, onFileClick, onAgentClick }: { action: StepAction, isRunning: boolean, t: any, onFileClick?: (filePath: string, fileName: string) => void, onAgentClick?: (agentId: string, agentName: string) => void }) => (
   <>
-    <ToolArtifactsDisplay artifacts={action.data.artifacts} onFileClick={onFileClick} />
+    <ToolArtifactsDisplay artifacts={action.data.artifacts} onFileClick={onFileClick} t={t} />
     {action.data.output !== undefined && action.data.output !== '' && (
       <div className="mt-4 flex flex-col gap-1.5">
         <div className="text-xs text-muted-foreground px-1 flex justify-between items-center">

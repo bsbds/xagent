@@ -3,7 +3,6 @@ import { FileText, Loader2 } from 'lucide-react'
 
 import { DocxPreviewRenderer } from '@/components/file/docx-preview-renderer'
 import { ExcelPreviewRenderer } from '@/components/file/excel-preview-renderer'
-import { useI18n } from '@/contexts/i18n-context'
 import { apiRequest } from '@/lib/api-wrapper'
 import { cn, getApiUrl } from '@/lib/utils'
 import {
@@ -21,10 +20,15 @@ type InlineFilePreviewProps = {
   className?: string
   imageClassName?: string
   onFileClick?: (filePath: string, fileName: string) => void
+  openLabel?: string
+  loadErrorText?: string
 }
 
 const fileNameFromSource = (source: InlineFilePreviewSource) =>
   source.filename || source.fileId?.split('/').pop() || 'artifact'
+
+const DEFAULT_OPEN_LABEL = 'Open'
+const DEFAULT_LOAD_ERROR_TEXT = 'Failed to load preview.'
 
 function InlineImagePreview({
   source,
@@ -215,8 +219,9 @@ export function InlineFilePreview({
   className,
   imageClassName,
   onFileClick,
+  openLabel = DEFAULT_OPEN_LABEL,
+  loadErrorText = DEFAULT_LOAD_ERROR_TEXT,
 }: InlineFilePreviewProps) {
-  const { t } = useI18n()
   const apiUrl = getApiUrl()
   const kind = getInlineFilePreviewKind(source)
   const previewUrl = getInlineFilePreviewUrl(source, apiUrl)
@@ -238,7 +243,7 @@ export function InlineFilePreview({
         className={className}
         domain={previewUrlTrust.domain}
         filename={filename}
-        openLabel={t('files.previewDialog.buttons.open')}
+        openLabel={openLabel}
         previewUrl={previewUrl}
       />
     )
@@ -289,7 +294,7 @@ export function InlineFilePreview({
           onClick={canOpenFilePreview ? handleOpenPreview : undefined}
           className="shrink-0 text-foreground hover:underline"
         >
-          {t('files.previewDialog.buttons.open')}
+          {openLabel}
         </a>
       </div>
       <div className="h-[360px] overflow-auto">
@@ -297,7 +302,7 @@ export function InlineFilePreview({
           kind={kind}
           previewUrl={previewUrl}
           filename={filename}
-          loadErrorText={t('files.previewDialog.errors.loadFailed')}
+          loadErrorText={loadErrorText}
         />
       </div>
     </div>

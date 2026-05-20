@@ -28,16 +28,6 @@ vi.mock('@/components/file/excel-preview-renderer', () => ({
   ),
 }))
 
-vi.mock('@/contexts/i18n-context', () => ({
-  useI18n: () => ({
-    t: (key: string) => {
-      if (key === 'files.previewDialog.errors.loadFailed') return 'Localized load failure'
-      if (key === 'files.previewDialog.buttons.open') return 'Localized open'
-      return key
-    },
-  }),
-}))
-
 import { InlineFilePreview } from './inline-file-preview'
 
 describe('InlineFilePreview', () => {
@@ -94,7 +84,7 @@ describe('InlineFilePreview', () => {
       />
     )
 
-    fireEvent.click(screen.getByText('Localized open'))
+    fireEvent.click(screen.getByText('Open'))
 
     expect(handleFileClick).toHaveBeenCalledWith('slides-file-id', 'slides.pptx')
   })
@@ -113,7 +103,7 @@ describe('InlineFilePreview', () => {
       />
     )
 
-    const openLink = screen.getByRole('link', { name: 'Localized open' })
+    const openLink = screen.getByRole('link', { name: 'Open' })
     expect(openLink).toHaveAttribute(
       'href',
       'http://api.local/api/files/public/preview/slides-file-id'
@@ -170,8 +160,8 @@ describe('InlineFilePreview', () => {
       />
     )
 
-    expect(await screen.findByText('Localized load failure')).toBeInTheDocument()
-    expect(screen.queryByText('Failed to load preview.')).not.toBeInTheDocument()
+    expect(await screen.findByText('Failed to load preview.')).toBeInTheDocument()
+    expect(screen.queryByText('Localized load failure')).not.toBeInTheDocument()
   })
 
   it('uses the preview URL as the non-previewable file link href', () => {
@@ -207,7 +197,7 @@ describe('InlineFilePreview', () => {
 
     expect(screen.getByText('cdn.example.com')).toBeInTheDocument()
     expect(
-      screen.getByRole('link', { name: 'report.docx cdn.example.com Localized open' })
+      screen.getByRole('link', { name: 'report.docx cdn.example.com Open' })
     ).toHaveAttribute(
       'href',
       'https://cdn.example.com/report.docx'

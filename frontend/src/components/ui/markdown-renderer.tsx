@@ -214,6 +214,7 @@ const nodeText = (children: React.ReactNode): string => {
 }
 
 export function MarkdownRenderer({ content, className = '', onFileClick, onAgentClick }: MarkdownRendererProps) {
+  const { t } = useI18n()
   const components = React.useMemo<Components>(
     () => ({
       p({ node: _node, children, ...props }) {
@@ -245,6 +246,8 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
                   fileId: filePath,
                   filename: fileName,
                 }}
+                openLabel={t('files.previewDialog.buttons.open')}
+                loadErrorText={t('files.previewDialog.errors.loadFailed')}
                 onFileClick={onFileClick}
               />
             )
@@ -311,6 +314,8 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
                 filename: fileName,
                 type: 'image',
               }}
+              openLabel={t('files.previewDialog.buttons.open')}
+              loadErrorText={t('files.previewDialog.errors.loadFailed')}
               onFileClick={onFileClick}
               imageClassName="file-image cursor-pointer"
             />
@@ -320,7 +325,7 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
         return <img src={src || ''} alt={alt || ''} title={title || alt || ''} {...props} />
       }
     }),
-    [onFileClick, onAgentClick]
+    [onFileClick, onAgentClick, t]
   )
 
   return (
