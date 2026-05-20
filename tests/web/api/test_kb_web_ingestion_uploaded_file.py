@@ -35,6 +35,7 @@ from xagent.web.api.kb import (
     _get_file_sha256,
     _mark_uploaded_file_for_reindex,
     _normalize_web_title_for_filename,
+    _recreate_missing_existing_file,
     _refresh_existing_file_if_changed,
     _upsert_uploaded_file_record,
     _WebFileLock,
@@ -453,6 +454,145 @@ class TestWebIngestionUploadedFilePersistence:
 
         assert atomic_replace.called
         assert existing_path.read_text(encoding="utf-8") == "old content"
+
+    def test_refresh_existing_file_restores_missing_local_from_durable_before_compare(
+        self,
+        db_session: Session,
+        test_user: User,
+        mock_user: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+        monkeypatch.setenv(
+            "XAGENT_FILE_MATERIALIZE_DIR", str(tmp_path / "materialized")
+        )
+        get_file_storage.cache_clear()
+
+        existing_path = tmp_path / "uploads" / "existing.md"
+        existing_path.parent.mkdir()
+        existing_path.write_text("old content", encoding="utf-8")
+        temp_file_path = tmp_path / "incoming.md"
+        temp_file_path.write_text("old content", encoding="utf-8")
+
+        existing_record = _upsert_uploaded_file_record(
+            db_session,
+            user_id=int(mock_user.id),
+            filename="existing.md",
+            storage_path=existing_path,
+            mime_type="text/markdown",
+            file_size=existing_path.stat().st_size,
+        )
+        existing_path.unlink()
+
+        processed_urls: dict[str, str] = {}
+        result = _refresh_existing_file_if_changed(
+            existing_record=existing_record,
+            temp_file_path=temp_file_path,
+            db_session=db_session,
+            user_id=int(mock_user.id),
+            url="https://example.com/page",
+            filename="existing.md",
+            url_hash="hash",
+            processed_urls=processed_urls,
+            context="cross-session",
+        )
+
+        assert result is not None
+        assert result["file_id"] == str(existing_record.file_id)
+        assert existing_path.read_text(encoding="utf-8") == "old content"
+        assert processed_urls == {}
+
+    def test_refresh_existing_file_refreshes_durable_restored_local_when_changed(
+        self,
+        db_session: Session,
+        test_user: User,
+        mock_user: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+        monkeypatch.setenv(
+            "XAGENT_FILE_MATERIALIZE_DIR", str(tmp_path / "materialized")
+        )
+        get_file_storage.cache_clear()
+
+        existing_path = tmp_path / "uploads" / "existing.md"
+        existing_path.parent.mkdir()
+        existing_path.write_text("old content", encoding="utf-8")
+        temp_file_path = tmp_path / "incoming.md"
+        temp_file_path.write_text("new content", encoding="utf-8")
+
+        existing_record = _upsert_uploaded_file_record(
+            db_session,
+            user_id=int(mock_user.id),
+            filename="existing.md",
+            storage_path=existing_path,
+            mime_type="text/markdown",
+            file_size=existing_path.stat().st_size,
+        )
+        existing_path.unlink()
+
+        processed_urls: dict[str, str] = {}
+        with patch(
+            "xagent.web.api.kb._mark_uploaded_file_for_reindex", return_value=True
+        ):
+            result = _refresh_existing_file_if_changed(
+                existing_record=existing_record,
+                temp_file_path=temp_file_path,
+                db_session=db_session,
+                user_id=int(mock_user.id),
+                url="https://example.com/page",
+                filename="existing.md",
+                url_hash="hash",
+                processed_urls=processed_urls,
+                context="cross-session",
+            )
+
+        assert result is not None
+        assert existing_path.read_text(encoding="utf-8") == "new content"
+        assert processed_urls == {"hash": str(existing_record.file_id)}
+        with get_file_storage().open_read(str(existing_record.storage_key)) as handle:
+            assert handle.read() == b"new content"
+
+    def test_recreate_missing_existing_file_removes_local_when_upsert_fails(
+        self,
+        db_session: Session,
+        test_user: User,
+        mock_user: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        existing_path = tmp_path / "uploads" / "existing.md"
+        temp_file_path = tmp_path / "incoming.md"
+        temp_file_path.write_text("new content", encoding="utf-8")
+        existing_record = UploadedFile(
+            file_id=str(uuid4()),
+            user_id=int(mock_user.id),
+            filename="existing.md",
+            storage_path=str(existing_path),
+            mime_type="text/markdown",
+            file_size=0,
+        )
+
+        def failing_upsert(*_args, **_kwargs):
+            raise RuntimeError("durable sync failed")
+
+        with patch(
+            "xagent.web.api.kb._upsert_uploaded_file_record",
+            side_effect=failing_upsert,
+        ):
+            with pytest.raises(RuntimeError, match="durable sync failed"):
+                _recreate_missing_existing_file(
+                    existing_record=existing_record,
+                    temp_file_path=temp_file_path,
+                    db_session=db_session,
+                    user_id=int(mock_user.id),
+                    filename="existing.md",
+                    url_hash="hash",
+                    processed_urls={},
+                )
+
+        assert not existing_path.exists()
 
     def test_in_memory_cache_deduplication(
         self, db_session: Session, test_user: User, mock_user: MagicMock

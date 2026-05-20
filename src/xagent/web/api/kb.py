@@ -117,6 +117,7 @@ from ..services.kb_file_service import (
 from ..services.kb_file_service import (
     upsert_uploaded_file_record as _upsert_uploaded_file_record,
 )
+from ..services.managed_file_ref import DurableObjectMissingError, ManagedFileRef
 from ..services.uploaded_file_store import UploadedFileStore
 from .cloud_storage import get_google_credentials
 
@@ -790,7 +791,20 @@ def _refresh_existing_file_if_changed(
     """
     existing_path = Path(str(existing_record.storage_path))
     if not existing_path.exists():
-        return None
+        try:
+            existing_path = ManagedFileRef(existing_record).ensure_local()
+        except DurableObjectMissingError:
+            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to restore durable web-ingestion file before refresh: "
+                "url=%s, file_id=%s, context=%s, error=%s",
+                url,
+                existing_record.file_id,
+                context,
+                exc,
+            )
+            return None
 
     old_hash = _get_file_sha256(existing_path)
     new_hash = _get_file_sha256(temp_file_path)
@@ -851,6 +865,54 @@ def _refresh_existing_file_if_changed(
         context,
     )
 
+    return FileHandlerResult(
+        file_path=str(existing_record.storage_path),
+        file_id=str(existing_record.file_id),
+    )
+
+
+def _recreate_missing_existing_file(
+    *,
+    existing_record: Any,
+    temp_file_path: Path,
+    db_session: Session,
+    user_id: int,
+    filename: str,
+    url_hash: str,
+    processed_urls: Dict[str, str],
+) -> FileHandlerResult:
+    existing_path = Path(str(existing_record.storage_path))
+    backup_path: Optional[Path] = None
+    had_existing_file = existing_path.exists()
+    if had_existing_file:
+        backup_path = existing_path.with_name(
+            f"{existing_path.name}.rollback-{uuid.uuid4().hex}"
+        )
+        shutil.copy2(existing_path, backup_path)
+
+    try:
+        _atomic_replace_file(temp_file_path, existing_path)
+        file_record = _upsert_uploaded_file_record(
+            db_session,
+            user_id=user_id,
+            filename=filename,
+            storage_path=existing_path,
+            mime_type="text/markdown",
+            file_size=existing_path.stat().st_size,
+        )
+    except Exception:
+        db_session.rollback()
+        _restore_ingest_file_backup(
+            file_path=existing_path,
+            backup_path=backup_path,
+            had_existing_file=had_existing_file,
+        )
+        raise
+    finally:
+        if backup_path is not None and backup_path.exists():
+            backup_path.unlink()
+
+    processed_urls[url_hash] = str(file_record.file_id)
     return FileHandlerResult(
         file_path=str(existing_record.storage_path),
         file_id=str(existing_record.file_id),
@@ -2589,27 +2651,21 @@ async def ingest_web(
                         return result
 
                     # result is None means file doesn't exist - recreate it
-                    existing_path = Path(str(existing_record.storage_path))
-                    existing_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(temp_file_path, existing_path)
-                    file_record = _upsert_uploaded_file_record(
-                        db_session,
+                    result = _recreate_missing_existing_file(
+                        existing_record=existing_record,
+                        temp_file_path=temp_file_path,
+                        db_session=db_session,
                         user_id=int(_user.id),
                         filename=filename,
-                        storage_path=existing_path,
-                        mime_type="text/markdown",
-                        file_size=existing_path.stat().st_size,
+                        url_hash=url_hash,
+                        processed_urls=_processed_urls,
                     )
-                    _processed_urls[url_hash] = str(file_record.file_id)
                     logger.info(
                         "Recreated missing persistent file for existing UploadedFile record: url=%s, file_id=%s",
                         url,
-                        file_record.file_id,
+                        existing_record.file_id,
                     )
-                    return FileHandlerResult(
-                        file_path=str(existing_record.storage_path),
-                        file_id=str(existing_record.file_id),
-                    )
+                    return result
 
                 persistent_file = get_upload_path(
                     filename,
