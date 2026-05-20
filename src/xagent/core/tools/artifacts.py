@@ -24,6 +24,16 @@ GENERATED_ARTIFACT_EXTENSIONS = {
     ".xls",
     ".xlsx",
 }
+SAFE_FILE_REF_KEYS = {
+    "download_url",
+    "file_id",
+    "filename",
+    "markdown_ref",
+    "mime_type",
+    "preview_url",
+    "relative_path",
+    "size",
+}
 
 GeneratedArtifactSnapshot = dict[Path, tuple[int, int]]
 
@@ -83,9 +93,7 @@ def format_tool_result_for_observation(tool_name: str, result: Any) -> str:
     sanitized = dict(result)
     if sanitized.get("file_id"):
         sanitized.pop("image_path", None)
-    sanitized["file_refs"] = _sanitize_file_refs_for_observation(
-        sanitized.get("file_refs")
-    )
+    sanitized = _sanitize_file_refs_for_observation(sanitized)
 
     artifact_lines = _format_artifact_lines(artifacts)
     if not artifact_lines:
@@ -130,17 +138,27 @@ def _format_artifact_lines(artifacts: list[Any]) -> list[str]:
     return lines
 
 
-def _sanitize_file_refs_for_observation(file_refs: Any) -> Any:
-    if not isinstance(file_refs, list):
-        return file_refs
+def _sanitize_file_refs_for_observation(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_file_refs_for_observation(item) for item in value]
 
-    safe_keys = {"file_id", "filename", "mime_type", "relative_path"}
-    return [
-        {key: file_ref[key] for key in safe_keys if key in file_ref}
-        if isinstance(file_ref, dict)
-        else file_ref
-        for file_ref in file_refs
-    ]
+    if not isinstance(value, dict):
+        return value
+
+    if _is_file_ref_like(value):
+        return {key: value[key] for key in SAFE_FILE_REF_KEYS if key in value}
+
+    return {
+        key: _sanitize_file_refs_for_observation(item) for key, item in value.items()
+    }
+
+
+def _is_file_ref_like(value: dict[str, Any]) -> bool:
+    return (
+        "file_id" in value
+        and "filename" in value
+        and ("file_path" in value or "relative_path" in value or "mime_type" in value)
+    )
 
 
 def build_generated_file_metadata(

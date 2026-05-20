@@ -73,6 +73,34 @@ def test_format_tool_result_for_observation_strips_file_ref_paths():
     assert "[report.docx](file:doc-file-id)" in observation
 
 
+def test_format_tool_result_for_observation_strips_singular_file_ref_paths():
+    observation = format_tool_result_for_observation(
+        "pptx_tool",
+        {
+            "success": True,
+            "file_ref": {
+                "file_id": "deck-file-id",
+                "filename": "deck.pptx",
+                "file_path": "/tmp/xagent/output/deck.pptx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            },
+            "artifacts": [
+                {
+                    "type": "presentation",
+                    "file_id": "deck-file-id",
+                    "filename": "deck.pptx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "display": "inline",
+                }
+            ],
+        },
+    )
+
+    assert "/tmp/xagent/output/deck.pptx" not in observation
+    assert "file_path" not in observation
+    assert "[deck.pptx](file:deck-file-id)" in observation
+
+
 def test_format_tool_result_for_observation_mentions_office_artifact_links():
     observation = format_tool_result_for_observation(
         "execute_python_code",
