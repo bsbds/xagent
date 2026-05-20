@@ -145,4 +145,24 @@ describe('InlineFilePreview', () => {
     expect(await screen.findByText('Localized load failure')).toBeInTheDocument()
     expect(screen.queryByText('Failed to load preview.')).not.toBeInTheDocument()
   })
+
+  it('uses the preview URL as the non-previewable file link href', () => {
+    const handleFileClick = vi.fn()
+
+    render(
+      <InlineFilePreview
+        source={{ type: 'file', fileId: 'archive-file-id', filename: 'archive.zip' }}
+        onFileClick={handleFileClick}
+      />
+    )
+
+    const link = screen.getByRole('link', { name: 'archive.zip' })
+    expect(link).toHaveAttribute(
+      'href',
+      'http://api.local/api/files/public/preview/archive-file-id'
+    )
+
+    fireEvent.click(link)
+    expect(handleFileClick).toHaveBeenCalledWith('archive-file-id', 'archive.zip')
+  })
 })

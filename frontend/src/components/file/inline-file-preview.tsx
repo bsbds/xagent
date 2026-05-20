@@ -213,7 +213,7 @@ export function InlineFilePreview({
   if (!isPreviewableInlineFileKind(kind)) {
     return (
       <a
-        href={canOpenFilePreview ? '#' : previewUrl}
+        href={previewUrl}
         target={canOpenFilePreview ? undefined : '_blank'}
         rel={canOpenFilePreview ? undefined : 'noreferrer'}
         onClick={canOpenFilePreview ? handleOpenPreview : undefined}
