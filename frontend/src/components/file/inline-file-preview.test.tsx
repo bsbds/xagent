@@ -95,6 +95,30 @@ describe('InlineFilePreview', () => {
     expect(handleFileClick).toHaveBeenCalledWith('slides-file-id', 'slides.pptx')
   })
 
+  it('uses the preview URL as the inline preview open link href', () => {
+    const handleFileClick = vi.fn()
+
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'presentation',
+          fileId: 'slides-file-id',
+          filename: 'slides.pptx',
+        }}
+        onFileClick={handleFileClick}
+      />
+    )
+
+    const openLink = screen.getByRole('link', { name: 'Open' })
+    expect(openLink).toHaveAttribute(
+      'href',
+      'http://api.local/api/files/public/preview/slides-file-id'
+    )
+
+    fireEvent.click(openLink)
+    expect(handleFileClick).toHaveBeenCalledWith('slides-file-id', 'slides.pptx')
+  })
+
   it('loads document previews through the document renderer', async () => {
     apiRequestMock.mockResolvedValue({
       ok: true,

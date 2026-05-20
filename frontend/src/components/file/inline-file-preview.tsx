@@ -237,7 +237,7 @@ export function InlineFilePreview({
         <FileText className="h-4 w-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{filename}</span>
         <a
-          href={canOpenFilePreview ? '#' : previewUrl}
+          href={previewUrl}
           target={canOpenFilePreview ? undefined : '_blank'}
           rel={canOpenFilePreview ? undefined : 'noreferrer'}
           onClick={canOpenFilePreview ? handleOpenPreview : undefined}
