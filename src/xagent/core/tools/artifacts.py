@@ -188,13 +188,16 @@ def snapshot_generated_artifact_files(root: str | Path) -> GeneratedArtifactSnap
 
     snapshot: GeneratedArtifactSnapshot = {}
     for file_path in root_path.rglob("*"):
-        if (
-            not file_path.is_file()
-            or any(part.startswith(".") for part in file_path.parts)
-            or file_path.suffix.lower() not in GENERATED_ARTIFACT_EXTENSIONS
-        ):
+        try:
+            if (
+                not file_path.is_file()
+                or any(part.startswith(".") for part in file_path.parts)
+                or file_path.suffix.lower() not in GENERATED_ARTIFACT_EXTENSIONS
+            ):
+                continue
+            file_stat = file_path.stat()
+        except FileNotFoundError:
             continue
-        file_stat = file_path.stat()
         snapshot[file_path] = (file_stat.st_mtime_ns, file_stat.st_size)
 
     return snapshot

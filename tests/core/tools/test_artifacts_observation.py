@@ -1,4 +1,9 @@
-from xagent.core.tools.artifacts import format_tool_result_for_observation
+from pathlib import Path
+
+from xagent.core.tools.artifacts import (
+    format_tool_result_for_observation,
+    snapshot_generated_artifact_files,
+)
 
 
 def test_format_tool_result_for_observation_hides_image_path_when_artifact_exists():
@@ -124,3 +129,20 @@ def test_format_tool_result_for_observation_normalizes_artifact_type_case():
 
     assert "![plot.png](file:image-file-id)" in observation
     assert "Markdown/chat image" in observation
+
+
+def test_snapshot_generated_artifact_files_skips_files_deleted_before_stat(
+    tmp_path, monkeypatch
+):
+    deleted_before_stat = tmp_path / "deleted.pdf"
+    deleted_before_stat.write_bytes(b"pdf")
+    original_stat = Path.stat
+
+    def stat_with_deleted_file(self, *args, **kwargs):
+        if self == deleted_before_stat:
+            raise FileNotFoundError
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_with_deleted_file)
+
+    assert snapshot_generated_artifact_files(tmp_path) == {}
