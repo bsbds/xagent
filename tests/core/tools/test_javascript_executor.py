@@ -481,8 +481,8 @@ console.log('File created');
             assert output_file.exists(), f"File not found in output: {output_file}"
             # Verify content
             assert output_file.read_text() == "Hello from JavaScript!"
-            # Check that generated_files is populated
-            assert "test_file.pdf" in result.get("generated_files", [])
+            assert result.get("generated_files", []) == []
+            assert "Generated files:" not in result["output"]
 
 
 class TestJavaScriptExecutorToolArtifacts:
@@ -536,3 +536,5 @@ class TestJavaScriptExecutorToolArtifacts:
         assert [artifact["filename"] for artifact in second_result["artifacts"]] == [
             "new.pdf"
         ]
+        assert "new.pdf" in second_result["output"]
+        assert "old.pdf" not in second_result["output"]

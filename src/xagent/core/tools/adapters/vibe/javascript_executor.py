@@ -95,14 +95,21 @@ class JavaScriptExecutorTool(AbstractBaseTool):
                 result = executor.execute_code(exec_args.code, packages=pkg_list)
             if result.get("success"):
                 files_after = snapshot_generated_artifact_files(working_directory)
-                result.update(
-                    build_generated_file_metadata(
-                        workspace=self._workspace,
-                        file_paths=changed_generated_artifact_files(
-                            files_before, files_after
-                        ),
-                    )
+                metadata = build_generated_file_metadata(
+                    workspace=self._workspace,
+                    file_paths=changed_generated_artifact_files(
+                        files_before, files_after
+                    ),
                 )
+                result.update(metadata)
+                if metadata["generated_files"]:
+                    output = (
+                        result.get("output") or "Code executed successfully (no output)"
+                    )
+                    result["output"] = (
+                        f"{output}\n\nGenerated files: "
+                        f"{', '.join(metadata['generated_files'])}"
+                    )
         else:
             result = executor.execute_code(exec_args.code, packages=pkg_list)
 
