@@ -35,6 +35,39 @@ def test_format_tool_result_for_observation_returns_plain_string_without_artifac
     assert format_tool_result_for_observation("tool", result) == str(result)
 
 
+def test_format_tool_result_for_observation_strips_file_ref_paths():
+    observation = format_tool_result_for_observation(
+        "execute_python_code",
+        {
+            "success": True,
+            "generated_files": ["report.docx"],
+            "file_refs": [
+                {
+                    "file_id": "doc-file-id",
+                    "filename": "report.docx",
+                    "file_path": "/tmp/xagent/output/report.docx",
+                    "relative_path": "report.docx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }
+            ],
+            "artifacts": [
+                {
+                    "type": "document",
+                    "file_id": "doc-file-id",
+                    "filename": "report.docx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "display": "inline",
+                }
+            ],
+        },
+    )
+
+    assert "/tmp/xagent/output/report.docx" not in observation
+    assert "file_path" not in observation
+    assert "relative_path" in observation
+    assert "[report.docx](file:doc-file-id)" in observation
+
+
 def test_format_tool_result_for_observation_mentions_office_artifact_links():
     observation = format_tool_result_for_observation(
         "execute_python_code",

@@ -83,6 +83,9 @@ def format_tool_result_for_observation(tool_name: str, result: Any) -> str:
     sanitized = dict(result)
     if sanitized.get("file_id"):
         sanitized.pop("image_path", None)
+    sanitized["file_refs"] = _sanitize_file_refs_for_observation(
+        sanitized.get("file_refs")
+    )
 
     artifact_lines = _format_artifact_lines(artifacts)
     if not artifact_lines:
@@ -125,6 +128,19 @@ def _format_artifact_lines(artifacts: list[Any]) -> list[str]:
             )
         )
     return lines
+
+
+def _sanitize_file_refs_for_observation(file_refs: Any) -> Any:
+    if not isinstance(file_refs, list):
+        return file_refs
+
+    safe_keys = {"file_id", "filename", "mime_type", "relative_path"}
+    return [
+        {key: file_ref[key] for key in safe_keys if key in file_ref}
+        if isinstance(file_ref, dict)
+        else file_ref
+        for file_ref in file_refs
+    ]
 
 
 def build_generated_file_metadata(
