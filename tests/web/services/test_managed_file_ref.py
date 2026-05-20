@@ -1,3 +1,4 @@
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -223,6 +224,35 @@ class ZeroSizeStorage:
         return f"hash:{key}"
 
 
+class SameSizeStaleStorage:
+    def __init__(self):
+        self.stat_calls: list[str] = []
+        self.put_calls: list[tuple[Path, str]] = []
+
+    def stat(self, key):
+        self.stat_calls.append(key)
+        return StoredObject(
+            backend="s3",
+            key=key,
+            uri=f"s3://bucket/{key}",
+            size=len(b"new-data"),
+            checksum="remote-old-checksum",
+            etag="old-etag",
+        )
+
+    def put_file(self, source, key, content_type=None):
+        del content_type
+        self.put_calls.append((source, key))
+        return StoredObject(
+            backend="s3",
+            key=key,
+            uri=f"s3://bucket/{key}",
+            size=source.stat().st_size,
+            checksum=sha256(source.read_bytes()).hexdigest(),
+            etag="new-etag",
+        )
+
+
 def test_sync_to_durable_wraps_remote_write_failure(tmp_path):
     source = tmp_path / "uploads" / "sync-fails.txt"
     source.parent.mkdir()
@@ -286,3 +316,27 @@ def test_adopt_existing_object_refreshes_zero_size_remote_object_from_local_file
     assert storage.stat_calls == [record.storage_key]
     assert storage.put_calls == [(local_path, record.storage_key)]
     assert record.checksum == "refreshed"
+
+
+def test_adopt_existing_object_refreshes_same_size_checksum_mismatch_from_local_file(
+    tmp_path,
+):
+    local_path = tmp_path / "uploads" / "payload.txt"
+    local_path.parent.mkdir()
+    local_path.write_bytes(b"new-data")
+    record = _record(
+        local_path,
+        storage_backend="s3",
+        storage_key="users/7/uploads/file-123/payload.txt",
+        storage_status="legacy",
+    )
+
+    storage = SameSizeStaleStorage()
+    result = ManagedFileRef(record, storage=storage).adopt_existing_object(
+        record.storage_key
+    )
+
+    assert result == "uploaded"
+    assert storage.stat_calls == [record.storage_key]
+    assert storage.put_calls == [(local_path, record.storage_key)]
+    assert record.checksum == sha256(b"new-data").hexdigest()

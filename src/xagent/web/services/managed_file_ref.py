@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +50,14 @@ def iter_file_handle(handle: Any) -> Any:
             yield chunk
     finally:
         handle.close()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass
@@ -166,6 +175,7 @@ class ManagedFileRef:
                 f"Failed to inspect durable object metadata: {expected_key}"
             ) from exc
 
+        checksum = stored_object.checksum
         if local_exists:
             local_size = local_path.stat().st_size
             remote_size_raw = getattr(stored_object, "size", None)
@@ -176,14 +186,23 @@ class ManagedFileRef:
                     mime_type=getattr(self.record, "mime_type", None),
                 )
                 return "uploaded"
-            if not stored_object.checksum:
+            if not checksum:
+                try:
+                    checksum = self.storage.content_hash(expected_key)
+                except Exception:
+                    self.sync_to_durable(
+                        storage_key=expected_key,
+                        mime_type=getattr(self.record, "mime_type", None),
+                    )
+                    return "uploaded"
+
+            if checksum != _sha256_file(local_path):
                 self.sync_to_durable(
                     storage_key=expected_key,
                     mime_type=getattr(self.record, "mime_type", None),
                 )
                 return "uploaded"
 
-        checksum = stored_object.checksum
         if not checksum:
             try:
                 checksum = self.storage.content_hash(expected_key)

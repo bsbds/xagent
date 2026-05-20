@@ -1,3 +1,4 @@
+from hashlib import sha256
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -20,10 +21,12 @@ class FakeStorage:
         existing_keys: set[str] | None = None,
         backend: str = "s3",
         object_sizes: dict[str, int] | None = None,
+        object_checksums: dict[str, str] | None = None,
     ):
         self.backend = backend
         self.existing_keys = set(existing_keys or set())
         self.object_sizes = object_sizes or {}
+        self.object_checksums = object_checksums or {}
         self.list_calls: list[str] = []
         self.put_calls: list[tuple[Path, str]] = []
 
@@ -62,7 +65,7 @@ class FakeStorage:
             key=key,
             uri=f"s3://bucket/{key}",
             size=self.object_sizes.get(key, 0),
-            checksum=f"sha256:{key}",
+            checksum=self.object_checksums.get(key, f"sha256:{key}"),
             etag="etag",
         )
 
@@ -73,8 +76,9 @@ class HashAwareFakeStorage(FakeStorage):
         existing_keys: set[str] | None = None,
         *,
         missing_hash_keys: set[str] | None = None,
+        object_checksums: dict[str, str] | None = None,
     ):
-        super().__init__(existing_keys)
+        super().__init__(existing_keys, object_checksums=object_checksums)
         self.missing_hash_keys = set(missing_hash_keys or set())
         self.stat_calls: list[str] = []
         self.content_hash_calls: list[str] = []
@@ -93,7 +97,7 @@ class HashAwareFakeStorage(FakeStorage):
             key=key,
             uri=f"s3://bucket/{key}",
             size=self.object_sizes.get(key, 0),
-            checksum=f"sha256:{key}",
+            checksum=self.object_checksums.get(key, f"sha256:{key}"),
             etag="etag",
         )
 
@@ -101,7 +105,7 @@ class HashAwareFakeStorage(FakeStorage):
         self.content_hash_calls.append(key)
         if key in self.missing_hash_keys:
             raise RuntimeError("missing content hash")
-        return f"sha256:{key}"
+        return self.object_checksums.get(key, f"sha256:{key}")
 
 
 class FailingOnceStorage(FakeStorage):
@@ -228,7 +232,8 @@ def test_sync_revalidates_available_row_without_checksum(tmp_path):
         checksum=None,
     )
     db.commit()
-    storage = HashAwareFakeStorage({key})
+    local_checksum = sha256(local_path.read_bytes()).hexdigest()
+    storage = HashAwareFakeStorage({key}, object_checksums={key: local_checksum})
     storage.object_sizes[key] = local_path.stat().st_size
 
     result = sync_registered_files_to_durable_storage(db, storage=storage)
@@ -238,7 +243,7 @@ def test_sync_revalidates_available_row_without_checksum(tmp_path):
     assert result.already_present == 1
     assert result.uploaded == 0
     assert storage.stat_calls == [key]
-    assert record.checksum == f"sha256:{key}"
+    assert record.checksum == local_checksum
     assert record.storage_status == "available"
 
 
@@ -260,7 +265,11 @@ def test_sync_refreshes_metadata_when_remote_key_present_but_record_incomplete(
         storage_status="legacy",
     )
     db.commit()
-    storage = FakeStorage({key}, object_sizes={key: local_path.stat().st_size})
+    storage = FakeStorage(
+        {key},
+        object_sizes={key: local_path.stat().st_size},
+        object_checksums={key: sha256(local_path.read_bytes()).hexdigest()},
+    )
 
     result = sync_registered_files_to_durable_storage(db, storage=storage)
 
@@ -391,8 +400,11 @@ def test_sync_continues_when_remote_metadata_lookup_fails(tmp_path):
         storage_status="legacy",
     )
     db.commit()
+    second_checksum = sha256(second_path.read_bytes()).hexdigest()
     storage = HashAwareFakeStorage(
-        {first_key, second_key}, missing_hash_keys={first_key}
+        {first_key, second_key},
+        missing_hash_keys={first_key},
+        object_checksums={second_key: second_checksum},
     )
     storage.object_sizes[second_key] = second_path.stat().st_size
 
@@ -408,7 +420,7 @@ def test_sync_continues_when_remote_metadata_lookup_fails(tmp_path):
     assert first_record.storage_status == "available"
     assert first_record.checksum == "checksum"
     assert second_record.storage_status == "available"
-    assert second_record.checksum == f"sha256:{second_key}"
+    assert second_record.checksum == second_checksum
 
 
 def test_sync_reuploads_available_row_when_remote_key_is_missing(tmp_path):
