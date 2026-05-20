@@ -28,6 +28,13 @@ vi.mock('@/components/file/excel-preview-renderer', () => ({
   ),
 }))
 
+vi.mock('@/contexts/i18n-context', () => ({
+  useI18n: () => ({
+    t: (key: string) =>
+      key === 'files.previewDialog.errors.loadFailed' ? 'Localized load failure' : key,
+  }),
+}))
+
 import { InlineFilePreview } from './inline-file-preview'
 
 describe('InlineFilePreview', () => {
@@ -124,5 +131,18 @@ describe('InlineFilePreview', () => {
     )
 
     expect(await screen.findByTestId('excel-preview')).toHaveTextContent('WFk=')
+  })
+
+  it('uses localized text for preview load failures', async () => {
+    apiRequestMock.mockResolvedValue({ ok: false })
+
+    render(
+      <InlineFilePreview
+        source={{ type: 'document', fileId: 'doc-file-id', filename: 'report.docx' }}
+      />
+    )
+
+    expect(await screen.findByText('Localized load failure')).toBeInTheDocument()
+    expect(screen.queryByText('Failed to load preview.')).not.toBeInTheDocument()
   })
 })

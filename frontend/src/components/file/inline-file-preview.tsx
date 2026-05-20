@@ -3,6 +3,7 @@ import { FileText, Loader2 } from 'lucide-react'
 
 import { DocxPreviewRenderer } from '@/components/file/docx-preview-renderer'
 import { ExcelPreviewRenderer } from '@/components/file/excel-preview-renderer'
+import { useI18n } from '@/contexts/i18n-context'
 import { apiRequest } from '@/lib/api-wrapper'
 import { cn, getApiUrl } from '@/lib/utils'
 import {
@@ -100,10 +101,12 @@ function InlineOfficeContent({
   kind,
   previewUrl,
   filename,
+  loadErrorText,
 }: {
   kind: 'presentation' | 'document' | 'spreadsheet'
   previewUrl: string
   filename: string
+  loadErrorText: string
 }) {
   const [base64Content, setBase64Content] = useState('')
   const [error, setError] = useState(false)
@@ -156,7 +159,7 @@ function InlineOfficeContent({
   }
 
   if (error) {
-    return <div className="p-3 text-xs text-muted-foreground">Failed to load preview.</div>
+    return <div className="p-3 text-xs text-muted-foreground">{loadErrorText}</div>
   }
 
   if (!base64Content) {
@@ -180,6 +183,7 @@ export function InlineFilePreview({
   imageClassName,
   onFileClick,
 }: InlineFilePreviewProps) {
+  const { t } = useI18n()
   const apiUrl = getApiUrl()
   const kind = getInlineFilePreviewKind(source)
   const previewUrl = getInlineFilePreviewUrl(source, apiUrl)
@@ -243,7 +247,12 @@ export function InlineFilePreview({
         </a>
       </div>
       <div className="h-[360px] overflow-auto">
-        <InlineOfficeContent kind={kind} previewUrl={previewUrl} filename={filename} />
+        <InlineOfficeContent
+          kind={kind}
+          previewUrl={previewUrl}
+          filename={filename}
+          loadErrorText={t('files.previewDialog.errors.loadFailed')}
+        />
       </div>
     </div>
   )
