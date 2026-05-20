@@ -79,11 +79,11 @@ export const getInlineFilePreviewUrl = (
   source: InlineFilePreviewSource,
   apiUrl: string
 ): string => {
+  if (source.fileId) return getFilePublicPreviewUrl(source.fileId, apiUrl)
   if (source.previewUrl) {
     if (/^https?:\/\//.test(source.previewUrl)) return source.previewUrl
     return `${apiUrl}${source.previewUrl.startsWith('/') ? '' : '/'}${source.previewUrl}`
   }
-  if (source.fileId) return getFilePublicPreviewUrl(source.fileId, apiUrl)
   return ''
 }
 

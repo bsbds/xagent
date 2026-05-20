@@ -216,6 +216,34 @@ describe('InlineFilePreview', () => {
     expect(screen.queryByTestId('docx-preview')).not.toBeInTheDocument()
   })
 
+  it('uses file-id previews when a source also has an external preview URL', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([65, 66]).buffer,
+    })
+
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'document',
+          fileId: 'doc-file-id',
+          previewUrl: 'https://cdn.example.com/report.docx',
+          filename: 'report.docx',
+        }}
+      />
+    )
+
+    expect(await screen.findByTestId('docx-preview')).toBeInTheDocument()
+    expect(apiRequestMock).toHaveBeenCalledWith(
+      'http://api.local/api/files/public/preview/doc-file-id',
+      expect.objectContaining({ cache: 'no-cache' })
+    )
+    expect(apiRequestMock).not.toHaveBeenCalledWith(
+      'https://cdn.example.com/report.docx',
+      expect.anything()
+    )
+  })
+
   it('does not automatically render cross-origin image preview URLs', () => {
     render(
       <InlineFilePreview

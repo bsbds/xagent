@@ -48,6 +48,19 @@ describe('inline-file-preview-utils', () => {
     ).toBe('https://cdn.example.com/report.docx')
   })
 
+  it('prefers file-id preview URLs over external preview URLs', () => {
+    expect(
+      getInlineFilePreviewUrl(
+        {
+          fileId: 'doc-file-id',
+          previewUrl: 'https://cdn.example.com/report.docx',
+          filename: 'report.docx',
+        },
+        'http://api.local'
+      )
+    ).toBe('http://api.local/api/files/public/preview/doc-file-id')
+  })
+
   it('classifies file-id and API preview URLs as trusted', () => {
     expect(
       getPreviewUrlTrust(
