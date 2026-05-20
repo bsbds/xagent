@@ -7,6 +7,7 @@ from xagent.core.file_storage.factory import get_file_storage
 from xagent.core.file_storage.types import StoredObject
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.services.managed_file_ref import (
+    DurableObjectIntegrityError,
     DurableStorageOperationError,
     ManagedFileRef,
 )
@@ -52,6 +53,7 @@ def test_ensure_local_restores_missing_file_from_durable_storage(monkeypatch, tm
         storage_key=stored.key,
         storage_uri=stored.uri,
         storage_status="available",
+        checksum=stored.checksum,
     )
 
     restored = ManagedFileRef(record).ensure_local()
@@ -73,6 +75,7 @@ def test_materialize_uses_temp_dir_when_original_path_is_missing(monkeypatch, tm
         storage_key=stored.key,
         storage_uri=stored.uri,
         storage_status="available",
+        checksum=stored.checksum,
     )
 
     materialized = ManagedFileRef(record).materialize()
@@ -83,7 +86,85 @@ def test_materialize_uses_temp_dir_when_original_path_is_missing(monkeypatch, tm
     assert not local_path.exists()
 
 
-def test_open_read_streams_from_durable_when_available(monkeypatch, tmp_path):
+def test_ensure_local_rejects_restored_checksum_mismatch(monkeypatch, tmp_path):
+    _configure_storage(monkeypatch, tmp_path)
+    storage = get_file_storage()
+    stored = storage.put_bytes(
+        b"wrong durable content", "users/7/uploads/file-123/bad.txt"
+    )
+    local_path = tmp_path / "uploads" / "bad.txt"
+    record = _record(
+        local_path,
+        storage_backend=stored.backend,
+        storage_key=stored.key,
+        storage_uri=stored.uri,
+        storage_status="available",
+        checksum=sha256(b"expected content").hexdigest(),
+    )
+
+    with pytest.raises(DurableObjectIntegrityError, match="re-upload"):
+        ManagedFileRef(record).ensure_local()
+
+    assert not local_path.exists()
+    assert not list(local_path.parent.glob(f".{local_path.name}.*.tmp"))
+
+
+def test_materialize_rejects_checksum_mismatch_and_discards_cache(
+    monkeypatch, tmp_path
+):
+    _configure_storage(monkeypatch, tmp_path)
+    storage = get_file_storage()
+    stored = storage.put_bytes(
+        b"wrong preview content", "users/7/uploads/file-123/bad-preview.txt"
+    )
+    local_path = tmp_path / "uploads" / "bad-preview.txt"
+    record = _record(
+        local_path,
+        storage_backend=stored.backend,
+        storage_key=stored.key,
+        storage_uri=stored.uri,
+        storage_status="available",
+        checksum=sha256(b"expected preview content").hexdigest(),
+    )
+
+    with pytest.raises(DurableObjectIntegrityError, match="re-upload"):
+        ManagedFileRef(record).materialize()
+
+    materialized_files = [
+        path for path in (tmp_path / "materialized").rglob("*") if path.is_file()
+    ]
+    assert materialized_files == []
+    assert not local_path.exists()
+
+
+def test_materialize_retries_once_after_discarding_bad_cache(monkeypatch, tmp_path):
+    _configure_storage(monkeypatch, tmp_path)
+    storage = get_file_storage()
+    stored = storage.put_bytes(
+        b"correct preview content", "users/7/uploads/file-123/cached-preview.txt"
+    )
+    local_path = tmp_path / "uploads" / "cached-preview.txt"
+    record = _record(
+        local_path,
+        storage_backend=stored.backend,
+        storage_key=stored.key,
+        storage_uri=stored.uri,
+        storage_status="available",
+        checksum=stored.checksum,
+    )
+    cached_path = storage.materialize(stored.key, "cached-preview.txt")
+    cached_path.write_bytes(b"stale cached bytes")
+
+    materialized = ManagedFileRef(record).materialize()
+
+    assert materialized == cached_path
+    assert materialized.read_bytes() == b"correct preview content"
+    assert not local_path.exists()
+
+
+def test_open_read_restores_and_validates_durable_when_local_missing(
+    monkeypatch, tmp_path
+):
     _configure_storage(monkeypatch, tmp_path)
     storage = get_file_storage()
     stored = storage.put_bytes(b"stream me", "users/7/uploads/file-123/stream.txt")
@@ -94,11 +175,12 @@ def test_open_read_streams_from_durable_when_available(monkeypatch, tmp_path):
         storage_key=stored.key,
         storage_uri=stored.uri,
         storage_status="available",
+        checksum=stored.checksum,
     )
 
     with ManagedFileRef(record).open_read() as handle:
         assert handle.read() == b"stream me"
-    assert not local_path.exists()
+    assert local_path.read_bytes() == b"stream me"
 
 
 def test_open_read_prefers_existing_local_file_over_durable(monkeypatch, tmp_path):

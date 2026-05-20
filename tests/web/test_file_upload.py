@@ -145,6 +145,16 @@ def temp_uploads_dir(monkeypatch):
         yield temp_path
 
 
+def _corrupt_durable_copy_and_remove_local(
+    object_root: Path, uploads_dir: Path, filename: str
+) -> None:
+    object_file = next(path for path in object_root.rglob(filename) if path.is_file())
+    object_file.write_bytes(b"corrupted durable content")
+    for path in uploads_dir.rglob(filename):
+        if path.is_file():
+            path.unlink()
+
+
 class TestFileUpload:
     """Test file upload functionality"""
 
@@ -292,6 +302,40 @@ class TestFileUpload:
         assert download.status_code == 503
         assert "durable storage" in download.json()["detail"].lower()
 
+    def test_download_checksum_mismatch_asks_user_to_reupload(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch, tmp_path
+    ):
+        object_root = tmp_path / "objects"
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+        get_file_storage.cache_clear()
+
+        upload = client.post(
+            "/api/files/upload",
+            files={
+                "file": (
+                    "integrity-download.txt",
+                    b"expected download content",
+                    "text/plain",
+                )
+            },
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+        _corrupt_durable_copy_and_remove_local(
+            object_root, temp_uploads_dir, "integrity-download.txt"
+        )
+
+        download = client.get(
+            f"/api/files/download/{file_id}",
+            headers=auth_headers,
+        )
+
+        assert download.status_code == 409
+        assert "re-upload" in download.json()["detail"]
+        assert not list(temp_uploads_dir.rglob("integrity-download.txt"))
+
     def test_download_registered_file_rejects_local_path_outside_uploads(
         self, client, test_db, tmp_path, auth_headers
     ):
@@ -415,6 +459,69 @@ class TestFileUpload:
 
         assert preview.status_code == 503
         assert "durable storage" in preview.json()["detail"].lower()
+
+    def test_preview_checksum_mismatch_asks_user_to_reupload(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch, tmp_path
+    ):
+        object_root = tmp_path / "objects"
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+        get_file_storage.cache_clear()
+
+        upload = client.post(
+            "/api/files/upload",
+            files={
+                "file": (
+                    "integrity-preview.txt",
+                    b"expected preview content",
+                    "text/plain",
+                )
+            },
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+        _corrupt_durable_copy_and_remove_local(
+            object_root, temp_uploads_dir, "integrity-preview.txt"
+        )
+
+        preview = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+        )
+
+        assert preview.status_code == 409
+        assert "re-upload" in preview.json()["detail"]
+
+    def test_public_preview_checksum_mismatch_asks_user_to_reupload(
+        self, client, temp_uploads_dir, monkeypatch, tmp_path, auth_headers
+    ):
+        object_root = tmp_path / "objects"
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+        get_file_storage.cache_clear()
+
+        upload = client.post(
+            "/api/files/upload",
+            files={
+                "file": (
+                    "integrity-public.txt",
+                    b"expected public content",
+                    "text/plain",
+                )
+            },
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+        _corrupt_durable_copy_and_remove_local(
+            object_root, temp_uploads_dir, "integrity-public.txt"
+        )
+
+        preview = client.get(f"/api/files/public/preview/{file_id}")
+
+        assert preview.status_code == 409
+        assert "re-upload" in preview.json()["detail"]
 
     def test_upload_python_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import logging
 import mimetypes
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 from ...core.file_storage import FsspecFileStorage, StoredObject, get_file_storage
 from ..models.uploaded_file import UploadedFile
+
+logger = logging.getLogger(__name__)
+FILE_INTEGRITY_REUPLOAD_MESSAGE = (
+    "File integrity verification failed. Please re-upload this file."
+)
 
 
 class DurableObjectMissingError(FileNotFoundError):
@@ -16,6 +25,10 @@ class DurableObjectMissingError(FileNotFoundError):
 
 class DurableStorageOperationError(RuntimeError):
     """Raised when durable object storage is unavailable for an operation."""
+
+
+class DurableObjectIntegrityError(DurableStorageOperationError):
+    """Raised when restored durable bytes do not match the DB checksum."""
 
 
 def safe_storage_filename(filename: str) -> str:
@@ -60,6 +73,23 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _checksum_matches(expected_checksum: str, actual_sha256_hex: str) -> bool:
+    normalized_expected = expected_checksum.strip()
+    if normalized_expected.lower() == actual_sha256_hex:
+        return True
+
+    if normalized_expected.lower().startswith("sha256:"):
+        prefixed_value = normalized_expected.split(":", 1)[1]
+        if prefixed_value.lower() == actual_sha256_hex:
+            return True
+
+    try:
+        decoded = base64.b64decode(normalized_expected, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return len(decoded) == 32 and decoded.hex() == actual_sha256_hex
+
+
 @dataclass
 class ManagedFileRef:
     """Registered file handle with local-first durable fallback semantics."""
@@ -91,9 +121,25 @@ class ManagedFileRef:
         if not self.has_durable_object:
             raise DurableObjectMissingError(path)
 
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        temp_path = Path(temp_file.name)
+        temp_file.close()
         try:
-            return self.storage.copy_to_path(self.storage_key, path)
+            self.storage.copy_to_path(self.storage_key, temp_path)
+            self._verify_content_checksum(temp_path)
+            temp_path.replace(path)
+            return path
+        except DurableObjectIntegrityError:
+            temp_path.unlink(missing_ok=True)
+            raise
         except Exception as exc:
+            temp_path.unlink(missing_ok=True)
             raise DurableStorageOperationError(
                 f"Failed to restore durable object: {self.storage_key}"
             ) from exc
@@ -106,27 +152,32 @@ class ManagedFileRef:
         if not self.has_durable_object:
             raise DurableObjectMissingError(path)
 
-        try:
-            return self.storage.materialize(self.storage_key, self.filename)
-        except Exception as exc:
-            raise DurableStorageOperationError(
-                f"Failed to materialize durable object: {self.storage_key}"
-            ) from exc
+        last_integrity_error: DurableObjectIntegrityError | None = None
+        for _attempt in range(2):
+            materialized_path: Path | None = None
+            try:
+                materialized_path = self.storage.materialize(
+                    self.storage_key, self.filename
+                )
+                self._verify_content_checksum(materialized_path)
+                return materialized_path
+            except DurableObjectIntegrityError as exc:
+                last_integrity_error = exc
+                if materialized_path is not None:
+                    materialized_path.unlink(missing_ok=True)
+            except Exception as exc:
+                raise DurableStorageOperationError(
+                    f"Failed to materialize durable object: {self.storage_key}"
+                ) from exc
+
+        if last_integrity_error is not None:
+            raise last_integrity_error
+        raise DurableStorageOperationError(
+            f"Failed to materialize durable object: {self.storage_key}"
+        )
 
     def open_read(self) -> BinaryIO:
-        path = self.local_path
-        if path.exists() and path.is_file():
-            return path.open("rb")
-
-        if not self.has_durable_object:
-            raise DurableObjectMissingError(path)
-
-        try:
-            return self.storage.open_read(self.storage_key)
-        except Exception as exc:
-            raise DurableStorageOperationError(
-                f"Failed to open durable object: {self.storage_key}"
-            ) from exc
+        return self.ensure_local().open("rb")
 
     def sync_to_durable(
         self,
@@ -238,6 +289,25 @@ class ManagedFileRef:
     def delete_durable(self) -> None:
         if self.has_durable_object:
             self.storage.delete(self.storage_key)
+
+    def _verify_content_checksum(self, path: Path) -> None:
+        expected_checksum = getattr(self.record, "checksum", None)
+        if not expected_checksum:
+            return
+
+        actual_checksum = _sha256_file(path)
+        if _checksum_matches(str(expected_checksum), actual_checksum):
+            return
+
+        logger.error(
+            "Durable object integrity check failed: file_id=%s storage_key=%s "
+            "expected_checksum=%s actual_checksum=%s",
+            getattr(self.record, "file_id", None),
+            self.storage_key,
+            expected_checksum,
+            actual_checksum,
+        )
+        raise DurableObjectIntegrityError(FILE_INTEGRITY_REUPLOAD_MESSAGE)
 
 
 def managed_file_from_record(file_record: UploadedFile) -> ManagedFileRef:

@@ -30,6 +30,8 @@ from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.kb_file_service import aggregate_uploaded_file_statuses
 from ..services.managed_file_ref import (
+    FILE_INTEGRITY_REUPLOAD_MESSAGE,
+    DurableObjectIntegrityError,
     DurableObjectMissingError,
     DurableStorageOperationError,
     ManagedFileRef,
@@ -62,6 +64,13 @@ def _durable_storage_unavailable() -> HTTPException:
     return HTTPException(
         status_code=503,
         detail="Durable storage is temporarily unavailable",
+    )
+
+
+def _file_integrity_failed() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=FILE_INTEGRITY_REUPLOAD_MESSAGE,
     )
 
 
@@ -839,6 +848,8 @@ async def download_file(
                         "Content-Disposition": f'{content_disposition}; filename="{file_name}"'
                     },
                 )
+            except DurableObjectIntegrityError as exc:
+                raise _file_integrity_failed() from exc
             except DurableStorageOperationError as exc:
                 raise _durable_storage_unavailable() from exc
     else:
@@ -891,6 +902,8 @@ async def preview_file(
         if file_ref.has_durable_object:
             try:
                 materialized_path = file_ref.materialize()
+            except DurableObjectIntegrityError as exc:
+                raise _file_integrity_failed() from exc
             except DurableStorageOperationError as exc:
                 raise _durable_storage_unavailable() from exc
             except DurableObjectMissingError:
@@ -966,6 +979,8 @@ async def public_preview_file(
         if file_ref.has_durable_object and not relative_path:
             try:
                 target_path = file_ref.materialize()
+            except DurableObjectIntegrityError as exc:
+                raise _file_integrity_failed() from exc
             except DurableStorageOperationError as exc:
                 raise _durable_storage_unavailable() from exc
             except DurableObjectMissingError:
@@ -1015,6 +1030,8 @@ async def public_preview_file(
             asset_ref = ManagedFileRef(asset_record)
             try:
                 target_path = asset_ref.ensure_local()
+            except DurableObjectIntegrityError as exc:
+                raise _file_integrity_failed() from exc
             except DurableStorageOperationError as exc:
                 raise _durable_storage_unavailable() from exc
             except DurableObjectMissingError:
