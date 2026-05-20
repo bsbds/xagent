@@ -17,6 +17,7 @@ import { PlusCircle, MessageSquare, Upload, Download, Settings2, Check, Zap, Boo
 import { ConnectMcpDialog } from "@/components/mcp/connect-mcp-dialog"
 import { useI18n } from "@/contexts/i18n-context"
 import { useAuth } from "@/contexts/auth-context"
+import { useApp } from "@/contexts/app-context-chat"
 import { useMcpApps } from "@/contexts/mcp-apps-context"
 import { FileAttachment } from "@/components/file/file-attachment"
 import { createFileChipHTML } from "@/components/chat/FileChip"
@@ -42,6 +43,7 @@ import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { getBrandingFromEnv } from "@/lib/branding"
 import { extractBuildPreviewResponse } from "@/lib/chat-response"
+import { BuildFilePreviewSheet } from "./build-file-preview-sheet"
 
 interface KnowledgeBase {
   name: string
@@ -112,6 +114,7 @@ interface TemplateRequirements {
 
 export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const MAX_INSTRUCTIONS_LENGTH = 8192;
+  const { state } = useApp()
   const { t, locale } = useI18n()
   const { token } = useAuth()
   const { apps: officialApps, getAppIcon } = useMcpApps()
@@ -2301,6 +2304,13 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         }}
       />
 
+      {state.filePreview.isOpen && (
+        <div className="absolute inset-y-0 right-0 z-50 w-full max-w-[720px] p-4 pointer-events-none">
+          <div className="h-full pointer-events-auto">
+            <BuildFilePreviewSheet />
+          </div>
+        </div>
+      )}
       <ConnectMcpDialog
         open={isConnectMcpOpen}
         onOpenChange={setIsConnectMcpOpen}
