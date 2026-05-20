@@ -193,4 +193,41 @@ describe('InlineFilePreview', () => {
     fireEvent.click(link)
     expect(handleFileClick).toHaveBeenCalledWith('archive-file-id', 'archive.zip')
   })
+
+  it('does not automatically load cross-origin document preview URLs', () => {
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'document',
+          previewUrl: 'https://cdn.example.com/report.docx',
+          filename: 'report.docx',
+        }}
+      />
+    )
+
+    expect(screen.getByText('cdn.example.com')).toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: 'report.docx cdn.example.com Localized open' })
+    ).toHaveAttribute(
+      'href',
+      'https://cdn.example.com/report.docx'
+    )
+    expect(apiRequestMock).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('docx-preview')).not.toBeInTheDocument()
+  })
+
+  it('does not automatically render cross-origin image preview URLs', () => {
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'image',
+          previewUrl: 'https://cdn.example.com/plot.png',
+          filename: 'plot.png',
+        }}
+      />
+    )
+
+    expect(screen.getByText('cdn.example.com')).toBeInTheDocument()
+    expect(screen.queryByAltText('plot.png')).not.toBeInTheDocument()
+  })
 })

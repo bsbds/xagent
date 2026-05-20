@@ -17,6 +17,12 @@ export type InlineFilePreviewSource = {
   type?: string
 }
 
+export type PreviewUrlTrust = {
+  domain?: string
+  isExternal: boolean
+  isTrusted: boolean
+}
+
 const PREVIEWABLE_KINDS = new Set<PreviewableInlineFileKind>([
   'image',
   'presentation',
@@ -79,6 +85,41 @@ export const getInlineFilePreviewUrl = (
   }
   if (source.fileId) return getFilePublicPreviewUrl(source.fileId, apiUrl)
   return ''
+}
+
+export const getPreviewUrlTrust = (
+  source: InlineFilePreviewSource,
+  apiUrl: string
+): PreviewUrlTrust => {
+  if (!source.previewUrl || source.fileId) {
+    return { isExternal: false, isTrusted: true }
+  }
+
+  if (source.previewUrl.startsWith('/api/files/')) {
+    return { isExternal: false, isTrusted: true }
+  }
+
+  let previewUrl: URL
+  let apiOrigin: string
+  try {
+    previewUrl = new URL(source.previewUrl, apiUrl)
+    apiOrigin = new URL(apiUrl).origin
+  } catch {
+    return { isExternal: true, isTrusted: false }
+  }
+
+  if (
+    previewUrl.origin === apiOrigin &&
+    previewUrl.pathname.startsWith('/api/files/')
+  ) {
+    return { isExternal: false, isTrusted: true }
+  }
+
+  return {
+    domain: previewUrl.hostname,
+    isExternal: true,
+    isTrusted: false,
+  }
 }
 
 export const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {

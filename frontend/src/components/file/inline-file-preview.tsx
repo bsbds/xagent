@@ -10,6 +10,7 @@ import {
   arrayBufferToBase64,
   getInlineFilePreviewKind,
   getInlineFilePreviewUrl,
+  getPreviewUrlTrust,
   isPreviewableInlineFileKind,
   type InlineFilePreviewSource,
   UUID_PATTERN,
@@ -178,6 +179,37 @@ function InlineOfficeContent({
   return <ExcelPreviewRenderer base64Content={base64Content} />
 }
 
+function ExternalPreviewPlaceholder({
+  className,
+  domain,
+  filename,
+  openLabel,
+  previewUrl,
+}: {
+  className?: string
+  domain?: string
+  filename: string
+  openLabel: string
+  previewUrl: string
+}) {
+  return (
+    <a
+      href={previewUrl}
+      target="_blank"
+      rel="noreferrer noopener"
+      className={cn(
+        'flex items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-foreground hover:bg-muted/40',
+        className
+      )}
+    >
+      <FileText className="h-4 w-4 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate">{filename}</span>
+      {domain ? <span className="shrink-0 text-muted-foreground">{domain}</span> : null}
+      <span className="shrink-0 text-foreground">{openLabel}</span>
+    </a>
+  )
+}
+
 export function InlineFilePreview({
   source,
   className,
@@ -188,6 +220,7 @@ export function InlineFilePreview({
   const apiUrl = getApiUrl()
   const kind = getInlineFilePreviewKind(source)
   const previewUrl = getInlineFilePreviewUrl(source, apiUrl)
+  const previewUrlTrust = getPreviewUrlTrust(source, apiUrl)
   const filename = fileNameFromSource(source)
   const canOpenFilePreview = Boolean(onFileClick && source.fileId)
 
@@ -198,6 +231,18 @@ export function InlineFilePreview({
   }
 
   if (!previewUrl) return null
+
+  if (!previewUrlTrust.isTrusted) {
+    return (
+      <ExternalPreviewPlaceholder
+        className={className}
+        domain={previewUrlTrust.domain}
+        filename={filename}
+        openLabel={t('files.previewDialog.buttons.open')}
+        previewUrl={previewUrl}
+      />
+    )
+  }
 
   if (kind === 'image') {
     return (
