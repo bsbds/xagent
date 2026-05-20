@@ -18,6 +18,7 @@ from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from xagent.web.models.database import Base, get_db
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
+from xagent.web.services.preview_file_registry import preview_file_registry
 
 
 @pytest.fixture(scope="function")
@@ -573,6 +574,59 @@ class TestFileUpload:
             )
 
         assert response.status_code == 200
+
+    def test_preview_upload_is_memory_only_and_url_compatible(
+        self, client, test_db, sample_files, temp_uploads_dir, auth_headers
+    ):
+        """Preview uploads resolve through existing file URLs without DB storage."""
+        files, _ = sample_files
+        session_id = "preview-test-session"
+
+        with open(files["test.txt"], "rb") as f:
+            response = client.post(
+                "/api/files/upload",
+                files={"file": ("test.txt", f, "text/plain")},
+                data={
+                    "task_type": "build_preview",
+                    "storage_mode": "preview",
+                    "preview_session_id": session_id,
+                },
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        file_id = payload["file_id"]
+
+        _, test_app = test_db
+        override_get_db = test_app.dependency_overrides[get_db]
+        db = next(override_get_db())
+        try:
+            assert (
+                db.query(UploadedFile).filter(UploadedFile.file_id == file_id).first()
+                is None
+            )
+        finally:
+            db.close()
+
+        preview_response = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+        )
+        assert preview_response.status_code == 200
+        assert preview_response.text == "This is a test text file content."
+
+        public_response = client.get(f"/api/files/public/preview/{file_id}")
+        assert public_response.status_code == 200
+        assert public_response.text == "This is a test text file content."
+
+        preview_file_registry.clear_session(session_id, test_db[0].id)
+        missing_response = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+        )
+        assert missing_response.status_code == 404
 
     def test_upload_png_file_success(
         self, client, test_db, temp_uploads_dir, auth_headers

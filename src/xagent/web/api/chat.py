@@ -47,6 +47,7 @@ from ..services.hot_path_cache import (
 from ..services.llm_utils import resolve_llms_from_names
 from ..services.managed_file_ref import ensure_uploaded_file_local_path
 from ..services.model_service import _get_visible_user_ids
+from ..services.preview_file_registry import preview_file_registry
 from ..services.task_execution_context_service import (
     load_task_execution_recovery_state,
 )
@@ -768,6 +769,30 @@ class AgentServiceManager:
             "has_agent_builder_config": has_agent_builder_config,
         }
 
+    def _load_task_inline_agent_config(self, task: Task) -> Optional[dict[str, Any]]:
+        if not isinstance(task.agent_config, dict):
+            return None
+
+        inline_config = task.agent_config
+        if not any(
+            key in inline_config
+            for key in ("instructions", "knowledge_bases", "skills", "tool_categories")
+        ):
+            return None
+
+        return {
+            "llms": (None, None, None, None),
+            "execution_mode": getattr(task, "execution_mode", None) or "balanced",
+            "instructions": inline_config.get("instructions"),
+            "skills": inline_config.get("skills") or [],
+            "knowledge_bases": inline_config.get("knowledge_bases") or [],
+            "tool_categories": inline_config.get("tool_categories") or [],
+            "memory_similarity_threshold": inline_config.get(
+                "memory_similarity_threshold"
+            ),
+            "preview_agent_id": inline_config.get("preview_agent_id"),
+        }
+
     async def _build_tools_for_task(
         self,
         *,
@@ -793,6 +818,24 @@ class AgentServiceManager:
                 excluded_agent_id = int(current_agent.id)
                 logger.info(
                     f"Task {task_id} is associated with published agent "
+                    f"{current_agent.id} ({current_agent.name}), will exclude from "
+                    "agent tools"
+                )
+        elif agent_config and agent_config.get("preview_agent_id"):
+            from ..models.agent import AgentStatus
+
+            current_agent = (
+                db.query(Agent)
+                .filter(
+                    Agent.id == agent_config["preview_agent_id"],
+                    Agent.user_id == task.user_id,
+                )
+                .first()
+            )
+            if current_agent and current_agent.status == AgentStatus.PUBLISHED:
+                excluded_agent_id = int(current_agent.id)
+                logger.info(
+                    f"Preview task {task_id} is for published agent "
                     f"{current_agent.id} ({current_agent.name}), will exclude from "
                     "agent tools"
                 )
@@ -1042,6 +1085,26 @@ class AgentServiceManager:
                         excluded_agent_id = int(current_agent.id)
                         logger.info(
                             f"Task {task_id} is associated with published agent {current_agent.id} ({current_agent.name}), will exclude from agent tools"
+                        )
+                elif agent_config and agent_config.get("preview_agent_id"):
+                    from ..models.agent import AgentStatus
+
+                    if task is None:
+                        raise ValueError(
+                            f"Task {task_id} missing while resolving preview agent"
+                        )
+                    current_agent = (
+                        db.query(Agent)
+                        .filter(
+                            Agent.id == agent_config["preview_agent_id"],
+                            Agent.user_id == task.user_id,
+                        )
+                        .first()
+                    )
+                    if current_agent and current_agent.status == AgentStatus.PUBLISHED:
+                        excluded_agent_id = int(current_agent.id)
+                        logger.info(
+                            f"Preview task {task_id} is for published agent {current_agent.id} ({current_agent.name}), will exclude from agent tools"
                         )
 
                 workspace_owner_id = (
@@ -1736,6 +1799,17 @@ async def create_task(
             file_paths = []
 
             for file_id in request.files:
+                if request.is_preview:
+                    preview_file = preview_file_registry.get(file_id)
+                    if preview_file is not None and preview_file.owner_user_id == int(
+                        user.id
+                    ):
+                        selected_file_ids.append(str(file_id))
+                        file_info_list.append(
+                            f"File: {preview_file.filename} (Preview file ID: {file_id})"
+                        )
+                        continue
+
                 uploaded_file = (
                     db.query(UploadedFile)
                     .filter(
@@ -2024,18 +2098,36 @@ async def create_task(
         if selected_file_ids:
             from ..models.uploaded_file import UploadedFile
 
-            (
-                db.query(UploadedFile)
-                .filter(
-                    UploadedFile.file_id.in_(selected_file_ids),
-                    UploadedFile.user_id == int(user.id),
-                    UploadedFile.task_id.is_(None),
+            preview_file_ids = [
+                file_id
+                for file_id in selected_file_ids
+                if preview_file_registry.get(file_id) is not None
+            ]
+            persistent_file_ids = [
+                file_id
+                for file_id in selected_file_ids
+                if preview_file_registry.get(file_id) is None
+            ]
+
+            if persistent_file_ids:
+                (
+                    db.query(UploadedFile)
+                    .filter(
+                        UploadedFile.file_id.in_(persistent_file_ids),
+                        UploadedFile.user_id == int(user.id),
+                        UploadedFile.task_id.is_(None),
+                    )
+                    .update(
+                        {UploadedFile.task_id: int(task.id)},
+                        synchronize_session=False,
+                    )
                 )
-                .update(
-                    {UploadedFile.task_id: int(task.id)},
-                    synchronize_session=False,
+            if preview_file_ids:
+                preview_file_registry.bind_to_task(
+                    preview_file_ids,
+                    int(task.id),
+                    int(user.id),
                 )
-            )
 
         db.commit()
         db.refresh(task)

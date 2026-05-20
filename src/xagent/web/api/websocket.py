@@ -52,6 +52,7 @@ from ..services.managed_file_ref import (
     build_task_output_storage_key,
     ensure_uploaded_file_local_path,
 )
+from ..services.preview_file_registry import preview_file_registry
 from ..services.task_lease_service import (
     acquire_task_lease,
     mark_task_paused_if_stale,
@@ -1773,9 +1774,14 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, task_id: int) -> None:
         await websocket.accept()
+        self.register_connection(websocket, task_id)
+
+    def register_connection(self, websocket: WebSocket, task_id: int) -> None:
+        """Register an already-accepted websocket for task broadcasts."""
         if task_id not in self.active_connections:
             self.active_connections[task_id] = []
-        self.active_connections[task_id].append(websocket)
+        if websocket not in self.active_connections[task_id]:
+            self.active_connections[task_id].append(websocket)
 
     def disconnect(self, websocket: WebSocket, task_id: int) -> None:
         if task_id in self.active_connections:
@@ -1861,6 +1867,55 @@ async def handle_file_upload_for_task(
             file_id = file_info.get("file_id")
             if not file_id:
                 logger.warning(f"No file_id provided in file info: {file_info}")
+                continue
+
+            preview_file = preview_file_registry.get(str(file_id))
+            if preview_file is not None:
+                if preview_file.owner_user_id != int(authorized_owner_id):
+                    logger.warning(
+                        "Preview file not accessible for task %s: %s",
+                        task_id,
+                        file_id,
+                    )
+                    continue
+
+                original_file_name = Path(preview_file.filename).name
+                normalized_file_name = normalize_filename(original_file_name)
+                target_path = None
+                preview_workspace_path: Path | None = None
+
+                if agent_service.workspace:
+                    input_dir = Path(agent_service.workspace.input_dir)
+                    input_dir.mkdir(parents=True, exist_ok=True)
+                    target_path = build_unique_target_path(
+                        input_dir, normalized_file_name
+                    )
+                    target_path.write_bytes(preview_file.content)
+                    preview_workspace_path = target_path
+                    agent_service.workspace.register_file(
+                        str(target_path.resolve()),
+                        file_id=preview_file.file_id,
+                        db_session=None,
+                    )
+
+                uploaded_files.append(
+                    str(target_path) if target_path else preview_file.filename
+                )
+                file_info_list.append(
+                    {
+                        "file_id": preview_file.file_id,
+                        "name": normalized_file_name,
+                        "original_name": original_file_name,
+                        "size": preview_file.file_size,
+                        "type": preview_file.mime_type,
+                        "path": str(target_path) if target_path else "",
+                        "workspace_path": (
+                            str(preview_workspace_path)
+                            if preview_workspace_path
+                            else None
+                        ),
+                    }
+                )
                 continue
 
             file_record = (
@@ -4269,7 +4324,7 @@ async def websocket_build_preview_endpoint(
     websocket: WebSocket,
     token: Optional[str] = Query(None, description="Authentication token"),
 ) -> None:
-    """WebSocket endpoint for build page agent preview - no database storage, real-time execution only."""
+    """WebSocket endpoint for build page agent preview using normal task execution."""
     # Verify user identity
     user = await get_authenticated_user(websocket, token)
     if not user:
@@ -4289,40 +4344,31 @@ async def websocket_build_preview_endpoint(
             message_type = message_data.get("type")
 
             if message_type == "preview":
-                # Cancel existing task if running
-                if (
-                    hasattr(websocket.state, "preview_task")
-                    and websocket.state.preview_task
-                    and not websocket.state.preview_task.done()
-                ):
-                    websocket.state.preview_task.cancel()
-                websocket.state.preview_pause_requested = False
-                websocket.state.preview_checkpoint_store = {}
-                websocket.state.preview_pending_user_message = None
-
-                # Run execution in background task to not block message receiving
-                websocket.state.preview_task = asyncio.create_task(
-                    handle_build_preview_execution(websocket, message_data, user)
-                )
+                await handle_build_preview_execution(websocket, message_data, user)
             elif message_type == "pause":
-                if (
+                task_id = getattr(websocket.state, "preview_task_id", None)
+                if isinstance(task_id, (int, str)) and str(task_id).isdigit():
+                    await handle_pause_task(
+                        websocket,
+                        int(task_id),
+                        {"type": "pause_task", "user": user},
+                    )
+                elif (
                     hasattr(websocket.state, "preview_agent_service")
                     and websocket.state.preview_agent_service
-                ):
-                    if hasattr(
+                    and hasattr(
                         websocket.state.preview_agent_service, "pause_execution"
-                    ):
-                        websocket.state.preview_pause_requested = True
-                        await websocket.state.preview_agent_service.pause_execution()
-                        await websocket.send_text(
-                            json.dumps(
-                                {
-                                    "type": "task_paused",
-                                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                                }
-                            )
+                    )
+                ):
+                    await websocket.state.preview_agent_service.pause_execution()
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "task_paused",
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            }
                         )
-                        logger.info(f"Paused build preview for user {user.id}")
+                    )
                 else:
                     await websocket.send_text(
                         json.dumps(
@@ -4333,72 +4379,29 @@ async def websocket_build_preview_endpoint(
                         )
                     )
             elif message_type == "resume":
-                if (
+                task_id = getattr(websocket.state, "preview_task_id", None)
+                if isinstance(task_id, (int, str)) and str(task_id).isdigit():
+                    await handle_resume_task(
+                        websocket,
+                        int(task_id),
+                        {"type": "resume_task", "user": user},
+                    )
+                elif (
                     hasattr(websocket.state, "preview_agent_service")
                     and websocket.state.preview_agent_service
-                ):
-                    agent_service = websocket.state.preview_agent_service
-                    execution_id = getattr(
-                        websocket.state, "preview_execution_id", None
+                    and hasattr(
+                        websocket.state.preview_agent_service, "resume_execution"
                     )
-                    if execution_id is None:
-                        execution_id = getattr(agent_service, "_current_task_id", None)
-                    if execution_id is None:
-                        execution_id = getattr(agent_service, "id", None)
-                    if (
-                        getattr(agent_service, "supports_live_control", None)
-                        and agent_service.supports_live_control()
-                    ):
-                        if execution_id is None:
-                            await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        "type": "error",
-                                        "message": "No paused preview execution to resume",
-                                    }
-                                )
-                            )
-                            continue
-                        checkpoint_store = getattr(
-                            websocket.state, "preview_checkpoint_store", {}
+                ):
+                    await websocket.state.preview_agent_service.resume_execution()
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "task_resumed",
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            }
                         )
-                        if not checkpoint_store.get(str(execution_id)):
-                            await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        "type": "error",
-                                        "message": "No resumable preview checkpoint found",
-                                    }
-                                )
-                            )
-                            continue
-                        previous_task = getattr(websocket.state, "preview_task", None)
-                        if previous_task is not None and not previous_task.done():
-                            try:
-                                await previous_task
-                            except Exception as e:
-                                logger.warning(
-                                    "Previous preview task %s ended before resume: %s",
-                                    execution_id,
-                                    e,
-                                )
-                        websocket.state.preview_pause_requested = False
-                        websocket.state.preview_task = asyncio.create_task(
-                            handle_build_preview_resume_execution(
-                                websocket, user, str(execution_id)
-                            )
-                        )
-                    elif hasattr(agent_service, "resume_execution"):
-                        await agent_service.resume_execution()
-                        await websocket.send_text(
-                            json.dumps(
-                                {
-                                    "type": "task_resumed",
-                                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                                }
-                            )
-                        )
-                        logger.info(f"Resumed build preview for user {user.id}")
+                    )
                 else:
                     await websocket.send_text(
                         json.dumps(
@@ -4409,14 +4412,19 @@ async def websocket_build_preview_endpoint(
                         )
                     )
             elif message_type == "clear_context":
+                preview_session_id = getattr(
+                    websocket.state, "preview_session_id", None
+                )
+                if preview_session_id:
+                    preview_file_registry.clear_session(
+                        preview_session_id,
+                        int(user.id),
+                    )
                 if hasattr(websocket.state, "preview_memory"):
                     websocket.state.preview_memory.clear()
                 if hasattr(websocket.state, "preview_history"):
                     websocket.state.preview_history = []
-                if hasattr(websocket.state, "preview_checkpoint_store"):
-                    websocket.state.preview_checkpoint_store = {}
-                if hasattr(websocket.state, "preview_pending_user_message"):
-                    websocket.state.preview_pending_user_message = None
+                websocket.state.preview_task_id = None
                 await websocket.send_text(
                     json.dumps(
                         {
@@ -4437,6 +4445,12 @@ async def websocket_build_preview_endpoint(
                 )
 
     except WebSocketDisconnect:
+        preview_session_id = getattr(websocket.state, "preview_session_id", None)
+        if preview_session_id:
+            preview_file_registry.clear_session(preview_session_id, int(user.id))
+        preview_task_id = getattr(websocket.state, "preview_task_id", None)
+        if isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit():
+            manager.disconnect(websocket, int(preview_task_id))
         logger.info(f"Build preview WebSocket disconnected for user {user.id}")
     except (ConnectionError, RuntimeError) as e:
         logger.error(f"Connection error in build preview WebSocket: {e}")
@@ -4563,8 +4577,101 @@ async def handle_build_preview_execution(
     message_data: dict,
     user: User,
 ) -> None:
-    """Execute build page agent preview with real-time trace events via WebSocket."""
-    import uuid
+    """Create a normal preview task and schedule it through the chat task flow."""
+    from ..schemas.chat import TaskCreateRequest
+    from .chat import create_task
+
+    user_message = message_data.get("message", "")
+    files_data = message_data.get("files", [])
+    if not user_message and not files_data:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "message": "Message or files are required for preview",
+                }
+            )
+        )
+        return
+
+    preview_session_id = getattr(websocket.state, "preview_session_id", None)
+    if not isinstance(preview_session_id, str) or not preview_session_id:
+        preview_session_id = f"build_preview_{uuid.uuid4().hex}"
+        websocket.state.preview_session_id = preview_session_id
+
+    file_ids = [
+        str(file_info.get("file_id"))
+        for file_info in files_data
+        if file_info.get("file_id")
+    ]
+
+    agent_config = {
+        "instructions": message_data.get("instructions", ""),
+        "knowledge_bases": message_data.get("knowledge_bases", []),
+        "skills": message_data.get("skills", []),
+        "tool_categories": message_data.get("tool_categories", []),
+        "preview_session_id": preview_session_id,
+        "preview_agent_id": message_data.get("agent_id"),
+    }
+    models = message_data.get("models", {})
+
+    def _model_ref(key: str) -> Optional[str]:
+        value = models.get(key)
+        if value is None or value == "":
+            return None
+        return str(value)
+
+    task_request = TaskCreateRequest(
+        title=(user_message or "Build preview")[:80],
+        description=user_message,
+        agent_id=None,
+        files=file_ids,
+        llm_ids=[
+            _model_ref("general"),
+            _model_ref("small_fast"),
+            _model_ref("visual"),
+            _model_ref("compact"),
+        ],
+        agent_config=agent_config,
+        execution_mode=message_data.get("execution_mode"),
+        is_preview=True,
+        preview_session_id=preview_session_id,
+    )
+
+    from ..models import database as database_module
+
+    db_gen = database_module.get_db()
+    preview_db = next(db_gen)
+    try:
+        task_response = await create_task(task_request, db=preview_db, user=user)
+        preview_task_id = int(task_response.task_id)
+    finally:
+        preview_db.close()
+
+    websocket.state.preview_task_id = preview_task_id
+    manager.register_connection(websocket, preview_task_id)
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "preview_started",
+                "task_id": preview_task_id,
+                "timestamp": datetime.now(timezone.utc).timestamp(),
+            }
+        )
+    )
+    await handle_chat_message(
+        websocket,
+        preview_task_id,
+        {
+            "type": "chat",
+            "message": user_message,
+            "files": files_data,
+            "user": user,
+            "user_id": user.id,
+            "context": {"preview_session_id": preview_session_id},
+        },
+    )
+    return
 
     from sqlalchemy.orm import Session
 

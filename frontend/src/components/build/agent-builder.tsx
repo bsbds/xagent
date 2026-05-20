@@ -379,6 +379,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const maxReconnectAttempts = 5
+  const previewSessionIdRef = useRef(`build_preview_${Math.random().toString(36).slice(2)}_${Date.now()}`)
 
   // Setup WebSocket connection
   useEffect(() => {
@@ -2144,6 +2145,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
             hideConfig={true}
             files={files}
             onFilesChange={setFiles}
+            uploadStorageMode="preview"
+            previewSessionId={previewSessionIdRef.current}
             taskStatus={taskStatus as any}
             onPause={handlePause}
             onResume={handleResume}
