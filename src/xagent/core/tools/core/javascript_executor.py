@@ -12,7 +12,13 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..artifacts import GENERATED_ARTIFACT_EXTENSIONS
+
 logger = logging.getLogger(__name__)
+
+GENERATED_FILE_PATTERNS = tuple(
+    f"*{extension}" for extension in sorted(GENERATED_ARTIFACT_EXTENSIONS)
+)
 
 
 # Known pptxgenjs API method names whose "methodName: <desc>" console.log
@@ -340,20 +346,7 @@ class JavaScriptExecutorCore:
 
         # Find generated files (they're already in the right place)
         generated_files = []
-        for ext in [
-            "*.csv",
-            "*.docx",
-            "*.gif",
-            "*.jpeg",
-            "*.jpg",
-            "*.pdf",
-            "*.png",
-            "*.pptx",
-            "*.svg",
-            "*.webp",
-            "*.xls",
-            "*.xlsx",
-        ]:
+        for ext in GENERATED_FILE_PATTERNS:
             for file in exec_dir.glob(ext):
                 # Only count files created during this execution (not script.js)
                 if file.name != "script.js":

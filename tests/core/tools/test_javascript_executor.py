@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from xagent.core.tools.adapters.vibe.javascript_executor import JavaScriptExecutorTool
+from xagent.core.tools.artifacts import GENERATED_ARTIFACT_EXTENSIONS
 from xagent.core.tools.core.javascript_executor import (
+    GENERATED_FILE_PATTERNS,
     JavaScriptExecutorCore,
     execute_javascript,
     get_javascript_executor_tool,
@@ -16,6 +18,11 @@ from xagent.core.workspace import TaskWorkspace
 
 class TestJavaScriptExecutorCore:
     """Test JavaScript executor core functionality."""
+
+    def test_generated_file_patterns_match_supported_artifact_extensions(self):
+        assert GENERATED_FILE_PATTERNS == tuple(
+            f"*{extension}" for extension in sorted(GENERATED_ARTIFACT_EXTENSIONS)
+        )
 
     def test_simple_javascript_execution(self):
         """Test basic JavaScript code execution."""
