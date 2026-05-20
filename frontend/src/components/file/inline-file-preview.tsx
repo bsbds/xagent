@@ -243,7 +243,7 @@ export function InlineFilePreview({
           onClick={canOpenFilePreview ? handleOpenPreview : undefined}
           className="shrink-0 text-foreground hover:underline"
         >
-          Open
+          {t('files.previewDialog.buttons.open')}
         </a>
       </div>
       <div className="h-[360px] overflow-auto">

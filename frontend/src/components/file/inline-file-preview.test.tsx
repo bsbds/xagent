@@ -30,8 +30,11 @@ vi.mock('@/components/file/excel-preview-renderer', () => ({
 
 vi.mock('@/contexts/i18n-context', () => ({
   useI18n: () => ({
-    t: (key: string) =>
-      key === 'files.previewDialog.errors.loadFailed' ? 'Localized load failure' : key,
+    t: (key: string) => {
+      if (key === 'files.previewDialog.errors.loadFailed') return 'Localized load failure'
+      if (key === 'files.previewDialog.buttons.open') return 'Localized open'
+      return key
+    },
   }),
 }))
 
@@ -90,7 +93,7 @@ describe('InlineFilePreview', () => {
       />
     )
 
-    fireEvent.click(screen.getByText('Open'))
+    fireEvent.click(screen.getByText('Localized open'))
 
     expect(handleFileClick).toHaveBeenCalledWith('slides-file-id', 'slides.pptx')
   })
@@ -109,7 +112,7 @@ describe('InlineFilePreview', () => {
       />
     )
 
-    const openLink = screen.getByRole('link', { name: 'Open' })
+    const openLink = screen.getByRole('link', { name: 'Localized open' })
     expect(openLink).toHaveAttribute(
       'href',
       'http://api.local/api/files/public/preview/slides-file-id'
