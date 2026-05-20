@@ -504,3 +504,28 @@ class TestJavaScriptExecutorToolArtifacts:
                 "display": "inline",
             }
         ]
+
+    def test_stale_generated_files_are_not_returned_as_inline_artifacts(self, tmp_path):
+        workspace = TaskWorkspace("test_js_stale_artifacts", str(tmp_path))
+        executor = JavaScriptExecutorTool(workspace=workspace)
+
+        first_result = executor.run_json_sync(
+            {
+                "code": "const fs = require('fs'); fs.writeFileSync('old.pdf', 'old');",
+            }
+        )
+        second_result = executor.run_json_sync(
+            {
+                "code": "const fs = require('fs'); fs.writeFileSync('new.pdf', 'new');",
+            }
+        )
+
+        assert first_result["success"] is True
+        assert second_result["success"] is True
+        assert second_result["generated_files"] == ["new.pdf"]
+        assert [file_ref["filename"] for file_ref in second_result["file_refs"]] == [
+            "new.pdf"
+        ]
+        assert [artifact["filename"] for artifact in second_result["artifacts"]] == [
+            "new.pdf"
+        ]

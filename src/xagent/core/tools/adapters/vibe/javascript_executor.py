@@ -12,7 +12,11 @@ from pydantic import BaseModel, Field
 from xagent.core.tools.core.javascript_executor import JavaScriptExecutorCore
 from xagent.core.workspace import TaskWorkspace
 
-from ...artifacts import build_generated_file_metadata
+from ...artifacts import (
+    build_generated_file_metadata,
+    changed_generated_artifact_files,
+    snapshot_generated_artifact_files,
+)
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 from .function import FunctionTool
 from .sandboxed_tool.sandbox_config import sandbox_config
@@ -86,17 +90,17 @@ class JavaScriptExecutorTool(AbstractBaseTool):
 
         # Execute code within auto_register context
         if self._workspace and working_directory:
+            files_before = snapshot_generated_artifact_files(working_directory)
             with self._workspace.auto_register_files():
                 result = executor.execute_code(exec_args.code, packages=pkg_list)
             if result.get("success"):
-                generated_paths = [
-                    self._workspace.resolve_path(file_name)
-                    for file_name in result.get("generated_files", [])
-                ]
+                files_after = snapshot_generated_artifact_files(working_directory)
                 result.update(
                     build_generated_file_metadata(
                         workspace=self._workspace,
-                        file_paths=generated_paths,
+                        file_paths=changed_generated_artifact_files(
+                            files_before, files_after
+                        ),
                     )
                 )
         else:
