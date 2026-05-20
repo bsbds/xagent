@@ -7,7 +7,10 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from ...tools.artifacts import format_tool_result_for_observation
+from ...tools.artifacts import (
+    format_tool_result_for_observation,
+    sanitize_file_refs_for_observation,
+)
 from ..language import dag_step_language_rules, response_language_rules
 from .components import (
     COMPONENT_LOADERS,
@@ -197,7 +200,7 @@ class ExecutionContext:
             sanitized = dict(result)
             if sanitized.get("file_id"):
                 sanitized.pop("image_path", None)
-            return sanitized
+            return sanitize_file_refs_for_observation(sanitized)
 
         if tool_name != "read_file" or not isinstance(result, str):
             return result

@@ -93,7 +93,7 @@ def format_tool_result_for_observation(tool_name: str, result: Any) -> str:
     sanitized = dict(result)
     if sanitized.get("file_id"):
         sanitized.pop("image_path", None)
-    sanitized = _sanitize_file_refs_for_observation(sanitized)
+    sanitized = sanitize_file_refs_for_observation(sanitized)
 
     artifact_lines = _format_artifact_lines(artifacts)
     if not artifact_lines:
@@ -138,9 +138,10 @@ def _format_artifact_lines(artifacts: list[Any]) -> list[str]:
     return lines
 
 
-def _sanitize_file_refs_for_observation(value: Any) -> Any:
+def sanitize_file_refs_for_observation(value: Any) -> Any:
+    """Return model/context-safe FileRef metadata without local paths."""
     if isinstance(value, list):
-        return [_sanitize_file_refs_for_observation(item) for item in value]
+        return [sanitize_file_refs_for_observation(item) for item in value]
 
     if not isinstance(value, dict):
         return value
@@ -149,7 +150,7 @@ def _sanitize_file_refs_for_observation(value: Any) -> Any:
         return {key: value[key] for key in SAFE_FILE_REF_KEYS if key in value}
 
     return {
-        key: _sanitize_file_refs_for_observation(item) for key, item in value.items()
+        key: sanitize_file_refs_for_observation(item) for key, item in value.items()
     }
 
 

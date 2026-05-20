@@ -454,6 +454,49 @@ def test_add_messages() -> None:
     assert tool.metadata["raw_result"]["output"] == "done"
 
 
+def test_artifact_tool_result_sanitizes_file_refs_in_raw_context_metadata() -> None:
+    ctx = ExecutionContext()
+
+    tool = ctx.add_tool_result(
+        "pptx_tool",
+        {
+            "success": True,
+            "file_ref": {
+                "file_id": "deck-file-id",
+                "filename": "deck.pptx",
+                "file_path": "/tmp/xagent/output/deck.pptx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            },
+            "metadata": {
+                "nested": {
+                    "file_id": "sheet-file-id",
+                    "filename": "data.xlsx",
+                    "file_path": "/tmp/xagent/output/data.xlsx",
+                    "relative_path": "output/data.xlsx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                }
+            },
+            "artifacts": [
+                {
+                    "type": "presentation",
+                    "file_id": "deck-file-id",
+                    "filename": "deck.pptx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "display": "inline",
+                }
+            ],
+        },
+        tool_call_id="tool-1",
+    )
+
+    raw_result = tool.metadata["raw_result"]
+    assert "file_path" not in raw_result["file_ref"]
+    assert "file_path" not in raw_result["metadata"]["nested"]
+    assert raw_result["file_ref"]["file_id"] == "deck-file-id"
+    assert raw_result["metadata"]["nested"]["relative_path"] == "output/data.xlsx"
+    assert "/tmp/xagent/output" not in str(raw_result)
+
+
 def test_read_file_tool_result_omits_binary_like_content_from_context() -> None:
     ctx = ExecutionContext()
     binary_like = "PNG\x00" + ("x" * 100)
