@@ -174,3 +174,18 @@ def test_snapshot_generated_artifact_files_skips_files_deleted_before_stat(
     monkeypatch.setattr(Path, "stat", stat_with_deleted_file)
 
     assert snapshot_generated_artifact_files(tmp_path) == {}
+
+
+def test_snapshot_generated_artifact_files_allows_hidden_root_ancestor(tmp_path):
+    hidden_root = tmp_path / ".xagent-hidden-review" / "workspace" / "output"
+    hidden_root.mkdir(parents=True)
+    report = hidden_root / "report.docx"
+    report.write_bytes(b"docx")
+    hidden_descendant = hidden_root / ".cache" / "ignored.docx"
+    hidden_descendant.parent.mkdir()
+    hidden_descendant.write_bytes(b"docx")
+
+    snapshot = snapshot_generated_artifact_files(hidden_root)
+
+    assert report in snapshot
+    assert hidden_descendant not in snapshot

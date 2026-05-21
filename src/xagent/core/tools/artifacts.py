@@ -271,9 +271,10 @@ def snapshot_generated_artifact_files(root: str | Path) -> GeneratedArtifactSnap
     snapshot: GeneratedArtifactSnapshot = {}
     for file_path in root_path.rglob("*"):
         try:
+            relative_path = file_path.relative_to(root_path)
             if (
                 not file_path.is_file()
-                or any(part.startswith(".") for part in file_path.parts)
+                or any(part.startswith(".") for part in relative_path.parts)
                 or file_path.suffix.lower() not in GENERATED_ARTIFACT_EXTENSIONS
             ):
                 continue
