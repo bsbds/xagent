@@ -3,8 +3,9 @@
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Mapping, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, or_
@@ -17,6 +18,8 @@ from ...config import (
     get_uploads_dir,
 )
 from ...core.agent.service import AgentService
+from ...core.memory.base import MemoryStore
+from ...core.memory.in_memory import InMemoryMemoryStore
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.chat.basic.deepseek import DeepSeekLLM
 from ...core.model.chat.basic.openai import OpenAILLM
@@ -103,6 +106,36 @@ def _get_task_activity_ids(db: Session, task_id: int) -> tuple[int, int]:
         or 0
     )
     return int(max_trace_event_id), int(max_chat_message_id)
+
+
+@dataclass(frozen=True)
+class AgentServiceMemoryPolicy:
+    memory: MemoryStore
+    memory_enabled: bool
+
+
+def resolve_agent_service_memory_policy(
+    *,
+    task: Optional[Task] = None,
+    agent_config: Optional[Mapping[str, Any]] = None,
+    runtime_kind: str = "task",
+) -> AgentServiceMemoryPolicy:
+    """Resolve the memory store and enablement for an AgentService runtime."""
+    if runtime_kind in {"build_preview", "agent_preview"}:
+        return AgentServiceMemoryPolicy(InMemoryMemoryStore(), False)
+
+    config = agent_config
+    if config is None:
+        task_config = getattr(task, "agent_config", None)
+        config = task_config if isinstance(task_config, Mapping) else {}
+
+    if config.get("is_preview") is True:
+        return AgentServiceMemoryPolicy(InMemoryMemoryStore(), False)
+
+    if task is not None and task.agent_id:
+        return AgentServiceMemoryPolicy(get_memory_store(), False)
+
+    return AgentServiceMemoryPolicy(get_memory_store(), True)
 
 
 def create_default_llm() -> Optional[BaseLLM]:
@@ -740,6 +773,20 @@ class AgentServiceManager:
                     agent_execution_mode,
                     task_pattern,
                 )
+        else:
+            inline_agent_config = self._load_task_inline_agent_config(task)
+            if inline_agent_config:
+                agent_config = inline_agent_config
+                inline_execution_mode = agent_config.get("execution_mode", "balanced")
+                task_pattern = get_agent_pattern_for_execution_mode(
+                    inline_execution_mode
+                )
+                logger.info(
+                    "Task %s using inline Agent Builder config: execution_mode=%s -> pattern=%s",
+                    task_id,
+                    inline_execution_mode,
+                    task_pattern,
+                )
 
         if not task_llm:
             task_llm = self._pick_default_llm_with_warning(
@@ -1267,9 +1314,10 @@ class AgentServiceManager:
                         memory_similarity_threshold = agent_config[
                             "memory_similarity_threshold"
                         ]
-                    # Agent Builder agents serve end users, so v2 task memory is
-                    # disabled until the product exposes an explicit opt-in.
-                    agent_builder_memory_enabled = not bool(task and task.agent_id)
+                    memory_policy = resolve_agent_service_memory_policy(
+                        task=task,
+                        agent_config=agent_config,
+                    )
 
                     # Build allowed external directories for the task owner's uploads.
                     allowed_external_dirs = _build_allowed_external_dirs(
@@ -1286,7 +1334,7 @@ class AgentServiceManager:
                         compact_llm=task_compact_llm,
                         tools=tools_list,
                         tool_config=tool_config,  # Pass tool_config for proper multi-tenancy
-                        memory=get_memory_store(),  # Use dynamic memory store for auto-switching
+                        memory=memory_policy.memory,
                         pattern=task_pattern,  # Use pattern instead of use_dag_pattern
                         tracer=tracer,
                         enable_workspace=True,  # Enable workspace functionality
@@ -1296,7 +1344,7 @@ class AgentServiceManager:
                         allowed_external_dirs=allowed_external_dirs,  # Add allowed external directories
                         task_id=str(task_id),  # Pass task_id for proper tracing
                         memory_similarity_threshold=memory_similarity_threshold,  # Set from task config
-                        memory_enabled=agent_builder_memory_enabled,
+                        memory_enabled=memory_policy.memory_enabled,
                         system_prompt=system_prompt,  # Pass agent builder instructions
                     )
 
@@ -1678,9 +1726,10 @@ class AgentServiceManager:
                             memory_similarity_threshold = agent_config[
                                 "memory_similarity_threshold"
                             ]
-                        # Agent Builder agents serve end users, so v2 task memory is
-                        # disabled until the product exposes an explicit opt-in.
-                        agent_builder_memory_enabled = not bool(task and task.agent_id)
+                        memory_policy = resolve_agent_service_memory_policy(
+                            task=task,
+                            agent_config=agent_config,
+                        )
                         self._agents[task_id] = AgentService(
                             name=f"reconstructed_agent_task_{task_id}",
                             id=f"web_task_{task_id}",  # Use task ID only for workspace
@@ -1690,7 +1739,7 @@ class AgentServiceManager:
                             compact_llm=task_compact_llm,
                             tools=tools_list,
                             tool_config=tool_config,
-                            memory=get_memory_store(),  # Use dynamic memory store for auto-switching
+                            memory=memory_policy.memory,
                             pattern=task_pattern,
                             tracer=tracer,
                             system_prompt=system_prompt,
@@ -1701,7 +1750,7 @@ class AgentServiceManager:
                             allowed_external_dirs=allowed_external_dirs,
                             task_id=str(task_id),
                             memory_similarity_threshold=memory_similarity_threshold,
-                            memory_enabled=agent_builder_memory_enabled,
+                            memory_enabled=memory_policy.memory_enabled,
                         )
                 else:
                     raise ValueError(
@@ -2046,6 +2095,11 @@ async def create_task(
             request.agent_config,
             selected_file_ids,
         )
+        if request.is_preview:
+            task_agent_config = task_agent_config or {}
+            task_agent_config["is_preview"] = True
+            if request.preview_session_id:
+                task_agent_config["preview_session_id"] = request.preview_session_id
 
         task_execution_mode = request.execution_mode
         if not task_execution_mode:

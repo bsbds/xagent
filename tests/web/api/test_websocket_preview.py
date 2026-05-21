@@ -6,6 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from xagent.core.file_storage.factory import get_file_storage
+from xagent.core.memory.in_memory import InMemoryMemoryStore
+from xagent.web.api.chat import resolve_agent_service_memory_policy
 from xagent.web.api.websocket import (
     _normalize_file_outputs,
     handle_build_preview_execution,
@@ -161,6 +163,20 @@ async def test_handle_build_preview_execution_reuses_existing_preview_task():
     mock_handle_chat_message.assert_awaited_once()
     assert mock_handle_chat_message.await_args.args[1] == 123
     assert mock_handle_chat_message.await_args.args[2]["message"] == "second turn"
+
+
+def test_preview_agent_config_uses_in_memory_disabled_policy():
+    task = MagicMock(spec=Task)
+    task.agent_id = None
+    task.agent_config = {
+        "is_preview": True,
+        "preview_session_id": "build_preview_client_session",
+    }
+
+    policy = resolve_agent_service_memory_policy(task=task)
+
+    assert isinstance(policy.memory, InMemoryMemoryStore)
+    assert policy.memory_enabled is False
 
 
 def test_normalize_file_outputs_rolls_back_when_durable_storage_fails(

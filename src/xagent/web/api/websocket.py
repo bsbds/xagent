@@ -4614,6 +4614,7 @@ async def handle_build_preview_execution(
         "knowledge_bases": message_data.get("knowledge_bases", []),
         "skills": message_data.get("skills", []),
         "tool_categories": message_data.get("tool_categories", []),
+        "is_preview": True,
         "preview_session_id": preview_session_id,
         "preview_agent_id": message_data.get("agent_id"),
     }
