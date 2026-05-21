@@ -171,6 +171,7 @@ RUN python -m playwright install chromium
 
 FROM runtime-base AS runtime
 
+COPY --from=uv /uv /uvx /usr/local/bin/
 COPY --from=runtime-frontend-tools /opt/xagent/frontend /opt/xagent/frontend
 COPY --from=runtime-playwright /ms-playwright /ms-playwright
 

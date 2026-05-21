@@ -87,3 +87,9 @@ def test_backend_dockerfile_uses_frontend_managed_pptxgenjs() -> None:
     assert "npm install -g pptxgenjs" not in dockerfile
     assert "/usr/lib/node_modules/pptxgenjs" not in dockerfile
     assert 'ENV NODE_PATH="/opt/xagent/frontend/node_modules"' in dockerfile
+
+
+def test_backend_runtime_keeps_uv_binaries() -> None:
+    dockerfile = read_repo_file("docker/Dockerfile.backend")
+
+    assert dockerfile.count("COPY --from=uv /uv /uvx /usr/local/bin/") == 2
