@@ -63,3 +63,27 @@ def test_backend_dockerfile_applies_package_specific_vcs_version() -> None:
     assert (
         'SETUPTOOLS_SCM_PRETEND_VERSION="${XAGENT_PACKAGE_VERSION}"' not in dockerfile
     )
+
+
+def test_publish_script_sanitizes_v_prefixed_package_version() -> None:
+    publish_script = read_repo_file("docker/publish.sh")
+
+    assert (
+        'PACKAGE_VERSION="${XAGENT_PACKAGE_VERSION:-${XAGENT_VERSION:-${TAG#v}}}"'
+        in publish_script
+    )
+    assert '--build-arg "XAGENT_PACKAGE_VERSION=${PACKAGE_VERSION}"' in publish_script
+    assert (
+        '--build-arg "XAGENT_PACKAGE_VERSION=${XAGENT_PACKAGE_VERSION:-${XAGENT_VERSION:-${TAG}}}"'
+        not in publish_script
+    )
+
+
+def test_backend_dockerfile_uses_frontend_managed_pptxgenjs() -> None:
+    dockerfile = read_repo_file("docker/Dockerfile.backend")
+    package_json = read_repo_file("frontend/package.json")
+
+    assert '"pptxgenjs": "4.0.1"' in package_json
+    assert "npm install -g pptxgenjs" not in dockerfile
+    assert "/usr/lib/node_modules/pptxgenjs" not in dockerfile
+    assert 'ENV NODE_PATH="/opt/xagent/frontend/node_modules"' in dockerfile
