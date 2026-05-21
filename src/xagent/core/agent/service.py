@@ -613,7 +613,11 @@ class AgentService:
 
         get_allowed_tools = getattr(self.tool_config, "get_allowed_tools", None)
         allowed_tools = get_allowed_tools() if callable(get_allowed_tools) else None
-        allowed_items = tuple(str(name) for name in allowed_tools or ())
+        allowed_items = (
+            None
+            if allowed_tools is None
+            else tuple(str(name) for name in allowed_tools)
+        )
 
         return (override_items, allowed_items)
 

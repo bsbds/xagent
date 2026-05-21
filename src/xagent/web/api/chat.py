@@ -550,7 +550,9 @@ class AgentServiceManager:
                 allowed_collections=agent_config.get("knowledge_bases"),
                 allowed_skills=agent_config.get("skills"),
             )
-            all_tools = await ToolFactory.create_all_tools(temp_config)
+            all_tools = await ToolFactory.create_all_tools(
+                temp_config, apply_user_override_filter=False
+            )
             allowed_tools = []
 
             for tool in all_tools:
@@ -870,7 +872,9 @@ class AgentServiceManager:
                     )
 
                     # Get all tools and filter by category
-                    all_tools = await ToolFactory.create_all_tools(temp_config)
+                    all_tools = await ToolFactory.create_all_tools(
+                        temp_config, apply_user_override_filter=False
+                    )
                     allowed_tools = []
 
                     for tool in all_tools:
