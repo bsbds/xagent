@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from ...tools.artifacts import (
     format_tool_result_for_observation,
-    sanitize_file_refs_for_observation,
+    sanitize_tool_result_for_public_context,
 )
 from ..language import dag_step_language_rules, response_language_rules
 from .components import (
@@ -196,11 +196,8 @@ class ExecutionContext:
         return f"Tool {tool_name} returned: {formatted}"
 
     def _sanitize_tool_result_for_context(self, tool_name: str, result: Any) -> Any:
-        if isinstance(result, dict) and isinstance(result.get("artifacts"), list):
-            sanitized = dict(result)
-            if sanitized.get("file_id"):
-                sanitized.pop("image_path", None)
-            return sanitize_file_refs_for_observation(sanitized)
+        if isinstance(result, dict):
+            return sanitize_tool_result_for_public_context(result)
 
         if tool_name != "read_file" or not isinstance(result, str):
             return result
