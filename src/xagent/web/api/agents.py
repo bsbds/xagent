@@ -651,6 +651,7 @@ async def delete_agent(
         if agent.logo_url:
             _delete_logo(agent.logo_url)  # type: ignore[arg-type]
 
+        db.query(AgentApiKey).filter(AgentApiKey.agent_id == agent_id).delete()
         db.query(Task).filter(Task.agent_id == agent_id).update({Task.agent_id: None})
         db.delete(agent)
         db.commit()

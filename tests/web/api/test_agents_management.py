@@ -32,6 +32,7 @@ class TestDeleteAgent:
     def test_with_tasks_keeps_tasks_and_nulls_agent_id(self):
         headers = _admin_headers()
         agent_id = _create_agent(headers)
+        client.post(f"/api/agents/{agent_id}/api-key", headers=headers)
 
         db = _direct_db_session()
         try:
