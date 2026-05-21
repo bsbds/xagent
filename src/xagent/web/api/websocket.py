@@ -4625,44 +4625,49 @@ async def handle_build_preview_execution(
             return None
         return str(value)
 
-    task_request = TaskCreateRequest(
-        title=(user_message or "Build preview")[:80],
-        description=user_message,
-        agent_id=None,
-        files=file_ids,
-        llm_ids=[
-            _model_ref("general"),
-            _model_ref("small_fast"),
-            _model_ref("visual"),
-            _model_ref("compact"),
-        ],
-        agent_config=agent_config,
-        execution_mode=message_data.get("execution_mode"),
-        is_preview=True,
-        preview_session_id=preview_session_id,
-    )
-
-    from ..models import database as database_module
-
-    db_gen = database_module.get_db()
-    preview_db = next(db_gen)
-    try:
-        task_response = await create_task(task_request, db=preview_db, user=user)
-        preview_task_id = int(task_response.task_id)
-    finally:
-        preview_db.close()
-
-    websocket.state.preview_task_id = preview_task_id
-    manager.register_connection(websocket, preview_task_id)
-    await websocket.send_text(
-        json.dumps(
-            {
-                "type": "preview_started",
-                "task_id": preview_task_id,
-                "timestamp": datetime.now(timezone.utc).timestamp(),
-            }
+    preview_task_id = getattr(websocket.state, "preview_task_id", None)
+    if not (isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit()):
+        task_request = TaskCreateRequest(
+            title=(user_message or "Build preview")[:80],
+            description=user_message,
+            agent_id=None,
+            files=file_ids,
+            llm_ids=[
+                _model_ref("general"),
+                _model_ref("small_fast"),
+                _model_ref("visual"),
+                _model_ref("compact"),
+            ],
+            agent_config=agent_config,
+            execution_mode=message_data.get("execution_mode"),
+            is_preview=True,
+            preview_session_id=preview_session_id,
         )
-    )
+
+        from ..models import database as database_module
+
+        db_gen = database_module.get_db()
+        preview_db = next(db_gen)
+        try:
+            task_response = await create_task(task_request, db=preview_db, user=user)
+            preview_task_id = int(task_response.task_id)
+        finally:
+            preview_db.close()
+
+        websocket.state.preview_task_id = preview_task_id
+        manager.register_connection(websocket, preview_task_id)
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "preview_started",
+                    "task_id": preview_task_id,
+                    "timestamp": datetime.now(timezone.utc).timestamp(),
+                }
+            )
+        )
+    else:
+        preview_task_id = int(preview_task_id)
+
     await handle_chat_message(
         websocket,
         preview_task_id,

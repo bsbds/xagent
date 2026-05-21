@@ -124,6 +124,45 @@ async def test_handle_build_preview_execution_uses_client_preview_session_id():
     }
 
 
+@pytest.mark.asyncio
+async def test_handle_build_preview_execution_reuses_existing_preview_task():
+    mock_websocket = AsyncMock()
+    mock_websocket.state.preview_session_id = "build_preview_client_session"
+    mock_websocket.state.preview_task_id = 123
+    mock_user = MagicMock(spec=User)
+    mock_user.id = 1
+    mock_user.is_admin = False
+
+    message_data = {
+        "type": "preview",
+        "preview_session_id": "build_preview_client_session",
+        "instructions": "updated instructions",
+        "models": {"general": 1},
+        "message": "second turn",
+    }
+
+    with (
+        patch(
+            "xagent.web.api.chat.create_task",
+            new=AsyncMock(),
+        ) as mock_create_task,
+        patch(
+            "xagent.web.api.websocket.handle_chat_message",
+            new=AsyncMock(),
+        ) as mock_handle_chat_message,
+        patch(
+            "xagent.web.api.websocket.manager.register_connection"
+        ) as mock_register_connection,
+    ):
+        await handle_build_preview_execution(mock_websocket, message_data, mock_user)
+
+    mock_create_task.assert_not_awaited()
+    mock_register_connection.assert_not_called()
+    mock_handle_chat_message.assert_awaited_once()
+    assert mock_handle_chat_message.await_args.args[1] == 123
+    assert mock_handle_chat_message.await_args.args[2]["message"] == "second turn"
+
+
 def test_normalize_file_outputs_rolls_back_when_durable_storage_fails(
     monkeypatch, tmp_path
 ):
