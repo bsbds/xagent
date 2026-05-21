@@ -999,6 +999,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         knowledge_bases: selectedKbs,
         skills: selectedSkills,
         tool_categories: finalToolCategories,
+        preview_session_id: previewSessionIdRef.current,
         message: backendMessage,
         files: processedFiles
       }))

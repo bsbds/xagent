@@ -4595,6 +4595,10 @@ async def handle_build_preview_execution(
         return
 
     preview_session_id = getattr(websocket.state, "preview_session_id", None)
+    requested_preview_session_id = message_data.get("preview_session_id")
+    if isinstance(requested_preview_session_id, str) and requested_preview_session_id:
+        preview_session_id = requested_preview_session_id
+        websocket.state.preview_session_id = preview_session_id
     if not isinstance(preview_session_id, str) or not preview_session_id:
         preview_session_id = f"build_preview_{uuid.uuid4().hex}"
         websocket.state.preview_session_id = preview_session_id

@@ -76,6 +76,54 @@ async def test_handle_build_preview_execution_uses_normal_task_flow():
     assert mock_handle_chat_message.await_args.args[1] == 123
 
 
+@pytest.mark.asyncio
+async def test_handle_build_preview_execution_uses_client_preview_session_id():
+    mock_websocket = AsyncMock()
+    mock_user = MagicMock(spec=User)
+    mock_user.id = 1
+    mock_user.is_admin = False
+
+    message_data = {
+        "type": "preview",
+        "preview_session_id": "build_preview_client_session",
+        "instructions": "test instructions",
+        "models": {"general": 1},
+        "message": "test message",
+        "files": [{"file_id": "preview-file-1", "name": "data.csv"}],
+    }
+
+    mock_db = MagicMock(spec=Session)
+    task_response = TaskCreateResponse(
+        task_id=123,
+        title="test message",
+        status="pending",
+        created_at="2026-05-20T00:00:00Z",
+    )
+    with (
+        patch("xagent.web.models.database.get_db", return_value=iter([mock_db])),
+        patch(
+            "xagent.web.api.chat.create_task",
+            new=AsyncMock(return_value=task_response),
+        ) as mock_create_task,
+        patch(
+            "xagent.web.api.websocket.handle_chat_message",
+            new=AsyncMock(),
+        ) as mock_handle_chat_message,
+        patch("xagent.web.api.websocket.manager.register_connection"),
+    ):
+        await handle_build_preview_execution(mock_websocket, message_data, mock_user)
+
+    create_request = mock_create_task.await_args.args[0]
+    assert create_request.preview_session_id == "build_preview_client_session"
+    assert create_request.agent_config["preview_session_id"] == (
+        "build_preview_client_session"
+    )
+    assert mock_websocket.state.preview_session_id == "build_preview_client_session"
+    assert mock_handle_chat_message.await_args.args[2]["context"] == {
+        "preview_session_id": "build_preview_client_session"
+    }
+
+
 def test_normalize_file_outputs_rolls_back_when_durable_storage_fails(
     monkeypatch, tmp_path
 ):
