@@ -131,6 +131,24 @@ async def test_handle_build_preview_execution_reuses_existing_preview_task():
     mock_websocket = AsyncMock()
     mock_websocket.state.preview_session_id = "build_preview_client_session"
     mock_websocket.state.preview_task_id = 123
+    mock_websocket.state.preview_runtime_signature = json.dumps(
+        {
+            "agent_config": {
+                "instructions": "updated instructions",
+                "is_preview": True,
+                "knowledge_bases": [],
+                "preview_agent_id": None,
+                "preview_session_id": "build_preview_client_session",
+                "skills": [],
+                "tool_categories": [],
+            },
+            "execution_mode": None,
+            "file_ids": [],
+            "llm_ids": ["1", None, None, None],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     mock_user = MagicMock(spec=User)
     mock_user.id = 1
     mock_user.is_admin = False
@@ -163,6 +181,76 @@ async def test_handle_build_preview_execution_reuses_existing_preview_task():
     mock_handle_chat_message.assert_awaited_once()
     assert mock_handle_chat_message.await_args.args[1] == 123
     assert mock_handle_chat_message.await_args.args[2]["message"] == "second turn"
+
+
+@pytest.mark.asyncio
+async def test_handle_build_preview_execution_recreates_task_when_config_changes():
+    mock_websocket = AsyncMock()
+    mock_websocket.state.preview_session_id = "build_preview_client_session"
+    mock_websocket.state.preview_task_id = 123
+    mock_websocket.state.preview_runtime_signature = json.dumps(
+        {
+            "agent_config": {
+                "instructions": "first instructions",
+                "is_preview": True,
+                "knowledge_bases": [],
+                "preview_agent_id": None,
+                "preview_session_id": "build_preview_client_session",
+                "skills": [],
+                "tool_categories": [],
+            },
+            "execution_mode": "balanced",
+            "file_ids": [],
+            "llm_ids": ["1", None, None, None],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    mock_user = MagicMock(spec=User)
+    mock_user.id = 1
+    mock_user.is_admin = False
+
+    message_data = {
+        "type": "preview",
+        "preview_session_id": "build_preview_client_session",
+        "instructions": "updated instructions",
+        "execution_mode": "balanced",
+        "models": {"general": 1},
+        "message": "second turn",
+    }
+
+    mock_db = MagicMock(spec=Session)
+    task_response = TaskCreateResponse(
+        task_id=456,
+        title="second turn",
+        status="pending",
+        created_at="2026-05-20T00:00:00Z",
+    )
+    with (
+        patch("xagent.web.models.database.get_db", return_value=iter([mock_db])),
+        patch(
+            "xagent.web.api.chat.create_task",
+            new=AsyncMock(return_value=task_response),
+        ) as mock_create_task,
+        patch(
+            "xagent.web.api.websocket.handle_chat_message",
+            new=AsyncMock(),
+        ) as mock_handle_chat_message,
+        patch("xagent.web.api.websocket.manager.disconnect") as mock_disconnect,
+        patch(
+            "xagent.web.api.websocket.manager.register_connection"
+        ) as mock_register_connection,
+    ):
+        await handle_build_preview_execution(mock_websocket, message_data, mock_user)
+
+    mock_create_task.assert_awaited_once()
+    create_request = mock_create_task.await_args.args[0]
+    assert create_request.agent_config["instructions"] == "updated instructions"
+    assert mock_disconnect.call_args_list == [((mock_websocket, 123),)]
+    mock_register_connection.assert_called_once_with(mock_websocket, 456)
+    mock_handle_chat_message.assert_awaited_once()
+    assert mock_handle_chat_message.await_args.args[1] == 456
+    assert mock_websocket.state.preview_task_id == 456
 
 
 def test_preview_agent_config_uses_in_memory_disabled_policy():

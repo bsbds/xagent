@@ -4542,6 +4542,7 @@ async def websocket_build_preview_endpoint(
                 if hasattr(websocket.state, "preview_history"):
                     websocket.state.preview_history = []
                 websocket.state.preview_task_id = None
+                websocket.state.preview_runtime_signature = None
                 await websocket.send_text(
                     json.dumps(
                         {
@@ -4689,6 +4690,26 @@ def _append_preview_user_turn_if_needed(
     history.append({"role": "user", "content": user_message})
 
 
+def _build_preview_runtime_signature(
+    *,
+    agent_config: dict[str, Any],
+    execution_mode: Any,
+    file_ids: list[str],
+    llm_ids: list[Optional[str]],
+) -> str:
+    """Return a stable identity for settings that define a preview runtime."""
+    return json.dumps(
+        {
+            "agent_config": agent_config,
+            "execution_mode": execution_mode,
+            "file_ids": file_ids,
+            "llm_ids": llm_ids,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 async def handle_build_preview_execution(
     websocket: WebSocket,
     message_data: dict,
@@ -4743,21 +4764,40 @@ async def handle_build_preview_execution(
             return None
         return str(value)
 
+    llm_ids = [
+        _model_ref("general"),
+        _model_ref("small_fast"),
+        _model_ref("visual"),
+        _model_ref("compact"),
+    ]
+    execution_mode = message_data.get("execution_mode")
+    preview_runtime_signature = _build_preview_runtime_signature(
+        agent_config=agent_config,
+        execution_mode=execution_mode,
+        file_ids=file_ids,
+        llm_ids=llm_ids,
+    )
+
     preview_task_id = getattr(websocket.state, "preview_task_id", None)
-    if not (isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit()):
+    current_runtime_signature = getattr(
+        websocket.state, "preview_runtime_signature", None
+    )
+    has_reusable_preview_task = (
+        isinstance(preview_task_id, (int, str))
+        and str(preview_task_id).isdigit()
+        and current_runtime_signature == preview_runtime_signature
+    )
+    if not has_reusable_preview_task:
+        if isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit():
+            manager.disconnect(websocket, int(preview_task_id))
         task_request = TaskCreateRequest(
             title=(user_message or "Build preview")[:80],
             description=user_message,
             agent_id=None,
             files=file_ids,
-            llm_ids=[
-                _model_ref("general"),
-                _model_ref("small_fast"),
-                _model_ref("visual"),
-                _model_ref("compact"),
-            ],
+            llm_ids=llm_ids,
             agent_config=agent_config,
-            execution_mode=message_data.get("execution_mode"),
+            execution_mode=execution_mode,
             is_preview=True,
             preview_session_id=preview_session_id,
         )
@@ -4773,6 +4813,7 @@ async def handle_build_preview_execution(
             preview_db.close()
 
         websocket.state.preview_task_id = preview_task_id
+        websocket.state.preview_runtime_signature = preview_runtime_signature
         manager.register_connection(websocket, preview_task_id)
         await websocket.send_text(
             json.dumps(
@@ -4784,7 +4825,7 @@ async def handle_build_preview_execution(
             )
         )
     else:
-        preview_task_id = int(preview_task_id)
+        preview_task_id = int(str(preview_task_id))
 
     await handle_chat_message(
         websocket,
