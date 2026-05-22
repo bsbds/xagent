@@ -18,7 +18,7 @@ from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from xagent.web.models.database import Base, get_db
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
-from xagent.web.services.preview_file_registry import preview_file_registry
+from xagent.web.services.preview_file_store import preview_file_store
 
 
 @pytest.fixture(scope="function")
@@ -575,7 +575,7 @@ class TestFileUpload:
 
         assert response.status_code == 200
 
-    def test_preview_upload_is_memory_only_and_url_compatible(
+    def test_preview_upload_is_temp_file_and_url_compatible(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
     ):
         """Preview uploads resolve through existing file URLs without DB storage."""
@@ -610,6 +610,10 @@ class TestFileUpload:
         finally:
             db.close()
 
+        preview_ref = preview_file_store.get(file_id)
+        assert preview_ref is not None
+        assert preview_ref.path.read_bytes() == b"This is a test text file content."
+
         preview_response = client.get(
             f"/api/files/preview/{file_id}",
             headers=auth_headers,
@@ -621,7 +625,8 @@ class TestFileUpload:
         assert public_response.status_code == 200
         assert public_response.text == "This is a test text file content."
 
-        preview_file_registry.clear_session(session_id, test_db[0].id)
+        preview_file_store.clear_session(session_id, test_db[0].id)
+        assert preview_ref.path.exists() is False
         missing_response = client.get(
             f"/api/files/preview/{file_id}",
             headers=auth_headers,

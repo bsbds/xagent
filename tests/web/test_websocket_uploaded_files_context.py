@@ -14,6 +14,7 @@ from xagent.web.api.websocket import (
     _display_message_for_user,
     _normalize_attachments_for_persistence,
     _normalize_file_outputs,
+    _normalize_task_file_outputs,
     _register_uploaded_files_for_agent,
     _selected_file_refs_from_task,
     execute_task_background,
@@ -24,6 +25,7 @@ from xagent.web.models import database as database_models
 from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
+from xagent.web.services.preview_file_store import preview_file_store
 
 
 @pytest.fixture()
@@ -523,6 +525,43 @@ def test_normalize_file_outputs_registers_current_task_output_path(
     assert file_record.storage_path == str(output_path)
 
 
+def test_normalize_task_file_outputs_registers_preview_output_in_temp_store(
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    uploads_dir = tmp_path / "uploads"
+    preview_tmp_dir = tmp_path / "preview-tmp"
+    monkeypatch.setenv("XAGENT_UPLOADS_DIR", str(uploads_dir))
+    monkeypatch.setenv("XAGENT_PREVIEW_TMP_DIR", str(preview_tmp_dir))
+    _create_user(db_session, 1, "owner")
+    task = _create_task(db_session, task_id=20, user_id=1)
+    task.agent_config = {
+        "is_preview": True,
+        "preview_session_id": "preview-session",
+    }
+    output_path = uploads_dir / "user_1" / "web_task_20" / "output" / "report.txt"
+    output_path.parent.mkdir(parents=True)
+    output_path.write_text("preview report")
+
+    normalized_outputs, path_to_file_id = _normalize_task_file_outputs(
+        db_session,
+        task,
+        [{"path": str(output_path), "filename": "report.txt"}],
+    )
+
+    assert len(normalized_outputs) == 1
+    assert normalized_outputs[0]["filename"] == "report.txt"
+    preview_ref = preview_file_store.get(normalized_outputs[0]["file_id"])
+    assert preview_ref is not None
+    assert preview_ref.source == "generated"
+    assert preview_ref.path.read_text() == "preview report"
+    assert path_to_file_id[str(output_path)] == preview_ref.file_id
+    assert db_session.query(UploadedFile).count() == 0
+
+    preview_file_store.clear_session("preview-session", 1)
+
+
 @pytest.mark.asyncio
 async def test_handle_file_upload_for_task_rejects_unowned_and_wrong_task_files(
     db_session,
@@ -581,6 +620,52 @@ async def test_handle_file_upload_for_task_rejects_unowned_and_wrong_task_files(
     assert [item["file_id"] for item in result["file_info_list"]] == ["valid-file"]
     db_session.refresh(valid_file)
     assert valid_file.task_id == 10
+
+
+@pytest.mark.asyncio
+async def test_handle_file_upload_for_preview_task_returns_temp_file_path(
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    _create_user(db_session, 1, "owner")
+    _create_task(db_session, task_id=42, user_id=1)
+    monkeypatch.setenv("XAGENT_PREVIEW_TMP_DIR", str(tmp_path / "preview-tmp"))
+
+    preview_file = preview_file_store.register_upload(
+        owner_user_id=1,
+        filename="Preview File.txt",
+        content=b"preview content",
+        mime_type="text/plain",
+        task_id=42,
+        session_id="preview-session",
+        file_id="preview-file",
+    )
+
+    try:
+        result = await handle_file_upload_for_task(
+            42,
+            [{"file_id": preview_file.file_id}],
+            db_session,
+            SimpleNamespace(id=1, is_admin=False),
+            task_owner_id=1,
+        )
+    finally:
+        preview_file_store.clear_session("preview-session", 1)
+
+    assert result["uploaded_files"] == [str(preview_file.path)]
+    assert result["file_info_list"] == [
+        {
+            "file_id": "preview-file",
+            "name": "Preview_File.txt",
+            "original_name": "Preview File.txt",
+            "size": len(b"preview content"),
+            "type": "text/plain",
+            "path": str(preview_file.path),
+            "workspace_path": None,
+        }
+    ]
+    assert db_session.query(UploadedFile).filter_by(file_id="preview-file").count() == 0
 
 
 def test_register_uploaded_files_for_agent_uses_execution_db_session(

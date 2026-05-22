@@ -52,7 +52,7 @@ from ..services.managed_file_ref import (
     build_task_output_storage_key,
     ensure_uploaded_file_local_path,
 )
-from ..services.preview_file_registry import preview_file_registry
+from ..services.preview_file_store import preview_file_store
 from ..services.task_lease_service import (
     acquire_task_lease,
     mark_task_paused_if_stale,
@@ -865,6 +865,19 @@ def _workspace_category_from_relative_path(relative_path: str) -> str:
     return path_parts[0] if path_parts else "output"
 
 
+def _is_preview_task(task: Any) -> bool:
+    agent_config = getattr(task, "agent_config", None)
+    return isinstance(agent_config, dict) and bool(agent_config.get("is_preview"))
+
+
+def _preview_session_id_from_task(task: Any) -> str | None:
+    agent_config = getattr(task, "agent_config", None)
+    if not isinstance(agent_config, dict):
+        return None
+    preview_session_id = agent_config.get("preview_session_id")
+    return preview_session_id if isinstance(preview_session_id, str) else None
+
+
 def _normalize_file_outputs(
     db: Session,
     task_id: int,
@@ -1102,6 +1115,140 @@ def _normalize_file_outputs(
     return normalized_outputs, path_to_file_id
 
 
+def _normalize_preview_file_outputs(
+    *,
+    task_id: int,
+    task_user_id: int,
+    preview_session_id: str,
+    file_outputs: Any,
+) -> tuple[list[Dict[str, Any]], Dict[str, str]]:
+    if isinstance(file_outputs, str):
+        file_outputs = [file_outputs] if file_outputs.strip() else []
+    if not isinstance(file_outputs, list):
+        return [], {}
+
+    normalized_outputs: list[Dict[str, Any]] = []
+    path_to_file_id: Dict[str, str] = {}
+
+    for item in file_outputs:
+        item_file_id = ""
+        item_filename = ""
+        item_relative_path = ""
+        raw_paths: list[str] = []
+
+        if isinstance(item, str):
+            raw_paths = [item]
+        elif isinstance(item, dict):
+            if isinstance(item.get("file_id"), str):
+                item_file_id = str(item.get("file_id"))
+            if isinstance(item.get("filename"), str):
+                item_filename = str(item.get("filename"))
+            for key in ("file_path", "download_path", "relative_path", "path"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    raw_paths.append(value)
+                    if key == "relative_path":
+                        item_relative_path = value
+        else:
+            continue
+
+        resolved_info = None
+        for raw_path in raw_paths:
+            resolved_info = _resolve_output_storage_path(raw_path)
+            if resolved_info is not None:
+                break
+
+        if resolved_info is None:
+            continue
+
+        resolved_path, relative_path = resolved_info
+        normalized_relative_path = relative_path.lstrip("/")
+        if not _output_path_in_current_task_scope(
+            normalized_relative_path, task_id, task_user_id
+        ):
+            logger.warning(
+                "Skipping preview file output outside current task output scope: %s",
+                relative_path,
+            )
+            continue
+
+        workspace_relative_path = _normalize_workspace_relative_path(
+            item_relative_path or normalized_relative_path
+        )
+        expected_file_id = item_file_id or _build_output_file_id(
+            workspace_relative_path
+        )
+        preview_file = preview_file_store.register_generated_file(
+            owner_user_id=task_user_id,
+            source_path=resolved_path,
+            filename=item_filename or resolved_path.name,
+            mime_type=None,
+            task_id=task_id,
+            session_id=preview_session_id,
+            file_id=expected_file_id,
+        )
+
+        final_file_id = preview_file.file_id
+        if item_file_id:
+            path_to_file_id[item_file_id] = final_file_id
+
+        normalized_outputs.append(
+            build_file_ref(
+                file_id=final_file_id,
+                filename=item_filename or preview_file.filename,
+                mime_type=preview_file.mime_type,
+                size=preview_file.file_size,
+            )
+        )
+
+        for raw_path in raw_paths:
+            stripped = raw_path.strip()
+            if stripped:
+                path_to_file_id[stripped] = final_file_id
+                path_to_file_id[stripped.lstrip("/")] = final_file_id
+        _add_file_link_aliases(path_to_file_id, normalized_relative_path, final_file_id)
+
+        if workspace_relative_path != normalized_relative_path:
+            path_to_file_id[workspace_relative_path] = final_file_id
+            path_to_file_id[f"/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"preview/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"/preview/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"uploads/{workspace_relative_path}"] = final_file_id
+            path_to_file_id[f"/uploads/{workspace_relative_path}"] = final_file_id
+
+    return normalized_outputs, path_to_file_id
+
+
+def _normalize_task_file_outputs(
+    db: Session,
+    task: Any,
+    file_outputs: Any,
+) -> tuple[list[Dict[str, Any]], Dict[str, str]]:
+    task_user_id = _task_user_id(task)
+    if task_user_id is None:
+        return [], {}
+
+    task_id = int(cast(Any, task.id))
+    if _is_preview_task(task):
+        preview_session_id = _preview_session_id_from_task(task)
+        if not preview_session_id:
+            logger.warning("Preview task %s has no preview_session_id", task_id)
+            return [], {}
+        return _normalize_preview_file_outputs(
+            task_id=task_id,
+            task_user_id=task_user_id,
+            preview_session_id=preview_session_id,
+            file_outputs=file_outputs,
+        )
+
+    return _normalize_file_outputs(
+        db,
+        task_id=task_id,
+        task_user_id=task_user_id,
+        file_outputs=file_outputs,
+    )
+
+
 def _rewrite_links_in_payload(payload: Any, path_to_file_id: Dict[str, str]) -> Any:
     if isinstance(payload, str):
         return _rewrite_file_links_to_file_id(payload, path_to_file_id)
@@ -1203,15 +1350,11 @@ async def execute_task_background(
                 db_session=db,
             )
 
-        if task_user_id is not None:
-            normalized_outputs, path_to_file_id = _normalize_file_outputs(
-                db,
-                task_id=int(task_id),
-                task_user_id=task_user_id,
-                file_outputs=result.get("file_outputs", []),
-            )
-        else:
-            normalized_outputs, path_to_file_id = [], {}
+        normalized_outputs, path_to_file_id = _normalize_task_file_outputs(
+            db,
+            task,
+            result.get("file_outputs", []),
+        )
         if normalized_outputs:
             result["file_outputs"] = normalized_outputs
 
@@ -1436,20 +1579,22 @@ async def execute_resume_background(
         success = bool(result.get("success", False))
         output = str(result.get("output") or result.get("error") or "")
 
-        task_user_id = _task_user_id(task)
-        if task_user_id is not None:
+        if _task_user_id(task) is not None:
             db_gen = get_db()
             db_normalize = next(db_gen)
             try:
-                normalized_outputs, path_to_file_id = _normalize_file_outputs(
-                    db_normalize,
-                    task_id=int(task_id),
-                    task_user_id=task_user_id,
-                    file_outputs=result.get("file_outputs", []),
+                task_for_normalize = (
+                    db_normalize.query(Task).filter(Task.id == task_id).first()
                 )
-                if normalized_outputs:
-                    result["file_outputs"] = normalized_outputs
-                    output = _rewrite_file_links_to_file_id(output, path_to_file_id)
+                if task_for_normalize is not None:
+                    normalized_outputs, path_to_file_id = _normalize_task_file_outputs(
+                        db_normalize,
+                        task_for_normalize,
+                        result.get("file_outputs", []),
+                    )
+                    if normalized_outputs:
+                        result["file_outputs"] = normalized_outputs
+                        output = _rewrite_file_links_to_file_id(output, path_to_file_id)
             finally:
                 db_normalize.close()
 
@@ -1869,7 +2014,7 @@ async def handle_file_upload_for_task(
                 logger.warning(f"No file_id provided in file info: {file_info}")
                 continue
 
-            preview_file = preview_file_registry.get(str(file_id))
+            preview_file = preview_file_store.get(str(file_id))
             if preview_file is not None:
                 if preview_file.owner_user_id != int(authorized_owner_id):
                     logger.warning(
@@ -1881,26 +2026,9 @@ async def handle_file_upload_for_task(
 
                 original_file_name = Path(preview_file.filename).name
                 normalized_file_name = normalize_filename(original_file_name)
-                target_path = None
-                preview_workspace_path: Path | None = None
+                target_path = preview_file.path
 
-                if agent_service.workspace:
-                    input_dir = Path(agent_service.workspace.input_dir)
-                    input_dir.mkdir(parents=True, exist_ok=True)
-                    target_path = build_unique_target_path(
-                        input_dir, normalized_file_name
-                    )
-                    target_path.write_bytes(preview_file.content)
-                    preview_workspace_path = target_path
-                    agent_service.workspace.register_file(
-                        str(target_path.resolve()),
-                        file_id=preview_file.file_id,
-                        db_session=None,
-                    )
-
-                uploaded_files.append(
-                    str(target_path) if target_path else preview_file.filename
-                )
+                uploaded_files.append(str(target_path))
                 file_info_list.append(
                     {
                         "file_id": preview_file.file_id,
@@ -1908,12 +2036,8 @@ async def handle_file_upload_for_task(
                         "original_name": original_file_name,
                         "size": preview_file.file_size,
                         "type": preview_file.mime_type,
-                        "path": str(target_path) if target_path else "",
-                        "workspace_path": (
-                            str(preview_workspace_path)
-                            if preview_workspace_path
-                            else None
-                        ),
+                        "path": str(target_path),
+                        "workspace_path": None,
                     }
                 )
                 continue
@@ -2965,16 +3089,11 @@ async def handle_execute_task(
             # Note: trace_task_completion is handled by handle_chat_message to avoid duplicates
 
             # Extract file output info
-            task_user_id = _task_user_id(task)
-            if task_user_id is not None:
-                file_outputs, path_to_file_id = _normalize_file_outputs(
-                    db,
-                    task_id=int(task_id),
-                    task_user_id=task_user_id,
-                    file_outputs=result.get("file_outputs", []),
-                )
-            else:
-                file_outputs, path_to_file_id = [], {}
+            file_outputs, path_to_file_id = _normalize_task_file_outputs(
+                db,
+                task,
+                result.get("file_outputs", []),
+            )
             result["output"] = _rewrite_file_links_to_file_id(
                 result.get("output", ""),
                 path_to_file_id,
@@ -3183,7 +3302,6 @@ async def send_historical_data_as_stream(
 
             historical_path_to_file_id: Dict[str, str] = {}
             normalized_trace_data_by_event_id: Dict[str, Any] = {}
-            task_user_id = int(cast(Any, task.user_id))
             # Dedup key for "is this chat_messages row already covered by a
             # trace event?". Includes an attachment fingerprint so two
             # user turns with the same typed text but different uploaded
@@ -3202,11 +3320,10 @@ async def send_historical_data_as_stream(
                             normalized_event_data
                         )
                         continue
-                    normalized_outputs, path_to_file_id = _normalize_file_outputs(
+                    normalized_outputs, path_to_file_id = _normalize_task_file_outputs(
                         db,
-                        task_id=task_id,
-                        task_user_id=task_user_id,
-                        file_outputs=normalized_event_data.get("file_outputs", []),
+                        task,
+                        normalized_event_data.get("file_outputs", []),
                     )
                     if normalized_outputs:
                         normalized_event_data["file_outputs"] = normalized_outputs
@@ -4416,7 +4533,7 @@ async def websocket_build_preview_endpoint(
                     websocket.state, "preview_session_id", None
                 )
                 if preview_session_id:
-                    preview_file_registry.clear_session(
+                    preview_file_store.clear_session(
                         preview_session_id,
                         int(user.id),
                     )
@@ -4447,7 +4564,7 @@ async def websocket_build_preview_endpoint(
     except WebSocketDisconnect:
         preview_session_id = getattr(websocket.state, "preview_session_id", None)
         if preview_session_id:
-            preview_file_registry.clear_session(preview_session_id, int(user.id))
+            preview_file_store.clear_session(preview_session_id, int(user.id))
         preview_task_id = getattr(websocket.state, "preview_task_id", None)
         if isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit():
             manager.disconnect(websocket, int(preview_task_id))

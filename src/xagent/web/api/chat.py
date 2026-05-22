@@ -50,7 +50,7 @@ from ..services.hot_path_cache import (
 from ..services.llm_utils import resolve_llms_from_names
 from ..services.managed_file_ref import ensure_uploaded_file_local_path
 from ..services.model_service import _get_visible_user_ids
-from ..services.preview_file_registry import preview_file_registry
+from ..services.preview_file_store import preview_file_store
 from ..services.task_execution_context_service import (
     load_task_execution_recovery_state,
 )
@@ -1849,7 +1849,7 @@ async def create_task(
 
             for file_id in request.files:
                 if request.is_preview:
-                    preview_file = preview_file_registry.get(file_id)
+                    preview_file = preview_file_store.get(file_id)
                     if preview_file is not None and preview_file.owner_user_id == int(
                         user.id
                     ):
@@ -2155,12 +2155,12 @@ async def create_task(
             preview_file_ids = [
                 file_id
                 for file_id in selected_file_ids
-                if preview_file_registry.get(file_id) is not None
+                if preview_file_store.get(file_id) is not None
             ]
             persistent_file_ids = [
                 file_id
                 for file_id in selected_file_ids
-                if preview_file_registry.get(file_id) is None
+                if preview_file_store.get(file_id) is None
             ]
 
             if persistent_file_ids:
@@ -2177,7 +2177,7 @@ async def create_task(
                     )
                 )
             if preview_file_ids:
-                preview_file_registry.bind_to_task(
+                preview_file_store.bind_to_task(
                     preview_file_ids,
                     int(task.id),
                     int(user.id),

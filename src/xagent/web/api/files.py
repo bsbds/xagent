@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -34,7 +34,7 @@ from ..services.managed_file_ref import (
     ManagedFileRef,
     guess_media_type,
 )
-from ..services.preview_file_registry import PreviewFile, preview_file_registry
+from ..services.preview_file_store import PreviewFileRef, preview_file_store
 from ..services.uploaded_file_store import UploadedFileStore
 from .legacy_file import (
     infer_user_id_from_legacy_path,
@@ -108,27 +108,6 @@ async def _write_upload_with_size_limit(uploaded: UploadFile, target_path: Path)
     return total_size
 
 
-async def _read_upload_with_size_limit(uploaded: UploadFile) -> bytes:
-    """Read an upload into memory while enforcing the configured size limit."""
-    chunks: list[bytes] = []
-    total_size = 0
-    read_buffer_size = 1024 * 1024
-
-    while True:
-        chunk = await uploaded.read(read_buffer_size)
-        if not chunk:
-            break
-        total_size += len(chunk)
-        if total_size > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE_LABEL}",
-            )
-        chunks.append(chunk)
-
-    return b"".join(chunks)
-
-
 def _user_id_value(user: User) -> int:
     return int(getattr(user, "id"))
 
@@ -154,10 +133,13 @@ def _content_disposition_filename(filename: str) -> str:
     return filename.replace('"', '\\"')
 
 
-def _preview_file_response(preview_file: PreviewFile, *, inline: bool) -> Response:
+def _preview_file_response(
+    preview_file: PreviewFileRef, *, inline: bool
+) -> FileResponse:
     disposition = "inline" if inline else "attachment"
-    return Response(
-        content=preview_file.content,
+    return FileResponse(
+        path=str(preview_file.path),
+        filename=preview_file.filename,
         media_type=preview_file.mime_type,
         headers={
             "Content-Disposition": (
@@ -411,8 +393,8 @@ def _resolve_file_path(
     Raises:
         HTTPException: If file is not found
     """
-    if preview_file_registry.get(file_id_or_path) is not None:
-        raise HTTPException(status_code=409, detail="Preview file is memory-backed")
+    if preview_file_store.get(file_id_or_path) is not None:
+        raise HTTPException(status_code=409, detail="Preview file is temporary")
 
     # If it's a valid UUID, try to find by file_id (new system)
     if is_valid_uuid(file_id_or_path):
@@ -523,29 +505,37 @@ async def upload_file(
     uploaded_files = []
     written_paths: list[Path] = []
     written_storage_keys: list[str] = []
-    memory_only = storage_mode == "preview" or task_type == "build_preview"
+    preview_storage = storage_mode == "preview" or task_type == "build_preview"
 
     try:
         for uploaded in upload_items:
             if not uploaded.filename or not uploaded.filename.strip():
                 raise HTTPException(status_code=422, detail="No filename provided")
-            validation_task_type = "general" if memory_only else task_type
+            validation_task_type = "general" if preview_storage else task_type
             if not is_allowed_file(uploaded.filename, validation_task_type):
                 raise HTTPException(
                     status_code=500,
                     detail=f"File type {Path(uploaded.filename).suffix.lower()} not supported for task type {task_type}",
                 )
 
-            if memory_only:
-                content = await _read_upload_with_size_limit(uploaded)
-                preview_file = preview_file_registry.register(
+            if preview_storage:
+                pending = preview_file_store.prepare_path(
                     owner_user_id=_user_id_value(user),
                     filename=uploaded.filename,
-                    content=content,
                     mime_type=uploaded.content_type,
                     task_id=parsed_task_id,
                     session_id=preview_session_id,
                 )
+                try:
+                    file_size = await _write_upload_with_size_limit(
+                        uploaded, pending.path
+                    )
+                    preview_file = preview_file_store.commit(
+                        pending, file_size=file_size
+                    )
+                except Exception:
+                    preview_file_store.discard_pending(pending)
+                    raise
                 uploaded_files.append(
                     {
                         "file_id": preview_file.file_id,
@@ -779,7 +769,7 @@ async def download_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
-    preview_file = preview_file_registry.get(file_id)
+    preview_file = preview_file_store.get(file_id)
     if preview_file is not None:
         if preview_file.owner_user_id != _user_id_value(user) and not _is_admin_user(
             user
@@ -868,7 +858,7 @@ async def preview_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
-    preview_file = preview_file_registry.get(file_id)
+    preview_file = preview_file_store.get(file_id)
     if preview_file is not None:
         if preview_file.owner_user_id != _user_id_value(user) and not _is_admin_user(
             user
@@ -928,7 +918,7 @@ async def public_preview_file(
     relative_path: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ) -> Any:
-    preview_file = preview_file_registry.get(file_id)
+    preview_file = preview_file_store.get(file_id)
     if preview_file is not None:
         return _preview_file_response(preview_file, inline=True)
 
