@@ -633,6 +633,52 @@ class TestFileUpload:
         )
         assert missing_response.status_code == 404
 
+    def test_public_preview_temp_file_honors_relative_path_for_generated_asset(
+        self, client, test_db, tmp_path, monkeypatch
+    ):
+        """Generated preview HTML can serve same-session relative asset files."""
+        monkeypatch.setenv("XAGENT_PREVIEW_TMP_DIR", str(tmp_path / "preview-tmp"))
+        owner_user = test_db[0]
+        session_id = "preview-asset-session"
+
+        source_dir = tmp_path / "source" / "output"
+        asset_dir = source_dir / "assets"
+        asset_dir.mkdir(parents=True)
+        html_path = source_dir / "report.html"
+        css_path = asset_dir / "app.css"
+        html_path.write_text('<link href="./assets/app.css">', encoding="utf-8")
+        css_path.write_text("body { color: red; }", encoding="utf-8")
+
+        base_ref = preview_file_store.register_generated_file(
+            owner_user_id=int(owner_user.id),
+            source_path=html_path,
+            filename="report.html",
+            mime_type="text/html",
+            task_id=321,
+            session_id=session_id,
+            file_id="preview-report-html",
+            workspace_relative_path="output/report.html",
+        )
+        preview_file_store.register_generated_file(
+            owner_user_id=int(owner_user.id),
+            source_path=css_path,
+            filename="app.css",
+            mime_type="text/css",
+            task_id=321,
+            session_id=session_id,
+            file_id="preview-report-css",
+            workspace_relative_path="output/assets/app.css",
+        )
+
+        response = client.get(
+            f"/api/files/public/preview/{base_ref.file_id}?relative_path=./assets/app.css"
+        )
+
+        assert response.status_code == 200
+        assert response.text == "body { color: red; }"
+
+        preview_file_store.clear_session(session_id, int(owner_user.id))
+
     def test_upload_png_file_success(
         self, client, test_db, temp_uploads_dir, auth_headers
     ):

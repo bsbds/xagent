@@ -149,6 +149,25 @@ def _preview_file_response(
     )
 
 
+def _preview_workspace_asset_path(
+    preview_file: PreviewFileRef, relative_path: str
+) -> Optional[str]:
+    base_workspace_path = preview_file.workspace_relative_path
+    if not base_workspace_path:
+        return None
+
+    base_dir = Path(base_workspace_path).parent
+    requested_path = Path(relative_path.strip())
+    if requested_path.is_absolute():
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    candidate = (base_dir / requested_path).as_posix()
+    path_parts = [part for part in Path(candidate).parts if part not in ("", ".")]
+    if not path_parts or ".." in path_parts:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return "/".join(path_parts)
+
+
 def _build_unique_file_path(path: Path) -> Path:
     if not path.exists():
         return path
@@ -920,6 +939,19 @@ async def public_preview_file(
 ) -> Any:
     preview_file = preview_file_store.get(file_id)
     if preview_file is not None:
+        if relative_path:
+            workspace_asset_path = _preview_workspace_asset_path(
+                preview_file, relative_path
+            )
+            if workspace_asset_path:
+                asset_file = preview_file_store.find_session_file(
+                    owner_user_id=preview_file.owner_user_id,
+                    session_id=preview_file.session_id,
+                    workspace_relative_path=workspace_asset_path,
+                )
+                if asset_file is not None:
+                    return _preview_file_response(asset_file, inline=True)
+                raise HTTPException(status_code=404, detail="File not found")
         return _preview_file_response(preview_file, inline=True)
 
     # For public preview, we need to handle both file_id and legacy paths

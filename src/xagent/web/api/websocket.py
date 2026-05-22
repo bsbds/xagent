@@ -1186,6 +1186,7 @@ def _normalize_preview_file_outputs(
             task_id=task_id,
             session_id=preview_session_id,
             file_id=expected_file_id,
+            workspace_relative_path=workspace_relative_path,
         )
 
         final_file_id = preview_file.file_id

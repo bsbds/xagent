@@ -29,6 +29,7 @@ class PreviewFileRef:
     file_size: int
     created_at: datetime
     source: PreviewFileSource
+    workspace_relative_path: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class PreviewPendingFile:
     mime_type: str
     created_at: datetime
     source: PreviewFileSource
+    workspace_relative_path: Optional[str] = None
 
 
 class PreviewFileStore:
@@ -60,6 +62,7 @@ class PreviewFileStore:
         session_id: Optional[str] = None,
         file_id: Optional[str] = None,
         source: PreviewFileSource = "upload",
+        workspace_relative_path: Optional[str] = None,
     ) -> PreviewPendingFile:
         resolved_file_id = self._safe_segment(file_id or str(uuid.uuid4()))
         resolved_session_id = self._safe_segment(session_id or str(uuid.uuid4()))
@@ -78,6 +81,7 @@ class PreviewFileStore:
             or "application/octet-stream",
             created_at=datetime.now(timezone.utc),
             source=source,
+            workspace_relative_path=workspace_relative_path,
         )
 
     def commit(self, pending: PreviewPendingFile, *, file_size: int) -> PreviewFileRef:
@@ -92,6 +96,7 @@ class PreviewFileStore:
             file_size=file_size,
             created_at=pending.created_at,
             source=pending.source,
+            workspace_relative_path=pending.workspace_relative_path,
         )
         with self._lock:
             self._write_metadata(preview_file)
@@ -108,6 +113,7 @@ class PreviewFileStore:
         task_id: int,
         session_id: str,
         file_id: Optional[str] = None,
+        workspace_relative_path: Optional[str] = None,
     ) -> PreviewFileRef:
         pending = self.prepare_path(
             owner_user_id=owner_user_id,
@@ -117,6 +123,7 @@ class PreviewFileStore:
             session_id=session_id,
             file_id=file_id,
             source="generated",
+            workspace_relative_path=workspace_relative_path,
         )
         try:
             shutil.copy2(source_path, pending.path)
@@ -156,9 +163,37 @@ class PreviewFileStore:
                     file_size=preview_file.file_size,
                     created_at=preview_file.created_at,
                     source=preview_file.source,
+                    workspace_relative_path=preview_file.workspace_relative_path,
                 )
                 self._write_metadata(rebound)
                 self._add_to_session(rebound)
+
+    def find_session_file(
+        self,
+        *,
+        owner_user_id: int,
+        session_id: str,
+        workspace_relative_path: str,
+    ) -> Optional[PreviewFileRef]:
+        normalized_path = self._normalize_workspace_path(workspace_relative_path)
+        if normalized_path is None:
+            return None
+
+        session_path = self._session_path(owner_user_id, session_id)
+        with self._lock:
+            for file_id in self._read_session_file_ids(session_path):
+                preview_file = self.get(file_id)
+                if (
+                    preview_file is not None
+                    and preview_file.owner_user_id == owner_user_id
+                    and preview_file.session_id == session_id
+                    and self._normalize_workspace_path(
+                        preview_file.workspace_relative_path
+                    )
+                    == normalized_path
+                ):
+                    return preview_file
+        return None
 
     def clear_session(
         self, session_id: str, owner_user_id: Optional[int] = None
@@ -233,6 +268,9 @@ class PreviewFileStore:
             file_size=int(data["file_size"]),
             created_at=datetime.fromisoformat(str(data["created_at"])),
             source=self._source_from_value(data.get("source")),
+            workspace_relative_path=self._normalize_workspace_path(
+                data.get("workspace_relative_path")
+            ),
         )
 
     def _add_to_session(self, preview_file: PreviewFileRef) -> None:
@@ -263,6 +301,17 @@ class PreviewFileStore:
         if value in {"upload", "generated"}:
             return cast(PreviewFileSource, value)
         return "upload"
+
+    def _normalize_workspace_path(self, value: object) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        path = Path(value.strip())
+        if path.is_absolute():
+            return None
+        path_parts = [part for part in path.parts if part not in ("", ".")]
+        if not path_parts or ".." in path_parts:
+            return None
+        return "/".join(path_parts)
 
 
 preview_file_store = PreviewFileStore()
