@@ -98,33 +98,6 @@ class PreviewFileStore:
             self._add_to_session(preview_file)
         return preview_file
 
-    def register_upload(
-        self,
-        *,
-        owner_user_id: int,
-        filename: str,
-        content: bytes,
-        mime_type: Optional[str],
-        task_id: Optional[int] = None,
-        session_id: Optional[str] = None,
-        file_id: Optional[str] = None,
-    ) -> PreviewFileRef:
-        pending = self.prepare_path(
-            owner_user_id=owner_user_id,
-            filename=filename,
-            mime_type=mime_type,
-            task_id=task_id,
-            session_id=session_id,
-            file_id=file_id,
-            source="upload",
-        )
-        try:
-            pending.path.write_bytes(content)
-            return self.commit(pending, file_size=len(content))
-        except Exception:
-            self.discard_pending(pending)
-            raise
-
     def register_generated_file(
         self,
         *,
@@ -226,13 +199,17 @@ class PreviewFileStore:
         return self._root() / "sessions"
 
     def _file_dir(self, file_id: str) -> Path:
-        return self._files_root() / file_id
+        return self._files_root() / self._safe_segment(file_id)
 
     def _metadata_path(self, file_id: str) -> Path:
         return self._file_dir(file_id) / "metadata.json"
 
     def _session_path(self, owner_user_id: int, session_id: str) -> Path:
-        return self._sessions_root() / str(owner_user_id) / f"{session_id}.json"
+        return (
+            self._sessions_root()
+            / str(owner_user_id)
+            / f"{self._safe_segment(session_id)}.json"
+        )
 
     def _write_metadata(self, preview_file: PreviewFileRef) -> None:
         metadata_path = self._metadata_path(preview_file.file_id)

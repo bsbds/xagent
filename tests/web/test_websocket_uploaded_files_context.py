@@ -632,14 +632,17 @@ async def test_handle_file_upload_for_preview_task_returns_temp_file_path(
     _create_task(db_session, task_id=42, user_id=1)
     monkeypatch.setenv("XAGENT_PREVIEW_TMP_DIR", str(tmp_path / "preview-tmp"))
 
-    preview_file = preview_file_store.register_upload(
+    pending_file = preview_file_store.prepare_path(
         owner_user_id=1,
         filename="Preview File.txt",
-        content=b"preview content",
         mime_type="text/plain",
         task_id=42,
         session_id="preview-session",
         file_id="preview-file",
+    )
+    pending_file.path.write_bytes(b"preview content")
+    preview_file = preview_file_store.commit(
+        pending_file, file_size=len(b"preview content")
     )
 
     try:
