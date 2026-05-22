@@ -44,6 +44,7 @@ dependencies = [
   "pillow >= 10.0.0",
   "lancedb>=0.13.0",
   "pyarrow>=16.1.0",
+  "s3fs>=2024.6.0",
   # Basic document processing (keep pypdf for basic PDF support)
   "pypdf>=4.0.0",
   "tiktoken>=0.8.0",
