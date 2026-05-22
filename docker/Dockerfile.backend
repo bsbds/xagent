@@ -53,12 +53,15 @@ RUN python -m venv /opt/venv \
 FROM backend-base AS backend-deps
 
 ARG PYPI_INDEX_URL=""
+ARG XAGENT_PACKAGE_VERSION=0.0.0
 
-COPY uv.lock ./
 COPY pyproject.toml README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    VIRTUAL_ENV=/opt/venv uv sync --active --frozen --no-dev --extra backend-image \
+    SETUPTOOLS_SCM_PRETEND_VERSION="${XAGENT_PACKAGE_VERSION}" \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XAGENT="${XAGENT_PACKAGE_VERSION}" \
+    VCS_VERSIONING_PRETEND_VERSION_FOR_XAGENT="${XAGENT_PACKAGE_VERSION}" \
+    VIRTUAL_ENV=/opt/venv uv sync --active --no-dev --extra backend-image \
     --no-install-project \
     ${PYPI_INDEX_URL:+--default-index $PYPI_INDEX_URL}
 
