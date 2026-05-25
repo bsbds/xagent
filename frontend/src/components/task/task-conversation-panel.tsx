@@ -413,17 +413,29 @@ export function TaskConversationPanel({
 
   const validSteps = state.steps.filter((step: any) => step && typeof step.id === "string" && step.id.trim() !== "")
   validSteps.forEach((step: any, index: number) => {
-    dagreGraph.setNode(step.id, {
-      label: step.name || `Step ${index + 1}`,
-      width: 250,
-      height: 200,
-    })
+    try {
+      dagreGraph.setNode(step.id, {
+        label: step.name || `Step ${index + 1}`,
+        width: 250,
+        height: 200,
+      })
+    } catch (error) {
+      console.error("Error adding node to dagre:", step, error)
+    }
   })
   validSteps.forEach((step: any) => {
     if (!Array.isArray(step.dependencies)) return
     step.dependencies.forEach((depId: string) => {
-      if (depId && validSteps.some((candidate: any) => candidate.id === depId)) {
-        dagreGraph.setEdge(depId, step.id, {})
+      if (!depId || typeof depId !== "string" || depId.trim() === "") {
+        return
+      }
+      const depStep = validSteps.find((candidate: any) => candidate.id === depId)
+      if (depStep) {
+        try {
+          dagreGraph.setEdge(depId, step.id, {})
+        } catch (error) {
+          console.error("Error adding edge to dagre:", `${depId} -> ${step.id}`, error)
+        }
       }
     })
   })
@@ -437,9 +449,20 @@ export function TaskConversationPanel({
   }
 
   const dagNodes = state.steps.map((step: any, index: number) => {
-    const node = dagreLayoutSuccessful && step.id ? dagreGraph.node(step.id) : null
-    const fallback = { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 }
-    const safeNode = typeof node === "object" && node !== null ? node : fallback
+    let node: any
+    let safeNode: any
+    if (!step.id || typeof step.id !== "string" || step.id.trim() === "") {
+      safeNode = { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 }
+    } else if (dagreLayoutSuccessful) {
+      try {
+        node = dagreGraph.node(step.id)
+        safeNode = typeof node === "object" && node !== null ? node : { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 }
+      } catch (error) {
+        safeNode = { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 }
+      }
+    } else {
+      safeNode = { x: (index % 3) * 300, y: Math.floor(index / 3) * 250 }
+    }
     return {
       id: step.id || `step-${index}`,
       type: "default",
@@ -460,15 +483,27 @@ export function TaskConversationPanel({
   })
 
   const validNodeIds = new Set(validSteps.map((step: any) => step.id))
-  const dagEdges = dagreLayoutSuccessful
-    ? validSteps.flatMap((step: any) => (
-      Array.isArray(step.dependencies)
-        ? step.dependencies
-          .filter((depId: string) => validNodeIds.has(depId) && validNodeIds.has(step.id))
-          .map((depId: string) => ({ id: `${depId}-${step.id}`, source: depId, target: step.id, data: {} }))
-        : []
-    ))
-    : []
+  const dagEdges: any[] = []
+  if (dagreLayoutSuccessful) {
+    validSteps.forEach((step: any) => {
+      if (!Array.isArray(step.dependencies)) {
+        return
+      }
+      step.dependencies.forEach((depId: string) => {
+        if (!depId || typeof depId !== "string" || depId.trim() === "") {
+          return
+        }
+        if (validNodeIds.has(depId) && validNodeIds.has(step.id)) {
+          dagEdges.push({
+            id: `${depId}-${step.id}`,
+            source: depId,
+            target: step.id,
+            data: {},
+          })
+        }
+      })
+    })
+  }
 
   const isPlanning = dagNodes.length === 0 && state.dagExecution?.phase === "planning"
   const hasError = dagNodes.length === 0 && (state.dagExecution?.phase === "failed" || state.currentTask?.status === "failed")
