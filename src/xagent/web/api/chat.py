@@ -832,6 +832,7 @@ class AgentServiceManager:
             "memory_similarity_threshold": inline_config.get(
                 "memory_similarity_threshold"
             ),
+            "is_preview": inline_config.get("is_preview"),
             "preview_agent_id": inline_config.get("preview_agent_id"),
         }
 

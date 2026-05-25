@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from xagent.core.file_storage.factory import get_file_storage
 from xagent.core.memory.in_memory import InMemoryMemoryStore
-from xagent.web.api.chat import resolve_agent_service_memory_policy
+from xagent.web.api.chat import AgentServiceManager, resolve_agent_service_memory_policy
 from xagent.web.api.websocket import (
     _normalize_file_outputs,
     handle_build_preview_execution,
@@ -222,6 +222,28 @@ def test_preview_agent_config_uses_in_memory_disabled_policy():
     }
 
     policy = resolve_agent_service_memory_policy(task=task)
+
+    assert isinstance(policy.memory, InMemoryMemoryStore)
+    assert policy.memory_enabled is False
+
+
+def test_inline_preview_agent_config_uses_in_memory_disabled_policy():
+    task = MagicMock(spec=Task)
+    task.agent_id = None
+    task.execution_mode = "balanced"
+    task.agent_config = {
+        "instructions": "preview instructions",
+        "knowledge_bases": [],
+        "skills": [],
+        "tool_categories": [],
+        "is_preview": True,
+    }
+
+    agent_config = AgentServiceManager()._load_task_inline_agent_config(task)
+    policy = resolve_agent_service_memory_policy(
+        task=task,
+        agent_config=agent_config,
+    )
 
     assert isinstance(policy.memory, InMemoryMemoryStore)
     assert policy.memory_enabled is False
