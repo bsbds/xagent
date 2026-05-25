@@ -9,6 +9,7 @@ from xagent.core.file_storage.factory import get_file_storage
 from xagent.core.memory.in_memory import InMemoryMemoryStore
 from xagent.web.api.chat import resolve_agent_service_memory_policy
 from xagent.web.api.websocket import (
+    _build_preview_runtime_signature,
     _normalize_file_outputs,
     handle_build_preview_execution,
 )
@@ -72,6 +73,7 @@ async def test_handle_build_preview_execution_uses_normal_task_flow():
     assert create_request.agent_id is None
     assert create_request.agent_config["instructions"] == "test instructions"
     assert create_request.llm_ids == ["1", None, None, None]
+    assert create_request.files is None
     mock_register_connection.assert_called_once_with(mock_websocket, 123)
     mock_connect.assert_not_awaited()
     mock_handle_chat_message.assert_awaited_once()
@@ -143,7 +145,6 @@ async def test_handle_build_preview_execution_reuses_existing_preview_task():
                 "tool_categories": [],
             },
             "execution_mode": None,
-            "file_ids": [],
             "llm_ids": ["1", None, None, None],
         },
         sort_keys=True,
@@ -159,6 +160,7 @@ async def test_handle_build_preview_execution_reuses_existing_preview_task():
         "instructions": "updated instructions",
         "models": {"general": 1},
         "message": "second turn",
+        "files": [{"file_id": "second-turn-file", "name": "data.csv"}],
     }
 
     with (
@@ -181,6 +183,14 @@ async def test_handle_build_preview_execution_reuses_existing_preview_task():
     mock_handle_chat_message.assert_awaited_once()
     assert mock_handle_chat_message.await_args.args[1] == 123
     assert mock_handle_chat_message.await_args.args[2]["message"] == "second turn"
+    assert mock_handle_chat_message.await_args.args[2]["files"] == [
+        {"file_id": "second-turn-file", "name": "data.csv"}
+    ]
+    sent_events = [
+        json.loads(call.args[0]) for call in mock_websocket.send_text.call_args_list
+    ]
+    assert [event["type"] for event in sent_events] == ["preview_turn_started"]
+    assert sent_events[0]["task_id"] == 123
 
 
 @pytest.mark.asyncio
@@ -200,7 +210,6 @@ async def test_handle_build_preview_execution_recreates_task_when_config_changes
                 "tool_categories": [],
             },
             "execution_mode": "balanced",
-            "file_ids": [],
             "llm_ids": ["1", None, None, None],
         },
         sort_keys=True,
@@ -251,6 +260,32 @@ async def test_handle_build_preview_execution_recreates_task_when_config_changes
     mock_handle_chat_message.assert_awaited_once()
     assert mock_handle_chat_message.await_args.args[1] == 456
     assert mock_websocket.state.preview_task_id == 456
+
+
+def test_preview_runtime_signature_ignores_turn_scoped_files():
+    agent_config = {
+        "instructions": "same runtime",
+        "is_preview": True,
+        "knowledge_bases": [],
+        "preview_agent_id": None,
+        "preview_session_id": "session-a",
+        "skills": [],
+        "tool_categories": [],
+    }
+
+    first = _build_preview_runtime_signature(
+        agent_config=agent_config,
+        execution_mode="balanced",
+        llm_ids=["1", None, None, None],
+    )
+    second = _build_preview_runtime_signature(
+        agent_config=agent_config,
+        execution_mode="balanced",
+        llm_ids=["1", None, None, None],
+    )
+
+    assert first == second
+    assert "file_ids" not in json.loads(first)
 
 
 def test_preview_agent_config_uses_in_memory_disabled_policy():

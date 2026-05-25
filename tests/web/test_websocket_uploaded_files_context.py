@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -5,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from xagent.core.agent.trace import get_display_user_message
+from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.api import websocket as websocket_api
 from xagent.web.api.chat import _build_task_agent_config
 from xagent.web.api.websocket import (
@@ -503,18 +505,23 @@ def test_normalize_file_outputs_registers_current_task_output_path(
 ):
     uploads_dir = tmp_path / "uploads"
     monkeypatch.setenv("XAGENT_UPLOADS_DIR", str(uploads_dir))
+    monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+    get_file_storage.cache_clear()
     _create_user(db_session, 1, "owner")
     _create_task(db_session, task_id=20, user_id=1)
     output_path = uploads_dir / "user_1" / "web_task_20" / "output" / "report.txt"
     output_path.parent.mkdir(parents=True)
     output_path.write_text("report")
 
-    normalized_outputs, path_to_file_id = _normalize_file_outputs(
-        db_session,
-        task_id=20,
-        task_user_id=1,
-        file_outputs=[{"path": str(output_path), "filename": "report.txt"}],
-    )
+    try:
+        normalized_outputs, path_to_file_id = _normalize_file_outputs(
+            db_session,
+            task_id=20,
+            task_user_id=1,
+            file_outputs=[{"path": str(output_path), "filename": "report.txt"}],
+        )
+    finally:
+        get_file_storage.cache_clear()
 
     assert len(normalized_outputs) == 1
     assert normalized_outputs[0]["filename"] == "report.txt"
@@ -668,6 +675,67 @@ async def test_handle_file_upload_for_preview_task_returns_temp_file_path(
             "workspace_path": None,
         }
     ]
+    assert db_session.query(UploadedFile).filter_by(file_id="preview-file").count() == 0
+
+
+def test_register_uploaded_files_for_agent_uses_workspace_copy_for_preview_files(
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    _create_user(db_session, 1, "owner")
+    _create_task(db_session, task_id=42, user_id=1)
+    monkeypatch.setenv("XAGENT_PREVIEW_TMP_DIR", str(tmp_path / "preview-tmp"))
+
+    pending_file = preview_file_store.prepare_path(
+        owner_user_id=1,
+        filename="Preview File.txt",
+        mime_type="text/plain",
+        task_id=42,
+        session_id="preview-session",
+        file_id="preview-file",
+    )
+    pending_file.path.write_bytes(b"preview content")
+    preview_file = preview_file_store.commit(
+        pending_file, file_size=len(b"preview content")
+    )
+
+    class Workspace:
+        def __init__(self):
+            self.input_dir = str(tmp_path / "workspace" / "input")
+            self._recently_registered_files = {}
+            self._file_id_to_path = {}
+            self.registered_files = []
+
+        def register_file(self, path, file_id, db_session=None):
+            self.registered_files.append((Path(path), file_id, db_session))
+
+    workspace = Workspace()
+    file_info = {
+        "file_id": preview_file.file_id,
+        "name": "Preview_File.txt",
+        "path": str(preview_file.path),
+        "workspace_path": None,
+    }
+
+    try:
+        _register_uploaded_files_for_agent(
+            SimpleNamespace(workspace=workspace),
+            [file_info],
+            db_session,
+        )
+    finally:
+        preview_file_store.clear_session("preview-session", 1)
+
+    assert workspace.registered_files == []
+    registered_path = Path(file_info["path"])
+    assert workspace._file_id_to_path["preview-file"] == registered_path
+    assert workspace._recently_registered_files[str(registered_path)] == "preview-file"
+    assert registered_path.parent == Path(workspace.input_dir)
+    assert registered_path.read_bytes() == b"preview content"
+    assert registered_path != preview_file.path
+    assert file_info["path"] == str(registered_path)
+    assert file_info["workspace_path"] == str(registered_path)
     assert db_session.query(UploadedFile).filter_by(file_id="preview-file").count() == 0
 
 

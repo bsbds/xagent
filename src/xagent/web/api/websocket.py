@@ -36,7 +36,7 @@ from ...core.agent.trace import TraceEvent, TraceHandler, trace_user_message
 from ...core.file_ref import FILE_REF_MODEL_INSTRUCTIONS, build_file_ref
 from ..auth_dependencies import get_user_from_websocket_token
 from ..models.database import get_db
-from ..models.task import Task, TaskStatus
+from ..models.task import Task, TaskRuntimeKind, TaskStatus
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.chat_history_service import get_latest_waiting_question
@@ -866,6 +866,8 @@ def _workspace_category_from_relative_path(relative_path: str) -> str:
 
 
 def _is_preview_task(task: Any) -> bool:
+    if getattr(task, "runtime_kind", None) == TaskRuntimeKind.BUILD_PREVIEW.value:
+        return True
     agent_config = getattr(task, "agent_config", None)
     return isinstance(agent_config, dict) and bool(agent_config.get("is_preview"))
 
@@ -2160,7 +2162,14 @@ def _register_uploaded_files_for_agent(
             suffix_idx += 1
 
         workspace_link_path: Path | None
-        if candidate.exists() or candidate.is_symlink():
+        is_preview_file = preview_file_store.get(file_id) is not None
+        if is_preview_file:
+            if candidate.is_symlink():
+                candidate.unlink()
+            if not candidate.exists():
+                shutil.copy2(source_path, candidate)
+            workspace_link_path = candidate
+        elif candidate.exists() or candidate.is_symlink():
             workspace_link_path = candidate
         else:
             try:
@@ -2174,17 +2183,28 @@ def _register_uploaded_files_for_agent(
                 shutil.copy2(source_path, candidate)
                 workspace_link_path = candidate
 
-        # Pass absolute path so resolve_path() in register_file doesn't mistake
-        # a CWD-relative storage_path for a workspace-relative one.
-        workspace.register_file(
-            str(source_path.resolve()),
-            file_id=file_id,
-            db_session=db,
+        registration_path = (
+            workspace_link_path.resolve() if is_preview_file else source_path.resolve()
         )
+        if is_preview_file:
+            path_cache = getattr(workspace, "_recently_registered_files", None)
+            if isinstance(path_cache, dict):
+                path_cache[str(registration_path)] = file_id
+                path_cache[str(registration_path.resolve())] = file_id
+            file_id_cache = getattr(workspace, "_file_id_to_path", None)
+            if isinstance(file_id_cache, dict):
+                file_id_cache[file_id] = registration_path
+        else:
+            workspace.register_file(
+                str(registration_path),
+                file_id=file_id,
+                db_session=db,
+            )
+        file_info["path"] = str(registration_path)
         file_info["workspace_path"] = str(workspace_link_path)
         logger.info(
             "File registered for agent workspace: storage=%s input_link=%s",
-            source_path,
+            registration_path,
             workspace_link_path,
         )
 
@@ -4695,7 +4715,6 @@ def _build_preview_runtime_signature(
     *,
     agent_config: dict[str, Any],
     execution_mode: Any,
-    file_ids: list[str],
     llm_ids: list[Optional[str]],
 ) -> str:
     """Return a stable identity for settings that define a preview runtime."""
@@ -4703,7 +4722,6 @@ def _build_preview_runtime_signature(
         {
             "agent_config": agent_config,
             "execution_mode": execution_mode,
-            "file_ids": file_ids,
             "llm_ids": llm_ids,
         },
         sort_keys=True,
@@ -4742,12 +4760,6 @@ async def handle_build_preview_execution(
         preview_session_id = f"build_preview_{uuid.uuid4().hex}"
         websocket.state.preview_session_id = preview_session_id
 
-    file_ids = [
-        str(file_info.get("file_id"))
-        for file_info in files_data
-        if file_info.get("file_id")
-    ]
-
     agent_config = {
         "instructions": message_data.get("instructions", ""),
         "knowledge_bases": message_data.get("knowledge_bases", []),
@@ -4775,7 +4787,6 @@ async def handle_build_preview_execution(
     preview_runtime_signature = _build_preview_runtime_signature(
         agent_config=agent_config,
         execution_mode=execution_mode,
-        file_ids=file_ids,
         llm_ids=llm_ids,
     )
 
@@ -4795,12 +4806,13 @@ async def handle_build_preview_execution(
             title=(user_message or "Build preview")[:80],
             description=user_message,
             agent_id=None,
-            files=file_ids,
+            files=None,
             llm_ids=llm_ids,
             agent_config=agent_config,
             execution_mode=execution_mode,
             is_preview=True,
             preview_session_id=preview_session_id,
+            runtime_kind=TaskRuntimeKind.BUILD_PREVIEW.value,
         )
 
         from ..models import database as database_module
@@ -4828,6 +4840,15 @@ async def handle_build_preview_execution(
     else:
         preview_task_id = int(str(preview_task_id))
 
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "preview_turn_started",
+                "task_id": preview_task_id,
+                "timestamp": datetime.now(timezone.utc).timestamp(),
+            }
+        )
+    )
     await handle_chat_message(
         websocket,
         preview_task_id,
