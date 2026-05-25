@@ -58,11 +58,12 @@ ARG XAGENT_PACKAGE_VERSION=0.0.0
 COPY pyproject.toml README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    SETUPTOOLS_SCM_PRETEND_VERSION="${XAGENT_PACKAGE_VERSION}" \
-    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XAGENT="${XAGENT_PACKAGE_VERSION}" \
-    VCS_VERSIONING_PRETEND_VERSION_FOR_XAGENT="${XAGENT_PACKAGE_VERSION}" \
-    VIRTUAL_ENV=/opt/venv uv sync --active --no-dev --extra backend-image \
-    --no-install-project \
+    uv pip compile pyproject.toml --extra backend-image --no-emit-package xagent \
+    --torch-backend cpu \
+    --output-file /tmp/backend-requirements.txt \
+    ${PYPI_INDEX_URL:+--default-index $PYPI_INDEX_URL} \
+    && VIRTUAL_ENV=/opt/venv uv pip sync /tmp/backend-requirements.txt \
+    --torch-backend cpu \
     ${PYPI_INDEX_URL:+--default-index $PYPI_INDEX_URL}
 
 ############################
