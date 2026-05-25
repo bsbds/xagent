@@ -382,7 +382,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const maxReconnectAttempts = 5
-  const previewSessionIdRef = useRef(`build_preview_${Math.random().toString(36).slice(2)}_${Date.now()}`)
+  const createPreviewSessionId = () => `build_preview_${Math.random().toString(36).slice(2)}_${Date.now()}`
+  const previewSessionIdRef = useRef(createPreviewSessionId())
 
   // Setup WebSocket connection
   useEffect(() => {
@@ -419,6 +420,10 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
             // Handle different message types
             if (message.type === 'preview_started') {
+              setTaskStatus('running')
+              previewStepsRef.current = []
+              traceEventsRef.current = []
+            } else if (message.type === 'preview_turn_started') {
               setIsChatLoading(true)
               setTaskStatus('running')
               previewStepsRef.current = []
@@ -2101,6 +2106,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 content: t("builds.preview.initialMessage"),
                 timestamp: Date.now()
               }])
+              setFiles([])
+              previewSessionIdRef.current = createPreviewSessionId()
               if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: "clear_context" }))
               }
