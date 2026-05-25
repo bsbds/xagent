@@ -1058,6 +1058,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
       const ws = await connectPreviewWebSocket(previewTaskId)
 
+      setTaskStatus('running')
+      previewStepsRef.current = []
+      traceEventsRef.current = []
+      appendAssistantPlaceholder()
+
       ws.send(JSON.stringify({
         type: "chat",
         message: backendMessage,
