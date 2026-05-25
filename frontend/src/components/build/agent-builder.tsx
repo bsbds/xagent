@@ -1847,10 +1847,10 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       <div className="flex-1 min-h-0">
         <TaskConversationPanel
           mode="embedded-preview"
-          showTaskActions={false}
+          showTaskActions={true}
           showTokenUsage={false}
           showDagPreview={false}
-          showTaskFiles={false}
+          showTaskFiles={true}
           autoFocusInput={false}
           onSend={handlePreviewSendMessage}
         />

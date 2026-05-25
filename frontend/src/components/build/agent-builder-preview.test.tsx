@@ -6,6 +6,7 @@ const apiRequestMock = vi.hoisted(() => vi.fn())
 const setTaskIdMock = vi.hoisted(() => vi.fn())
 const sendMessageMock = vi.hoisted(() => vi.fn())
 const dispatchMock = vi.hoisted(() => vi.fn())
+const taskConversationPanelMock = vi.hoisted(() => vi.fn())
 
 vi.mock("@/lib/api-wrapper", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api-wrapper")>(
@@ -93,11 +94,14 @@ vi.mock("@/components/layout/resizable-three-column-layout", () => ({
 }))
 
 vi.mock("@/components/task/task-conversation-panel", () => ({
-  TaskConversationPanel: ({ onSend }: { onSend?: (message: string, config?: any, files?: File[]) => void }) => (
-    <button type="button" onClick={() => onSend?.("Preview this")}>
-      send-preview-message
-    </button>
-  ),
+  TaskConversationPanel: (props: { onSend?: (message: string, config?: any, files?: File[]) => void }) => {
+    taskConversationPanelMock(props)
+    return (
+      <button type="button" onClick={() => props.onSend?.("Preview this")}>
+        send-preview-message
+      </button>
+    )
+  },
 }))
 
 vi.mock("@/components/build/agent-builder-chat", () => ({
@@ -149,6 +153,7 @@ describe("AgentBuilder preview", () => {
     setTaskIdMock.mockReset()
     sendMessageMock.mockReset()
     dispatchMock.mockReset()
+    taskConversationPanelMock.mockReset()
     sendMessageMock.mockResolvedValue(undefined)
     globalThis.WebSocket = vi.fn() as any
 
@@ -233,6 +238,22 @@ describe("AgentBuilder preview", () => {
       expect(sendMessageMock).toHaveBeenCalledWith("Preview this", expect.objectContaining({ force: true }), undefined)
     })
     expect(globalThis.WebSocket).not.toHaveBeenCalled()
+  })
+
+  it("shows task file management in the embedded preview panel", async () => {
+    render(<AgentBuilder />)
+
+    await waitFor(() => {
+      expect(taskConversationPanelMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "embedded-preview",
+          showTaskActions: true,
+          showTaskFiles: true,
+          showDagPreview: false,
+          showTokenUsage: false,
+        })
+      )
+    })
   })
 
   it("recreates the hidden preview task after builder config changes", async () => {
