@@ -47,16 +47,25 @@ type CombinedItem = {
 }
 
 const toTimestampMs = (timestamp: unknown): number => {
+  let time: number
   if (typeof timestamp === "number") {
-    return timestamp < 100000000000 ? timestamp * 1000 : timestamp
+    time = timestamp
+  } else {
+    const numeric = Number(timestamp)
+    if (!Number.isNaN(numeric)) {
+      time = numeric
+    } else if (typeof timestamp === "string" || timestamp instanceof Date) {
+      time = new Date(timestamp).getTime()
+    } else {
+      time = Number.NaN
+    }
   }
 
-  const numeric = Number(timestamp)
-  if (!Number.isNaN(numeric)) {
-    return numeric < 100000000000 ? numeric * 1000 : numeric
+  if (!Number.isFinite(time)) {
+    return 0
   }
 
-  return new Date(String(timestamp)).getTime()
+  return time < 100000000000 ? time * 1000 : time
 }
 
 const findWaitingPrompt = (currentTask: any, traceEvents: any[]) => {

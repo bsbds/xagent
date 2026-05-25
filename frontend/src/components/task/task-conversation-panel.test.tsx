@@ -187,4 +187,37 @@ describe("TaskConversationPanel", () => {
     expect(renderedMessages[1]).toHaveAttribute("data-trace-count", "1")
     expect(renderedMessages[2]).toHaveTextContent("Done")
   })
+
+  it("normalizes invalid timestamps to zero for deterministic ordering", () => {
+    appState.messages = [
+      {
+        id: "msg-valid",
+        role: "user",
+        content: "Valid timestamp",
+        timestamp: "1000",
+      },
+      {
+        id: "msg-invalid",
+        role: "assistant",
+        content: "Invalid timestamp",
+        timestamp: {},
+        isResult: true,
+      },
+    ] as any
+    appState.traceEvents = []
+    appState.currentTask = {
+      id: "42",
+      title: "Task",
+      description: "Task",
+      status: "completed",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    } as any
+
+    render(<TaskConversationPanel mode="page" />)
+
+    const renderedMessages = screen.getAllByTestId("chat-message")
+    expect(renderedMessages[0]).toHaveTextContent("Invalid timestamp")
+    expect(renderedMessages[1]).toHaveTextContent("Valid timestamp")
+  })
 })
