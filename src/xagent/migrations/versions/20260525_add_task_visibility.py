@@ -1,7 +1,7 @@
 """add task visibility flag
 
 Revision ID: 20260525_add_task_visibility
-Revises: 20260521_merge_alembic_heads
+Revises: 20260525_add_trace_checkpoint_blobs
 Create Date: 2026-05-25 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ from alembic import op
 from sqlalchemy import inspect
 
 revision: str = "20260525_add_task_visibility"
-down_revision: Union[str, None] = "20260521_merge_alembic_heads"
+down_revision: Union[str, None] = "20260525_add_trace_checkpoint_blobs"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
