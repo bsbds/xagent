@@ -465,7 +465,6 @@ export function TaskConversationPanel({
   const hasError = dagNodes.length === 0 && (state.dagExecution?.phase === "failed" || state.currentTask?.status === "failed")
   const shouldShowHistoryLoading =
     timelineItems.length === 0 &&
-    state.currentTask?.status !== "waiting_for_user" &&
     state.isHistoryLoading
   const shouldShowVirtualMessage =
     (state.isProcessing ||

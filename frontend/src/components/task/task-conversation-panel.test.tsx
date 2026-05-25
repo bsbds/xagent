@@ -125,6 +125,26 @@ describe("TaskConversationPanel", () => {
     expect(screen.getByTestId("chat-message")).toHaveAttribute("data-active", "true")
   })
 
+  it("shows history loading before waiting-for-user content while history is loading", () => {
+    appState.messages = []
+    appState.traceEvents = []
+    appState.currentTask = {
+      id: "42",
+      title: "Task",
+      description: "Task",
+      status: "waiting_for_user",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      waitingQuestion: "Which dataset should I use?",
+    } as any
+    appState.isHistoryLoading = true
+
+    render(<TaskConversationPanel mode="page" />)
+
+    expect(screen.getByText("common.loading")).toBeInTheDocument()
+    expect(screen.queryByText("Which dataset should I use?")).not.toBeInTheDocument()
+  })
+
   it("renders trace process events as separate timeline items between messages", () => {
     appState.messages = [
       {
