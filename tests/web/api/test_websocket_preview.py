@@ -9,7 +9,6 @@ from xagent.core.file_storage.factory import get_file_storage
 from xagent.core.memory.in_memory import InMemoryMemoryStore
 from xagent.web.api.chat import resolve_agent_service_memory_policy
 from xagent.web.api.websocket import (
-    _build_preview_runtime_signature,
     _normalize_file_outputs,
     handle_build_preview_execution,
 )
@@ -69,7 +68,7 @@ async def test_handle_build_preview_execution_uses_normal_task_flow():
 
     mock_create_task.assert_awaited_once()
     create_request = mock_create_task.await_args.args[0]
-    assert create_request.is_preview is True
+    assert create_request.is_visible is False
     assert create_request.agent_id is None
     assert create_request.agent_config["instructions"] == "test instructions"
     assert create_request.llm_ids == ["1", None, None, None]
@@ -81,7 +80,7 @@ async def test_handle_build_preview_execution_uses_normal_task_flow():
 
 
 @pytest.mark.asyncio
-async def test_handle_build_preview_execution_uses_client_preview_session_id():
+async def test_handle_build_preview_execution_does_not_use_preview_sessions():
     mock_websocket = AsyncMock()
     mock_user = MagicMock(spec=User)
     mock_user.id = 1
@@ -89,11 +88,10 @@ async def test_handle_build_preview_execution_uses_client_preview_session_id():
 
     message_data = {
         "type": "preview",
-        "preview_session_id": "build_preview_client_session",
         "instructions": "test instructions",
         "models": {"general": 1},
         "message": "test message",
-        "files": [{"file_id": "preview-file-1", "name": "data.csv"}],
+        "files": [{"file_id": "normal-file-1", "name": "data.csv"}],
     }
 
     mock_db = MagicMock(spec=Session)
@@ -118,45 +116,22 @@ async def test_handle_build_preview_execution_uses_client_preview_session_id():
         await handle_build_preview_execution(mock_websocket, message_data, mock_user)
 
     create_request = mock_create_task.await_args.args[0]
-    assert create_request.preview_session_id == "build_preview_client_session"
-    assert create_request.agent_config["preview_session_id"] == (
-        "build_preview_client_session"
-    )
-    assert mock_websocket.state.preview_session_id == "build_preview_client_session"
-    assert mock_handle_chat_message.await_args.args[2]["context"] == {
-        "preview_session_id": "build_preview_client_session"
-    }
+    assert create_request.is_visible is False
+    assert "preview_session_id" not in create_request.agent_config
+    assert "preview_session_id" not in vars(mock_websocket.state)
+    assert mock_handle_chat_message.await_args.args[2]["context"] == {}
 
 
 @pytest.mark.asyncio
 async def test_handle_build_preview_execution_reuses_existing_preview_task():
     mock_websocket = AsyncMock()
-    mock_websocket.state.preview_session_id = "build_preview_client_session"
     mock_websocket.state.preview_task_id = 123
-    mock_websocket.state.preview_runtime_signature = json.dumps(
-        {
-            "agent_config": {
-                "instructions": "updated instructions",
-                "is_preview": True,
-                "knowledge_bases": [],
-                "preview_agent_id": None,
-                "preview_session_id": "build_preview_client_session",
-                "skills": [],
-                "tool_categories": [],
-            },
-            "execution_mode": None,
-            "llm_ids": ["1", None, None, None],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
     mock_user = MagicMock(spec=User)
     mock_user.id = 1
     mock_user.is_admin = False
 
     message_data = {
         "type": "preview",
-        "preview_session_id": "build_preview_client_session",
         "instructions": "updated instructions",
         "models": {"general": 1},
         "message": "second turn",
@@ -186,42 +161,18 @@ async def test_handle_build_preview_execution_reuses_existing_preview_task():
     assert mock_handle_chat_message.await_args.args[2]["files"] == [
         {"file_id": "second-turn-file", "name": "data.csv"}
     ]
-    sent_events = [
-        json.loads(call.args[0]) for call in mock_websocket.send_text.call_args_list
-    ]
-    assert [event["type"] for event in sent_events] == ["preview_turn_started"]
-    assert sent_events[0]["task_id"] == 123
+    mock_websocket.send_text.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_handle_build_preview_execution_recreates_task_when_config_changes():
+async def test_handle_build_preview_execution_creates_task_when_no_preview_task_exists():
     mock_websocket = AsyncMock()
-    mock_websocket.state.preview_session_id = "build_preview_client_session"
-    mock_websocket.state.preview_task_id = 123
-    mock_websocket.state.preview_runtime_signature = json.dumps(
-        {
-            "agent_config": {
-                "instructions": "first instructions",
-                "is_preview": True,
-                "knowledge_bases": [],
-                "preview_agent_id": None,
-                "preview_session_id": "build_preview_client_session",
-                "skills": [],
-                "tool_categories": [],
-            },
-            "execution_mode": "balanced",
-            "llm_ids": ["1", None, None, None],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
     mock_user = MagicMock(spec=User)
     mock_user.id = 1
     mock_user.is_admin = False
 
     message_data = {
         "type": "preview",
-        "preview_session_id": "build_preview_client_session",
         "instructions": "updated instructions",
         "execution_mode": "balanced",
         "models": {"general": 1},
@@ -255,37 +206,12 @@ async def test_handle_build_preview_execution_recreates_task_when_config_changes
     mock_create_task.assert_awaited_once()
     create_request = mock_create_task.await_args.args[0]
     assert create_request.agent_config["instructions"] == "updated instructions"
-    assert mock_disconnect.call_args_list == [((mock_websocket, 123),)]
+    assert create_request.is_visible is False
+    assert mock_disconnect.call_args_list == []
     mock_register_connection.assert_called_once_with(mock_websocket, 456)
     mock_handle_chat_message.assert_awaited_once()
     assert mock_handle_chat_message.await_args.args[1] == 456
     assert mock_websocket.state.preview_task_id == 456
-
-
-def test_preview_runtime_signature_ignores_turn_scoped_files():
-    agent_config = {
-        "instructions": "same runtime",
-        "is_preview": True,
-        "knowledge_bases": [],
-        "preview_agent_id": None,
-        "preview_session_id": "session-a",
-        "skills": [],
-        "tool_categories": [],
-    }
-
-    first = _build_preview_runtime_signature(
-        agent_config=agent_config,
-        execution_mode="balanced",
-        llm_ids=["1", None, None, None],
-    )
-    second = _build_preview_runtime_signature(
-        agent_config=agent_config,
-        execution_mode="balanced",
-        llm_ids=["1", None, None, None],
-    )
-
-    assert first == second
-    assert "file_ids" not in json.loads(first)
 
 
 def test_preview_agent_config_uses_in_memory_disabled_policy():
@@ -293,7 +219,6 @@ def test_preview_agent_config_uses_in_memory_disabled_policy():
     task.agent_id = None
     task.agent_config = {
         "is_preview": True,
-        "preview_session_id": "build_preview_client_session",
     }
 
     policy = resolve_agent_service_memory_policy(task=task)
@@ -410,11 +335,8 @@ async def test_websocket_build_preview_endpoint_clear_context():
     from xagent.web.api.websocket import websocket_build_preview_endpoint
 
     mock_websocket = AsyncMock()
-    # Setup websocket state
     mock_websocket.state = MagicMock()
-    mock_memory = MagicMock()
-    mock_websocket.state.preview_memory = mock_memory
-    mock_websocket.state.preview_history = [{"role": "user", "content": "hello"}]
+    mock_websocket.state.preview_task_id = 123
 
     # Mock user
     mock_user = MagicMock(spec=User)
@@ -436,11 +358,7 @@ async def test_websocket_build_preview_endpoint_clear_context():
     # Verify accept was called
     mock_websocket.accept.assert_called_once()
 
-    # Verify memory was cleared
-    mock_memory.clear.assert_called_once()
-
-    # Verify history was cleared
-    assert mock_websocket.state.preview_history == []
+    assert mock_websocket.state.preview_task_id is None
 
     # Verify a response was sent
     send_text_calls = mock_websocket.send_text.call_args_list
@@ -460,9 +378,7 @@ async def test_websocket_build_preview_endpoint_pause_resume():
     mock_websocket = AsyncMock()
     mock_websocket.state = MagicMock()
 
-    mock_agent_service = AsyncMock()
-    mock_agent_service.supports_live_control = MagicMock(return_value=False)
-    mock_websocket.state.preview_agent_service = mock_agent_service
+    mock_websocket.state.preview_task_id = 123
 
     mock_user = MagicMock(spec=User)
     mock_user.id = 1
@@ -475,23 +391,16 @@ async def test_websocket_build_preview_endpoint_pause_resume():
         WebSocketDisconnect(),
     ]
 
-    with patch(
-        "xagent.web.api.websocket.get_authenticated_user", return_value=mock_user
+    with (
+        patch(
+            "xagent.web.api.websocket.get_authenticated_user", return_value=mock_user
+        ),
+        patch("xagent.web.api.websocket.handle_pause_task", new=AsyncMock()) as pause,
+        patch("xagent.web.api.websocket.handle_resume_task", new=AsyncMock()) as resume,
     ):
         await websocket_build_preview_endpoint(mock_websocket)
 
-    # Verify pause and resume were called
-    mock_agent_service.pause_execution.assert_awaited_once()
-    mock_agent_service.resume_execution.assert_awaited_once()
-
-    # Verify responses were sent
-    send_text_calls = mock_websocket.send_text.call_args_list
-    assert len(send_text_calls) == 2
-
-    pause_data = json.loads(send_text_calls[0][0][0])
-    assert pause_data["type"] == "task_paused"
-    assert "timestamp" in pause_data
-
-    resume_data = json.loads(send_text_calls[1][0][0])
-    assert resume_data["type"] == "task_resumed"
-    assert "timestamp" in resume_data
+    pause.assert_awaited_once()
+    assert pause.await_args.args[1] == 123
+    resume.assert_awaited_once()
+    assert resume.await_args.args[1] == 123

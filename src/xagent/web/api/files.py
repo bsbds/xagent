@@ -34,7 +34,6 @@ from ..services.managed_file_ref import (
     ManagedFileRef,
     guess_media_type,
 )
-from ..services.preview_file_store import PreviewFileRef, preview_file_store
 from ..services.uploaded_file_store import UploadedFileStore
 from .legacy_file import (
     infer_user_id_from_legacy_path,
@@ -127,45 +126,6 @@ def _parse_task_id(task_id: Optional[str]) -> Optional[int]:
         return int(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid task_id") from exc
-
-
-def _content_disposition_filename(filename: str) -> str:
-    return filename.replace('"', '\\"')
-
-
-def _preview_file_response(
-    preview_file: PreviewFileRef, *, inline: bool
-) -> FileResponse:
-    disposition = "inline" if inline else "attachment"
-    return FileResponse(
-        path=str(preview_file.path),
-        filename=preview_file.filename,
-        media_type=preview_file.mime_type,
-        headers={
-            "Content-Disposition": (
-                f'{disposition}; filename="{_content_disposition_filename(preview_file.filename)}"'
-            )
-        },
-    )
-
-
-def _preview_workspace_asset_path(
-    preview_file: PreviewFileRef, relative_path: str
-) -> Optional[str]:
-    base_workspace_path = preview_file.workspace_relative_path
-    if not base_workspace_path:
-        return None
-
-    base_dir = Path(base_workspace_path).parent
-    requested_path = Path(relative_path.strip())
-    if requested_path.is_absolute():
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    candidate = (base_dir / requested_path).as_posix()
-    path_parts = [part for part in Path(candidate).parts if part not in ("", ".")]
-    if not path_parts or ".." in path_parts:
-        raise HTTPException(status_code=403, detail="Access denied")
-    return "/".join(path_parts)
 
 
 def _build_unique_file_path(path: Path) -> Path:
@@ -412,9 +372,6 @@ def _resolve_file_path(
     Raises:
         HTTPException: If file is not found
     """
-    if preview_file_store.get(file_id_or_path) is not None:
-        raise HTTPException(status_code=409, detail="Preview file is temporary")
-
     # If it's a valid UUID, try to find by file_id (new system)
     if is_valid_uuid(file_id_or_path):
         file_record = (
@@ -504,8 +461,6 @@ async def upload_file(
     message: str = Form(""),
     task_id: str = Form(None),
     folder: str = Form(None),
-    preview_session_id: str = Form(None),
-    storage_mode: str = Form("persistent"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
@@ -524,47 +479,16 @@ async def upload_file(
     uploaded_files = []
     written_paths: list[Path] = []
     written_storage_keys: list[str] = []
-    preview_storage = storage_mode == "preview" or task_type == "build_preview"
 
     try:
         for uploaded in upload_items:
             if not uploaded.filename or not uploaded.filename.strip():
                 raise HTTPException(status_code=422, detail="No filename provided")
-            validation_task_type = "general" if preview_storage else task_type
-            if not is_allowed_file(uploaded.filename, validation_task_type):
+            if not is_allowed_file(uploaded.filename, task_type):
                 raise HTTPException(
                     status_code=500,
                     detail=f"File type {Path(uploaded.filename).suffix.lower()} not supported for task type {task_type}",
                 )
-
-            if preview_storage:
-                pending = preview_file_store.prepare_path(
-                    owner_user_id=_user_id_value(user),
-                    filename=uploaded.filename,
-                    mime_type=uploaded.content_type,
-                    task_id=parsed_task_id,
-                    session_id=preview_session_id,
-                )
-                try:
-                    file_size = await _write_upload_with_size_limit(
-                        uploaded, pending.path
-                    )
-                    preview_file = preview_file_store.commit(
-                        pending, file_size=file_size
-                    )
-                except Exception:
-                    preview_file_store.discard_pending(pending)
-                    raise
-                uploaded_files.append(
-                    {
-                        "file_id": preview_file.file_id,
-                        "filename": preview_file.filename,
-                        "file_size": preview_file.file_size,
-                        "mime_type": preview_file.mime_type,
-                        "content_preview": "",
-                    }
-                )
-                continue
 
             # get_upload_path may raise ValueError for invalid folder/collection names
             try:
@@ -788,14 +712,6 @@ async def download_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
-    preview_file = preview_file_store.get(file_id)
-    if preview_file is not None:
-        if preview_file.owner_user_id != _user_id_value(user) and not _is_admin_user(
-            user
-        ):
-            raise HTTPException(status_code=403, detail="Access denied")
-        return _preview_file_response(preview_file, inline=False)
-
     file_record, full_path, owner_user_id = _resolve_file_path(
         db, file_id, _user_id_value(user)
     )
@@ -877,14 +793,6 @@ async def preview_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
-    preview_file = preview_file_store.get(file_id)
-    if preview_file is not None:
-        if preview_file.owner_user_id != _user_id_value(user) and not _is_admin_user(
-            user
-        ):
-            raise HTTPException(status_code=403, detail="Access denied")
-        return _preview_file_response(preview_file, inline=True)
-
     file_record, full_path, owner_user_id = _resolve_file_path(
         db, file_id, _user_id_value(user)
     )
@@ -937,23 +845,6 @@ async def public_preview_file(
     relative_path: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ) -> Any:
-    preview_file = preview_file_store.get(file_id)
-    if preview_file is not None:
-        if relative_path:
-            workspace_asset_path = _preview_workspace_asset_path(
-                preview_file, relative_path
-            )
-            if workspace_asset_path:
-                asset_file = preview_file_store.find_session_file(
-                    owner_user_id=preview_file.owner_user_id,
-                    session_id=preview_file.session_id,
-                    workspace_relative_path=workspace_asset_path,
-                )
-                if asset_file is not None:
-                    return _preview_file_response(asset_file, inline=True)
-                raise HTTPException(status_code=404, detail="File not found")
-        return _preview_file_response(preview_file, inline=True)
-
     # For public preview, we need to handle both file_id and legacy paths
     # Try UUID first
     file_record = None

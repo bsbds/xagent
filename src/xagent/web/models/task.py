@@ -3,6 +3,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     Enum,
@@ -28,13 +29,6 @@ class TaskStatus(enum.Enum):
     WAITING_FOR_USER = "waiting_for_user"
     COMPLETED = "completed"
     FAILED = "failed"
-
-
-class TaskRuntimeKind(enum.Enum):
-    """Task runtime/lifecycle classifier."""
-
-    NORMAL = "normal"
-    BUILD_PREVIEW = "build_preview"
 
 
 class DAGExecutionPhase(enum.Enum):
@@ -175,13 +169,13 @@ class Task(Base):  # type: ignore
         index=True,
     )
 
-    # Lifecycle classifier. Build-preview tasks reuse the normal task
-    # executor but stay hidden from normal task history and use ephemeral files.
-    runtime_kind = Column(
-        String(30),
-        default=TaskRuntimeKind.NORMAL.value,
-        server_default=TaskRuntimeKind.NORMAL.value,
-        nullable=True,
+    # Visibility flag for discovery surfaces such as sidebar/history/search.
+    # Hidden tasks still use normal owner/admin access by exact task_id.
+    is_visible = Column(
+        Boolean,
+        default=True,
+        server_default="1",
+        nullable=False,
         index=True,
     )
 

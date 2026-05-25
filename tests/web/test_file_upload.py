@@ -18,7 +18,6 @@ from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from xagent.web.models.database import Base, get_db
 from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
-from xagent.web.services.preview_file_store import preview_file_store
 
 
 @pytest.fixture(scope="function")
@@ -574,110 +573,6 @@ class TestFileUpload:
             )
 
         assert response.status_code == 200
-
-    def test_preview_upload_is_temp_file_and_url_compatible(
-        self, client, test_db, sample_files, temp_uploads_dir, auth_headers
-    ):
-        """Preview uploads resolve through existing file URLs without DB storage."""
-        files, _ = sample_files
-        session_id = "preview-test-session"
-
-        with open(files["test.txt"], "rb") as f:
-            response = client.post(
-                "/api/files/upload",
-                files={"file": ("test.txt", f, "text/plain")},
-                data={
-                    "task_type": "build_preview",
-                    "storage_mode": "preview",
-                    "preview_session_id": session_id,
-                },
-                headers=auth_headers,
-            )
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["success"] is True
-        file_id = payload["file_id"]
-
-        _, test_app = test_db
-        override_get_db = test_app.dependency_overrides[get_db]
-        db = next(override_get_db())
-        try:
-            assert (
-                db.query(UploadedFile).filter(UploadedFile.file_id == file_id).first()
-                is None
-            )
-        finally:
-            db.close()
-
-        preview_ref = preview_file_store.get(file_id)
-        assert preview_ref is not None
-        assert preview_ref.path.read_bytes() == b"This is a test text file content."
-
-        preview_response = client.get(
-            f"/api/files/preview/{file_id}",
-            headers=auth_headers,
-        )
-        assert preview_response.status_code == 200
-        assert preview_response.text == "This is a test text file content."
-
-        public_response = client.get(f"/api/files/public/preview/{file_id}")
-        assert public_response.status_code == 200
-        assert public_response.text == "This is a test text file content."
-
-        preview_file_store.clear_session(session_id, test_db[0].id)
-        assert preview_ref.path.exists() is False
-        missing_response = client.get(
-            f"/api/files/preview/{file_id}",
-            headers=auth_headers,
-        )
-        assert missing_response.status_code == 404
-
-    def test_public_preview_temp_file_honors_relative_path_for_generated_asset(
-        self, client, test_db, tmp_path, monkeypatch
-    ):
-        """Generated preview HTML can serve same-session relative asset files."""
-        monkeypatch.setenv("XAGENT_PREVIEW_TMP_DIR", str(tmp_path / "preview-tmp"))
-        owner_user = test_db[0]
-        session_id = "preview-asset-session"
-
-        source_dir = tmp_path / "source" / "output"
-        asset_dir = source_dir / "assets"
-        asset_dir.mkdir(parents=True)
-        html_path = source_dir / "report.html"
-        css_path = asset_dir / "app.css"
-        html_path.write_text('<link href="./assets/app.css">', encoding="utf-8")
-        css_path.write_text("body { color: red; }", encoding="utf-8")
-
-        base_ref = preview_file_store.register_generated_file(
-            owner_user_id=int(owner_user.id),
-            source_path=html_path,
-            filename="report.html",
-            mime_type="text/html",
-            task_id=321,
-            session_id=session_id,
-            file_id="preview-report-html",
-            workspace_relative_path="output/report.html",
-        )
-        preview_file_store.register_generated_file(
-            owner_user_id=int(owner_user.id),
-            source_path=css_path,
-            filename="app.css",
-            mime_type="text/css",
-            task_id=321,
-            session_id=session_id,
-            file_id="preview-report-css",
-            workspace_relative_path="output/assets/app.css",
-        )
-
-        response = client.get(
-            f"/api/files/public/preview/{base_ref.file_id}?relative_path=./assets/app.css"
-        )
-
-        assert response.status_code == 200
-        assert response.text == "body { color: red; }"
-
-        preview_file_store.clear_session(session_id, int(owner_user.id))
 
     def test_upload_png_file_success(
         self, client, test_db, temp_uploads_dir, auth_headers

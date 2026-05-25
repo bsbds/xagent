@@ -382,190 +382,198 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const traceEventsRef = useRef<any[]>([])
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
-  const maxReconnectAttempts = 5
-  const createPreviewSessionId = () => `build_preview_${Math.random().toString(36).slice(2)}_${Date.now()}`
-  const previewSessionIdRef = useRef(createPreviewSessionId())
+  const previewTaskIdRef = useRef<number | null>(null)
+  const wsIntentionalCloseRef = useRef(false)
 
-  // Setup WebSocket connection
-  useEffect(() => {
-    const connectWebSocket = () => {
-      if (!token) {
-        console.log('⏳ Waiting for token to connect to WS...')
+  const appendAssistantPlaceholder = () => {
+    setMessages(prev => [...prev, {
+      role: "assistant",
+      content: "",
+      traceEvents: [],
+      timestamp: Date.now()
+    }])
+  }
+
+  const handlePreviewWsMessage = (message: any) => {
+    if (message.type === 'task_info') {
+      const status = message.data?.status ?? message.status
+      if (status === 'running') {
+        setTaskStatus('running')
+      } else if (status === 'paused' || status === 'waiting_for_user') {
+        setIsChatLoading(false)
+        setTaskStatus('paused')
+      }
+    } else if (message.type === 'message_received') {
+      setIsChatLoading(true)
+      setTaskStatus('running')
+      previewStepsRef.current = []
+      traceEventsRef.current = []
+      appendAssistantPlaceholder()
+    } else if (message.type === 'task_paused' || message.type === 'task_waiting_for_user') {
+      setIsChatLoading(false)
+      setTaskStatus('paused')
+    } else if (message.type === 'task_resumed') {
+      setIsChatLoading(true)
+      setTaskStatus('running')
+    } else if (message.type === 'trace_event') {
+      traceEventsRef.current.push(message)
+      if (message.event_type === 'dag_step_start' || message.event_type === 'dag_step_end') {
+        previewStepsRef.current.push(message)
+      }
+      setMessages(prev => {
+        const newMessages = [...prev]
+        const lastMsg = newMessages[newMessages.length - 1]
+        if (lastMsg && lastMsg.role === 'assistant') {
+          newMessages[newMessages.length - 1] = {
+            ...lastMsg,
+            traceEvents: [...(lastMsg.traceEvents || []), message]
+          }
+          return newMessages
+        }
+        return prev
+      })
+    } else if (message.type === 'task_completed') {
+      const completionData = message.data ?? message
+      const { message: completionText, interactions } = extractBuildPreviewResponse(completionData)
+      const interruptedByPause =
+        completionData.success === false &&
+        completionText === "ReActPattern interrupted."
+
+      if (interruptedByPause) {
         return
       }
 
-      // Clear any existing reconnect timeout
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current)
-        reconnectTimeoutRef.current = null
+      setIsChatLoading(false)
+      setTaskStatus('idle')
+      setMessages(prev => {
+        const newMessages = [...prev]
+        const lastMsg = newMessages[newMessages.length - 1]
+        if (lastMsg && lastMsg.role === 'assistant') {
+          newMessages[newMessages.length - 1] = {
+            ...lastMsg,
+            content: completionText || "Preview completed",
+            interactions: interactions ?? lastMsg.interactions,
+          }
+          return newMessages
+        }
+        return prev
+      })
+    } else {
+      const errorMessage = getBuildPreviewTerminalErrorMessage(message)
+      if (errorMessage) {
+        setIsChatLoading(false)
+        setTaskStatus('idle')
+        setMessages(prev => {
+          const newMessages = [...prev]
+          const lastMsg = newMessages[newMessages.length - 1]
+          if (lastMsg && lastMsg.role === 'assistant') {
+            newMessages[newMessages.length - 1] = {
+              ...lastMsg,
+              content: errorMessage
+            }
+            return newMessages
+          }
+          return [...prev, {
+            role: "assistant",
+            content: errorMessage,
+            timestamp: Date.now()
+          }]
+        })
       }
+    }
+  }
 
-      const baseUrl = getWsUrl()
-      const wsUrl = `${baseUrl}/ws/build/preview?token=${token}`
-      console.log('🔌 Connecting to Build Preview WS:', wsUrl)
+  const connectPreviewWebSocket = (taskId: number): Promise<WebSocket> => {
+    if (!token) {
+      return Promise.reject(new Error("Authentication token is not ready"))
+    }
 
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+
+    const current = wsRef.current
+    if (current && current.readyState === WebSocket.OPEN && previewTaskIdRef.current === taskId) {
+      return Promise.resolve(current)
+    }
+
+    if (current) {
+      wsIntentionalCloseRef.current = true
+      current.close()
+      wsRef.current = null
+      setWsConnected(false)
+    }
+
+    const baseUrl = getWsUrl()
+    const wsUrl = `${baseUrl}/ws/chat/${taskId}?token=${token}`
+    console.log('🔌 Connecting to normal preview task WS:', wsUrl)
+
+    return new Promise((resolve, reject) => {
       try {
         const ws = new WebSocket(wsUrl)
+        let settled = false
 
         ws.onopen = () => {
-          console.log('✅ Build preview WebSocket connected')
+          console.log('✅ Preview task WebSocket connected')
           setWsConnected(true)
           wsRef.current = ws
           reconnectAttemptsRef.current = 0
+          settled = true
+          resolve(ws)
         }
 
         ws.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data)
-            console.log('Build preview WebSocket message:', message)
-
-            // Handle different message types
-            if (message.type === 'preview_started') {
-              setTaskStatus('running')
-              previewStepsRef.current = []
-              traceEventsRef.current = []
-            } else if (message.type === 'preview_turn_started') {
-              setIsChatLoading(true)
-              setTaskStatus('running')
-              previewStepsRef.current = []
-              traceEventsRef.current = []
-              // Add a placeholder message for the assistant response
-              setMessages(prev => [...prev, {
-                role: "assistant",
-                content: "",
-                traceEvents: [],
-                timestamp: Date.now()
-              }])
-            } else if (message.type === 'task_paused') {
-              setIsChatLoading(false)
-              setTaskStatus('paused')
-            } else if (message.type === 'task_resumed') {
-              setIsChatLoading(true)
-              setTaskStatus('running')
-            } else if (message.type === 'trace_event') {
-              // Collect trace events and steps
-              traceEventsRef.current.push(message)
-              if (message.event_type === 'dag_step_start' || message.event_type === 'dag_step_end') {
-                previewStepsRef.current.push(message)
-              }
-              // Update the last message (assistant) with the new trace event
-              setMessages(prev => {
-                const newMessages = [...prev]
-                const lastMsg = newMessages[newMessages.length - 1]
-                if (lastMsg && lastMsg.role === 'assistant') {
-                  newMessages[newMessages.length - 1] = {
-                    ...lastMsg,
-                    traceEvents: [...(lastMsg.traceEvents || []), message]
-                  }
-                  return newMessages
-                }
-                return prev
-              })
-            } else if (message.type === 'task_completed') {
-              const { message: completionText, interactions } = extractBuildPreviewResponse(message)
-              const interruptedByPause =
-                message.success === false &&
-                completionText === "ReActPattern interrupted."
-
-              if (interruptedByPause) {
-                return
-              }
-
-              setIsChatLoading(false)
-              setTaskStatus('idle')
-              setMessages(prev => {
-                const newMessages = [...prev]
-                const lastMsg = newMessages[newMessages.length - 1]
-                if (lastMsg && lastMsg.role === 'assistant') {
-                  newMessages[newMessages.length - 1] = {
-                    ...lastMsg,
-                    content: completionText || "Preview completed",
-                    interactions: interactions ?? lastMsg.interactions,
-                  }
-                  return newMessages
-                }
-                return prev
-              })
-            } else if (message.type === 'task_error') {
-              const errorMessage = getBuildPreviewTerminalErrorMessage(message)
-              setIsChatLoading(false)
-              setTaskStatus('idle')
-              setMessages(prev => [...prev, {
-                role: "assistant",
-                content: errorMessage || "Error: Preview failed",
-                timestamp: Date.now()
-              }])
-            } else {
-              const errorMessage = getBuildPreviewTerminalErrorMessage(message)
-              if (errorMessage) {
-                setIsChatLoading(false)
-                setTaskStatus('idle')
-                setMessages(prev => {
-                  const newMessages = [...prev]
-                  const lastMsg = newMessages[newMessages.length - 1]
-                  if (lastMsg && lastMsg.role === 'assistant') {
-                    newMessages[newMessages.length - 1] = {
-                      ...lastMsg,
-                      content: errorMessage
-                    }
-                    return newMessages
-                  }
-                  return [...prev, {
-                    role: "assistant",
-                    content: errorMessage,
-                    timestamp: Date.now()
-                  }]
-                })
-              }
-            }
+            console.log('Preview task WebSocket message:', message)
+            handlePreviewWsMessage(message)
           } catch (error) {
             console.error('Failed to parse WebSocket message:', error)
           }
         }
 
         ws.onerror = (error) => {
-          console.error('Build preview WebSocket error:', error)
-          // Don't set connected false here, let onclose handle it
+          console.error('Preview task WebSocket error:', error)
+          if (!settled) {
+            settled = true
+            reject(error)
+          }
         }
 
         ws.onclose = (event) => {
-          console.log('Build preview WebSocket closed', event.code, event.reason)
+          console.log('Preview task WebSocket closed', event.code, event.reason)
           setWsConnected(false)
-          wsRef.current = null
-
-          // Don't reconnect if component unmounted or token changed (handled by cleanup)
-          // Retry logic
-          if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-            reconnectAttemptsRef.current++
-            const delay = Math.min(1000 * reconnectAttemptsRef.current, 5000)
-            console.log(`🔄 Reconnecting in ${delay}ms... (Attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`)
-            reconnectTimeoutRef.current = setTimeout(connectWebSocket, delay)
-          } else {
-            console.log('❌ Max reconnect attempts reached')
+          if (wsRef.current === ws) {
+            wsRef.current = null
+          }
+          if (wsIntentionalCloseRef.current) {
+            wsIntentionalCloseRef.current = false
+            return
+          }
+          if (!settled) {
+            settled = true
+            reject(new Error("Preview websocket closed before connecting"))
           }
         }
       } catch (error) {
-        console.error('Failed to create WebSocket:', error)
-        // Retry immediately if creation failed
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-          reconnectAttemptsRef.current++
-          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 1000)
-        }
+        reject(error)
       }
-    }
+    })
+  }
 
-    connectWebSocket()
-
+  useEffect(() => {
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
       if (wsRef.current) {
+        wsIntentionalCloseRef.current = true
         wsRef.current.close()
         wsRef.current = null
       }
     }
-  }, [token])
+  }, [])
 
   // Fetch Data
   useEffect(() => {
@@ -882,13 +890,13 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const handlePause = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "pause" }))
+      wsRef.current.send(JSON.stringify({ type: "pause_task" }))
     }
   }
 
   const handleResume = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "resume" }))
+      wsRef.current.send(JSON.stringify({ type: "resume_task" }))
     }
   }
 
@@ -943,15 +951,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       }
 
       // Check WebSocket connection
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        setMessages(prev => [...prev, {
-          role: "assistant",
-          content: "⚠️ WebSocket not connected. The system is attempting to reconnect. Please wait a moment and try again.",
-          timestamp: Date.now()
-        }])
-        setIsChatLoading(false)
-        return
-      }
+      let previewTaskId = previewTaskIdRef.current
 
       // Process files if any
       let processedFiles: any[] = []
@@ -1018,17 +1018,48 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         finalToolCategories.push(`mcp:${server}`);
       });
 
-      // Send preview request via WebSocket
-      wsRef.current.send(JSON.stringify({
-        type: "preview",
-        agent_id: localAgentId && typeof localAgentId === 'string' ? parseInt(localAgentId) : null,  // Exclude this agent from agent tools if published
-        instructions,
-        execution_mode: executionMode,
-        models: modelConfig,
-        knowledge_bases: selectedKbs,
-        skills: selectedSkills,
-        tool_categories: finalToolCategories,
-        preview_session_id: previewSessionIdRef.current,
+      if (!previewTaskId) {
+        const response = await apiRequest(`${getApiUrl()}/api/chat/task/create`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: (backendMessage || "Build preview").slice(0, 80),
+            description: backendMessage,
+            llm_ids: [
+              modelConfig.general ? String(modelConfig.general) : null,
+              modelConfig.small_fast ? String(modelConfig.small_fast) : null,
+              modelConfig.visual ? String(modelConfig.visual) : null,
+              modelConfig.compact ? String(modelConfig.compact) : null,
+            ],
+            agent_config: {
+              instructions,
+              knowledge_bases: selectedKbs,
+              skills: selectedSkills,
+              tool_categories: finalToolCategories,
+              is_preview: true,
+              preview_agent_id: localAgentId && typeof localAgentId === 'string' ? parseInt(localAgentId) : null,
+            },
+            execution_mode: executionMode,
+            is_visible: false,
+          }),
+        })
+
+        if (!response.ok) {
+          throw new Error(await response.text())
+        }
+
+        const taskData = await response.json()
+        previewTaskId = Number(taskData.task_id)
+        if (!Number.isFinite(previewTaskId)) {
+          throw new Error("Preview task creation returned an invalid task id")
+        }
+        previewTaskIdRef.current = previewTaskId
+      }
+
+      const ws = await connectPreviewWebSocket(previewTaskId)
+
+      ws.send(JSON.stringify({
+        type: "chat",
         message: backendMessage,
         files: processedFiles
       }))
@@ -2131,9 +2162,12 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 timestamp: Date.now()
               }])
               setFiles([])
-              previewSessionIdRef.current = createPreviewSessionId()
-              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ type: "clear_context" }))
+              previewTaskIdRef.current = null
+              setWsConnected(false)
+              if (wsRef.current) {
+                wsIntentionalCloseRef.current = true
+                wsRef.current.close()
+                wsRef.current = null
               }
             }}
             title={t("common.clear") || "Clear"}
@@ -2180,8 +2214,6 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
             hideConfig={true}
             files={files}
             onFilesChange={setFiles}
-            uploadStorageMode="preview"
-            previewSessionId={previewSessionIdRef.current}
             taskStatus={taskStatus as any}
             onPause={handlePause}
             onResume={handleResume}

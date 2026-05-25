@@ -45,8 +45,6 @@ interface ChatInputProps {
   hideConfig?: boolean;
   readOnlyConfig?: boolean;
   hideFileUpload?: boolean;
-  uploadStorageMode?: "persistent" | "preview";
-  previewSessionId?: string;
   compact?: boolean;
   autoFocus?: boolean;
   minHeightClass?: string;
@@ -73,8 +71,6 @@ export function ChatInput({
   hideConfig = false,
   readOnlyConfig = false,
   hideFileUpload = false,
-  uploadStorageMode = "persistent",
-  previewSessionId,
   compact = false,
   autoFocus = false,
   minHeightClass = "min-h-[130px]",
@@ -279,11 +275,7 @@ export function ChatInput({
         const formData = new FormData();
         formData.append('file', file);
         // Default to task mode if not specified
-        formData.append('task_type', uploadStorageMode === 'preview' ? 'build_preview' : (mode || 'task'));
-        formData.append('storage_mode', uploadStorageMode);
-        if (previewSessionId) {
-          formData.append('preview_session_id', previewSessionId);
-        }
+        formData.append('task_type', mode || 'task');
 
         const response = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
           method: 'POST',

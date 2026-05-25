@@ -26,7 +26,6 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ...config import (
-    get_agent_pattern_for_execution_mode,
     get_default_task_execution_mode,
     get_external_upload_dirs,
     get_uploads_dir,
@@ -36,7 +35,7 @@ from ...core.agent.trace import TraceEvent, TraceHandler, trace_user_message
 from ...core.file_ref import FILE_REF_MODEL_INSTRUCTIONS, build_file_ref
 from ..auth_dependencies import get_user_from_websocket_token
 from ..models.database import get_db
-from ..models.task import Task, TaskRuntimeKind, TaskStatus
+from ..models.task import Task, TaskStatus
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.chat_history_service import get_latest_waiting_question
@@ -52,7 +51,6 @@ from ..services.managed_file_ref import (
     build_task_output_storage_key,
     ensure_uploaded_file_local_path,
 )
-from ..services.preview_file_store import preview_file_store
 from ..services.task_lease_service import (
     acquire_task_lease,
     mark_task_paused_if_stale,
@@ -62,7 +60,6 @@ from ..services.task_lease_service import (
     stop_task_lease_heartbeat,
 )
 from ..services.uploaded_file_store import UploadedFileStore
-from ..tools.config import WebToolConfig
 from ..tracing import create_ephemeral_tracer
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import safe_timestamp_to_unix
@@ -865,21 +862,6 @@ def _workspace_category_from_relative_path(relative_path: str) -> str:
     return path_parts[0] if path_parts else "output"
 
 
-def _is_preview_task(task: Any) -> bool:
-    if getattr(task, "runtime_kind", None) == TaskRuntimeKind.BUILD_PREVIEW.value:
-        return True
-    agent_config = getattr(task, "agent_config", None)
-    return isinstance(agent_config, dict) and bool(agent_config.get("is_preview"))
-
-
-def _preview_session_id_from_task(task: Any) -> str | None:
-    agent_config = getattr(task, "agent_config", None)
-    if not isinstance(agent_config, dict):
-        return None
-    preview_session_id = agent_config.get("preview_session_id")
-    return preview_session_id if isinstance(preview_session_id, str) else None
-
-
 def _normalize_file_outputs(
     db: Session,
     task_id: int,
@@ -1117,111 +1099,6 @@ def _normalize_file_outputs(
     return normalized_outputs, path_to_file_id
 
 
-def _normalize_preview_file_outputs(
-    *,
-    task_id: int,
-    task_user_id: int,
-    preview_session_id: str,
-    file_outputs: Any,
-) -> tuple[list[Dict[str, Any]], Dict[str, str]]:
-    if isinstance(file_outputs, str):
-        file_outputs = [file_outputs] if file_outputs.strip() else []
-    if not isinstance(file_outputs, list):
-        return [], {}
-
-    normalized_outputs: list[Dict[str, Any]] = []
-    path_to_file_id: Dict[str, str] = {}
-
-    for item in file_outputs:
-        item_file_id = ""
-        item_filename = ""
-        item_relative_path = ""
-        raw_paths: list[str] = []
-
-        if isinstance(item, str):
-            raw_paths = [item]
-        elif isinstance(item, dict):
-            if isinstance(item.get("file_id"), str):
-                item_file_id = str(item.get("file_id"))
-            if isinstance(item.get("filename"), str):
-                item_filename = str(item.get("filename"))
-            for key in ("file_path", "download_path", "relative_path", "path"):
-                value = item.get(key)
-                if isinstance(value, str) and value.strip():
-                    raw_paths.append(value)
-                    if key == "relative_path":
-                        item_relative_path = value
-        else:
-            continue
-
-        resolved_info = None
-        for raw_path in raw_paths:
-            resolved_info = _resolve_output_storage_path(raw_path)
-            if resolved_info is not None:
-                break
-
-        if resolved_info is None:
-            continue
-
-        resolved_path, relative_path = resolved_info
-        normalized_relative_path = relative_path.lstrip("/")
-        if not _output_path_in_current_task_scope(
-            normalized_relative_path, task_id, task_user_id
-        ):
-            logger.warning(
-                "Skipping preview file output outside current task output scope: %s",
-                relative_path,
-            )
-            continue
-
-        workspace_relative_path = _normalize_workspace_relative_path(
-            item_relative_path or normalized_relative_path
-        )
-        expected_file_id = item_file_id or _build_output_file_id(
-            workspace_relative_path
-        )
-        preview_file = preview_file_store.register_generated_file(
-            owner_user_id=task_user_id,
-            source_path=resolved_path,
-            filename=item_filename or resolved_path.name,
-            mime_type=None,
-            task_id=task_id,
-            session_id=preview_session_id,
-            file_id=expected_file_id,
-            workspace_relative_path=workspace_relative_path,
-        )
-
-        final_file_id = preview_file.file_id
-        if item_file_id:
-            path_to_file_id[item_file_id] = final_file_id
-
-        normalized_outputs.append(
-            build_file_ref(
-                file_id=final_file_id,
-                filename=item_filename or preview_file.filename,
-                mime_type=preview_file.mime_type,
-                size=preview_file.file_size,
-            )
-        )
-
-        for raw_path in raw_paths:
-            stripped = raw_path.strip()
-            if stripped:
-                path_to_file_id[stripped] = final_file_id
-                path_to_file_id[stripped.lstrip("/")] = final_file_id
-        _add_file_link_aliases(path_to_file_id, normalized_relative_path, final_file_id)
-
-        if workspace_relative_path != normalized_relative_path:
-            path_to_file_id[workspace_relative_path] = final_file_id
-            path_to_file_id[f"/{workspace_relative_path}"] = final_file_id
-            path_to_file_id[f"preview/{workspace_relative_path}"] = final_file_id
-            path_to_file_id[f"/preview/{workspace_relative_path}"] = final_file_id
-            path_to_file_id[f"uploads/{workspace_relative_path}"] = final_file_id
-            path_to_file_id[f"/uploads/{workspace_relative_path}"] = final_file_id
-
-    return normalized_outputs, path_to_file_id
-
-
 def _normalize_task_file_outputs(
     db: Session,
     task: Any,
@@ -1232,18 +1109,6 @@ def _normalize_task_file_outputs(
         return [], {}
 
     task_id = int(cast(Any, task.id))
-    if _is_preview_task(task):
-        preview_session_id = _preview_session_id_from_task(task)
-        if not preview_session_id:
-            logger.warning("Preview task %s has no preview_session_id", task_id)
-            return [], {}
-        return _normalize_preview_file_outputs(
-            task_id=task_id,
-            task_user_id=task_user_id,
-            preview_session_id=preview_session_id,
-            file_outputs=file_outputs,
-        )
-
     return _normalize_file_outputs(
         db,
         task_id=task_id,
@@ -2017,34 +1882,6 @@ async def handle_file_upload_for_task(
                 logger.warning(f"No file_id provided in file info: {file_info}")
                 continue
 
-            preview_file = preview_file_store.get(str(file_id))
-            if preview_file is not None:
-                if preview_file.owner_user_id != int(authorized_owner_id):
-                    logger.warning(
-                        "Preview file not accessible for task %s: %s",
-                        task_id,
-                        file_id,
-                    )
-                    continue
-
-                original_file_name = Path(preview_file.filename).name
-                normalized_file_name = normalize_filename(original_file_name)
-                target_path = preview_file.path
-
-                uploaded_files.append(str(target_path))
-                file_info_list.append(
-                    {
-                        "file_id": preview_file.file_id,
-                        "name": normalized_file_name,
-                        "original_name": original_file_name,
-                        "size": preview_file.file_size,
-                        "type": preview_file.mime_type,
-                        "path": str(target_path),
-                        "workspace_path": None,
-                    }
-                )
-                continue
-
             file_record = (
                 db.query(UploadedFile)
                 .filter(
@@ -2162,14 +1999,7 @@ def _register_uploaded_files_for_agent(
             suffix_idx += 1
 
         workspace_link_path: Path | None
-        is_preview_file = preview_file_store.get(file_id) is not None
-        if is_preview_file:
-            if candidate.is_symlink():
-                candidate.unlink()
-            if not candidate.exists():
-                shutil.copy2(source_path, candidate)
-            workspace_link_path = candidate
-        elif candidate.exists() or candidate.is_symlink():
+        if candidate.exists() or candidate.is_symlink():
             workspace_link_path = candidate
         else:
             try:
@@ -2183,23 +2013,12 @@ def _register_uploaded_files_for_agent(
                 shutil.copy2(source_path, candidate)
                 workspace_link_path = candidate
 
-        registration_path = (
-            workspace_link_path.resolve() if is_preview_file else source_path.resolve()
+        registration_path = source_path.resolve()
+        workspace.register_file(
+            str(registration_path),
+            file_id=file_id,
+            db_session=db,
         )
-        if is_preview_file:
-            path_cache = getattr(workspace, "_recently_registered_files", None)
-            if isinstance(path_cache, dict):
-                path_cache[str(registration_path)] = file_id
-                path_cache[str(registration_path.resolve())] = file_id
-            file_id_cache = getattr(workspace, "_file_id_to_path", None)
-            if isinstance(file_id_cache, dict):
-                file_id_cache[file_id] = registration_path
-        else:
-            workspace.register_file(
-                str(registration_path),
-                file_id=file_id,
-                db_session=db,
-            )
         file_info["path"] = str(registration_path)
         file_info["workspace_path"] = str(workspace_link_path)
         logger.info(
@@ -4491,22 +4310,6 @@ async def websocket_build_preview_endpoint(
                         int(task_id),
                         {"type": "pause_task", "user": user},
                     )
-                elif (
-                    hasattr(websocket.state, "preview_agent_service")
-                    and websocket.state.preview_agent_service
-                    and hasattr(
-                        websocket.state.preview_agent_service, "pause_execution"
-                    )
-                ):
-                    await websocket.state.preview_agent_service.pause_execution()
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "type": "task_paused",
-                                "timestamp": datetime.now(timezone.utc).timestamp(),
-                            }
-                        )
-                    )
                 else:
                     await websocket.send_text(
                         json.dumps(
@@ -4524,22 +4327,6 @@ async def websocket_build_preview_endpoint(
                         int(task_id),
                         {"type": "resume_task", "user": user},
                     )
-                elif (
-                    hasattr(websocket.state, "preview_agent_service")
-                    and websocket.state.preview_agent_service
-                    and hasattr(
-                        websocket.state.preview_agent_service, "resume_execution"
-                    )
-                ):
-                    await websocket.state.preview_agent_service.resume_execution()
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "type": "task_resumed",
-                                "timestamp": datetime.now(timezone.utc).timestamp(),
-                            }
-                        )
-                    )
                 else:
                     await websocket.send_text(
                         json.dumps(
@@ -4550,20 +4337,13 @@ async def websocket_build_preview_endpoint(
                         )
                     )
             elif message_type == "clear_context":
-                preview_session_id = getattr(
-                    websocket.state, "preview_session_id", None
-                )
-                if preview_session_id:
-                    preview_file_store.clear_session(
-                        preview_session_id,
-                        int(user.id),
-                    )
-                if hasattr(websocket.state, "preview_memory"):
-                    websocket.state.preview_memory.clear()
-                if hasattr(websocket.state, "preview_history"):
-                    websocket.state.preview_history = []
+                preview_task_id = getattr(websocket.state, "preview_task_id", None)
+                if (
+                    isinstance(preview_task_id, (int, str))
+                    and str(preview_task_id).isdigit()
+                ):
+                    manager.disconnect(websocket, int(preview_task_id))
                 websocket.state.preview_task_id = None
-                websocket.state.preview_runtime_signature = None
                 await websocket.send_text(
                     json.dumps(
                         {
@@ -4584,9 +4364,6 @@ async def websocket_build_preview_endpoint(
                 )
 
     except WebSocketDisconnect:
-        preview_session_id = getattr(websocket.state, "preview_session_id", None)
-        if preview_session_id:
-            preview_file_store.clear_session(preview_session_id, int(user.id))
         preview_task_id = getattr(websocket.state, "preview_task_id", None)
         if isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit():
             manager.disconnect(websocket, int(preview_task_id))
@@ -4595,138 +4372,6 @@ async def websocket_build_preview_endpoint(
         logger.error(f"Connection error in build preview WebSocket: {e}")
     except Exception as e:
         logger.error(f"Unexpected error in build preview WebSocket: {e}")
-
-
-async def handle_build_preview_resume_execution(
-    websocket: WebSocket,
-    user: User,
-    execution_id: str,
-) -> None:
-    """Resume a paused build preview execution from its latest checkpoint."""
-    try:
-        agent_service = getattr(websocket.state, "preview_agent_service", None)
-        if agent_service is None:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "message": "No active agent to resume",
-                    }
-                )
-            )
-            return
-
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "task_resumed",
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                }
-            )
-        )
-
-        with UserContext(int(user.id)):
-            result = await agent_service.resume_execution_by_id(str(execution_id))
-
-        if result is None:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "message": "No resumable preview execution found",
-                    }
-                )
-            )
-            return
-
-        result_status = str(result.get("status") or "")
-        if result_status == "interrupted":
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "task_paused",
-                        "timestamp": datetime.now(timezone.utc).timestamp(),
-                    }
-                )
-            )
-            logger.info("Build preview %s paused again during resume", execution_id)
-            return
-
-        assistant_output = result.get("output", "")
-        pending_user_message = getattr(
-            websocket.state, "preview_pending_user_message", None
-        )
-        if pending_user_message:
-            _append_preview_user_turn_if_needed(websocket, pending_user_message)
-        if hasattr(websocket.state, "preview_history") and assistant_output:
-            websocket.state.preview_history.append(
-                {"role": "assistant", "content": assistant_output}
-            )
-        websocket.state.preview_pending_user_message = None
-
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "task_completed",
-                    "result": assistant_output,
-                    "success": result.get("success", False),
-                    "chat_response": result.get("chat_response"),
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                }
-            )
-        )
-        logger.info("Build preview %s resumed and completed", execution_id)
-    except Exception as e:
-        logger.error(f"Error resuming build preview {execution_id}: {e}", exc_info=True)
-        try:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "task_error",
-                        "error": str(e),
-                        "timestamp": datetime.now(timezone.utc).timestamp(),
-                    }
-                )
-            )
-        except Exception:
-            pass
-
-
-def _append_preview_user_turn_if_needed(
-    websocket: WebSocket, user_message: str
-) -> None:
-    if not user_message:
-        return
-    if not hasattr(websocket.state, "preview_history"):
-        websocket.state.preview_history = []
-
-    history = websocket.state.preview_history
-    if (
-        history
-        and history[-1].get("role") == "user"
-        and history[-1].get("content") == user_message
-    ):
-        return
-
-    history.append({"role": "user", "content": user_message})
-
-
-def _build_preview_runtime_signature(
-    *,
-    agent_config: dict[str, Any],
-    execution_mode: Any,
-    llm_ids: list[Optional[str]],
-) -> str:
-    """Return a stable identity for settings that define a preview runtime."""
-    return json.dumps(
-        {
-            "agent_config": agent_config,
-            "execution_mode": execution_mode,
-            "llm_ids": llm_ids,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
 
 
 async def handle_build_preview_execution(
@@ -4751,22 +4396,12 @@ async def handle_build_preview_execution(
         )
         return
 
-    preview_session_id = getattr(websocket.state, "preview_session_id", None)
-    requested_preview_session_id = message_data.get("preview_session_id")
-    if isinstance(requested_preview_session_id, str) and requested_preview_session_id:
-        preview_session_id = requested_preview_session_id
-        websocket.state.preview_session_id = preview_session_id
-    if not isinstance(preview_session_id, str) or not preview_session_id:
-        preview_session_id = f"build_preview_{uuid.uuid4().hex}"
-        websocket.state.preview_session_id = preview_session_id
-
     agent_config = {
         "instructions": message_data.get("instructions", ""),
         "knowledge_bases": message_data.get("knowledge_bases", []),
         "skills": message_data.get("skills", []),
         "tool_categories": message_data.get("tool_categories", []),
         "is_preview": True,
-        "preview_session_id": preview_session_id,
         "preview_agent_id": message_data.get("agent_id"),
     }
     models = message_data.get("models", {})
@@ -4784,24 +4419,12 @@ async def handle_build_preview_execution(
         _model_ref("compact"),
     ]
     execution_mode = message_data.get("execution_mode")
-    preview_runtime_signature = _build_preview_runtime_signature(
-        agent_config=agent_config,
-        execution_mode=execution_mode,
-        llm_ids=llm_ids,
-    )
 
     preview_task_id = getattr(websocket.state, "preview_task_id", None)
-    current_runtime_signature = getattr(
-        websocket.state, "preview_runtime_signature", None
+    has_preview_task = (
+        isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit()
     )
-    has_reusable_preview_task = (
-        isinstance(preview_task_id, (int, str))
-        and str(preview_task_id).isdigit()
-        and current_runtime_signature == preview_runtime_signature
-    )
-    if not has_reusable_preview_task:
-        if isinstance(preview_task_id, (int, str)) and str(preview_task_id).isdigit():
-            manager.disconnect(websocket, int(preview_task_id))
+    if not has_preview_task:
         task_request = TaskCreateRequest(
             title=(user_message or "Build preview")[:80],
             description=user_message,
@@ -4810,9 +4433,7 @@ async def handle_build_preview_execution(
             llm_ids=llm_ids,
             agent_config=agent_config,
             execution_mode=execution_mode,
-            is_preview=True,
-            preview_session_id=preview_session_id,
-            runtime_kind=TaskRuntimeKind.BUILD_PREVIEW.value,
+            is_visible=False,
         )
 
         from ..models import database as database_module
@@ -4826,29 +4447,10 @@ async def handle_build_preview_execution(
             preview_db.close()
 
         websocket.state.preview_task_id = preview_task_id
-        websocket.state.preview_runtime_signature = preview_runtime_signature
         manager.register_connection(websocket, preview_task_id)
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "preview_started",
-                    "task_id": preview_task_id,
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                }
-            )
-        )
     else:
         preview_task_id = int(str(preview_task_id))
 
-    await websocket.send_text(
-        json.dumps(
-            {
-                "type": "preview_turn_started",
-                "task_id": preview_task_id,
-                "timestamp": datetime.now(timezone.utc).timestamp(),
-            }
-        )
-    )
     await handle_chat_message(
         websocket,
         preview_task_id,
@@ -4858,527 +4460,7 @@ async def handle_build_preview_execution(
             "files": files_data,
             "user": user,
             "user_id": user.id,
-            "context": {"preview_session_id": preview_session_id},
+            "context": {},
         },
     )
     return
-
-    from sqlalchemy.orm import Session
-
-    from ...core.agent.service import AgentService
-    from ...core.memory.in_memory import InMemoryMemoryStore
-    from ..models.database import get_db
-    from ..models.model import Model as DBModel
-    from ..services.llm_utils import UserAwareModelStorage
-
-    instructions = message_data.get("instructions", "")
-    execution_mode = message_data.get("execution_mode", "graph")
-    models_config = message_data.get("models", {})
-    knowledge_bases = message_data.get("knowledge_bases", [])
-    skills = message_data.get("skills", [])
-    tool_categories = message_data.get("tool_categories", [])
-    user_message = message_data.get("message", "")
-    files_data = message_data.get("files", [])
-
-    if not user_message and not files_data:
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "error",
-                    "message": "Message or files are required for preview",
-                }
-            )
-        )
-        return
-
-    # Generate temporary task_id
-    preview_task_id = f"build_preview_{uuid.uuid4().hex[:8]}"
-    websocket.state.preview_execution_id = preview_task_id
-
-    preview_tracer = create_ephemeral_tracer(
-        task_id=preview_task_id,
-        websocket_handler=SharedWebSocketTracer(
-            websocket, preview_task_id, is_preview=True
-        ),
-        checkpoint_store=getattr(websocket.state, "preview_checkpoint_store", None),
-        user=user,
-        is_preview=True,
-    )
-
-    # Get database session
-    db_gen = get_db()
-    db: Session = next(db_gen)
-
-    try:
-        # Parse model configuration
-        default_llm = None
-        fast_llm = None
-        vision_llm = None
-        compact_llm = None
-
-        if models_config:
-            storage = UserAwareModelStorage(db)
-
-            if models_config.get("general"):
-                general_model = (
-                    db.query(DBModel)
-                    .filter(DBModel.id == models_config["general"])
-                    .first()
-                )
-                if general_model:
-                    default_llm = storage.get_llm_by_name_with_access(
-                        str(general_model.model_id), int(user.id)
-                    )
-
-            if models_config.get("small_fast"):
-                fast_model = (
-                    db.query(DBModel)
-                    .filter(DBModel.id == models_config["small_fast"])
-                    .first()
-                )
-                if fast_model:
-                    fast_llm = storage.get_llm_by_name_with_access(
-                        str(fast_model.model_id), int(user.id)
-                    )
-
-            if models_config.get("visual"):
-                visual_model = (
-                    db.query(DBModel)
-                    .filter(DBModel.id == models_config["visual"])
-                    .first()
-                )
-                if visual_model:
-                    vision_llm = storage.get_llm_by_name_with_access(
-                        str(visual_model.model_id), int(user.id)
-                    )
-
-            if models_config.get("compact"):
-                compact_model = (
-                    db.query(DBModel)
-                    .filter(DBModel.id == models_config["compact"])
-                    .first()
-                )
-                if compact_model:
-                    compact_llm = storage.get_llm_by_name_with_access(
-                        str(compact_model.model_id), int(user.id)
-                    )
-
-        if not default_llm:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "error",
-                        "message": "General model is required for preview",
-                    }
-                )
-            )
-            return
-
-        # Define MinimalRequest for tool config
-        class MinimalRequest:
-            def __init__(self, user_id: int) -> None:
-                self.user: Any = type("obj", (), {"id": user_id})()
-                self.credentials: Any = None
-
-        preview_workspace_base_dir = str(get_uploads_dir() / "build_preview")
-        allowed_external_dirs = []
-        if user and user.id:
-            user_upload_dir = get_uploads_dir() / f"user_{user.id}"
-            allowed_external_dirs.append(str(user_upload_dir))
-        allowed_external_dirs.extend([str(d) for d in get_external_upload_dirs()])
-
-        # Get or create user sandbox for run preview task tools
-        from ..sandbox_manager import get_sandbox_manager
-
-        sandbox_manager = get_sandbox_manager()
-        sandbox = None
-        if sandbox_manager:
-            user_id = int(user.id)
-            try:
-                sandbox = await sandbox_manager.get_or_create_sandbox(
-                    "build_preview",
-                    str(user_id),
-                    workspace_config={
-                        "base_dir": preview_workspace_base_dir,
-                        "task_id": preview_task_id,
-                        "user_id": user_id,
-                        "allowed_external_dirs": allowed_external_dirs,
-                    },
-                )
-            except Exception as e:
-                logger.error(f"Failed to create sandbox for user {user_id}: {e}")
-
-        # Filter tools by category - use tool metadata
-        # Note: tool names are stable, defined in code, no database storage needed
-        allowed_tools = []
-        if tool_categories:
-            # Get all tools and filter by category using metadata
-            from ...core.tools.adapters.vibe.factory import ToolFactory
-
-            has_mcp = bool(
-                tool_categories and any(tc.startswith("mcp:") for tc in tool_categories)
-            )
-            temp_config = WebToolConfig(
-                db=db,
-                request=MinimalRequest(int(user.id)),
-                llm=default_llm,
-                user_id=int(user.id),
-                is_admin=bool(user.is_admin),
-                workspace_config=None,
-                include_mcp_tools=has_mcp,
-                task_id=None,
-                browser_tools_enabled=True,
-                sandbox=sandbox,
-            )
-
-            # Collect tools by category (async)
-            async def _get_tools_by_category() -> list[str]:
-                all_tools = await ToolFactory.create_all_tools(temp_config)
-                allowed_tools = []
-
-                # Check if we also need custom APIs
-                has_custom_api = bool(
-                    tool_categories
-                    and any(tc.startswith("mcp:") for tc in tool_categories)
-                )
-                if has_custom_api:
-                    # Manually add custom APIs since temp_config might not load them properly
-                    # if they depend on include_mcp_tools
-                    from ...core.tools.adapters.vibe.custom_api_factory import (
-                        create_db_custom_api_tools,
-                    )
-
-                    custom_tools = await create_db_custom_api_tools(temp_config)
-                    all_tools.extend(custom_tools)
-
-                for tool in all_tools:
-                    if hasattr(tool, "metadata") and hasattr(tool.metadata, "category"):
-                        category = str(tool.metadata.category.value)
-                        tool_name = getattr(tool, "name", None)
-                        if not tool_name:
-                            continue
-
-                        if category in tool_categories:
-                            allowed_tools.append(tool_name)
-                        elif category == "mcp":
-                            for tc in tool_categories:
-                                if tc.startswith("mcp:"):
-                                    server_name = (
-                                        tc.split(":", 1)[1]
-                                        .replace(" ", "_")
-                                        .replace("-", "_")
-                                    )
-                                    logger.info(
-                                        f"Checking MCP tool: '{tool_name}' vs 'mcp_{server_name}_'"
-                                    )
-                                    # Use case-insensitive matching for MCP server prefix
-                                    if tool_name.lower().startswith(
-                                        f"mcp_{server_name.lower()}_"
-                                    ):
-                                        allowed_tools.append(tool_name)
-                                        break
-                        elif category == "other":
-                            # Check if this is a custom API that was requested as an MCP tool
-                            for tc in tool_categories:
-                                if tc.startswith("mcp:"):
-                                    server_name = (
-                                        tc.split(":", 1)[1]
-                                        .replace(" ", "_")
-                                        .replace("-", "_")
-                                    )
-                                    logger.info(
-                                        f"Checking Custom API tool: '{tool_name}' vs 'api_{server_name}_call'"
-                                    )
-                                    # Custom APIs are now prefixed with api_ and suffixed with _call
-                                    if (
-                                        tool_name.lower()
-                                        == f"api_{server_name.lower()}_call"
-                                    ):
-                                        allowed_tools.append(tool_name)
-                                        break
-
-                return allowed_tools
-
-            allowed_tools = await _get_tools_by_category()
-
-        # Create tool configuration
-        tool_config = WebToolConfig(
-            db=db,
-            request=MinimalRequest(int(user.id)),
-            llm=default_llm,
-            user_id=int(user.id),
-            is_admin=bool(user.is_admin),
-            allowed_collections=knowledge_bases
-            if knowledge_bases is not None
-            else None,
-            allowed_skills=skills if skills is not None else None,
-            allowed_tools=allowed_tools,
-            task_id=preview_task_id,
-            workspace_base_dir=preview_workspace_base_dir,
-            vision_model=vision_llm,  # Pass vision model for tool creation
-            include_mcp_tools=bool(
-                tool_categories and any(tc.startswith("mcp:") for tc in tool_categories)
-            ),
-            sandbox=sandbox,
-        )
-
-        # Check if previewing a published agent, exclude it from agent tools
-        preview_agent_id = message_data.get("agent_id")
-        if preview_agent_id:
-            from ..models.agent import Agent as AgentModel
-            from ..models.agent import AgentStatus
-
-            preview_agent = (
-                db.query(AgentModel).filter(AgentModel.id == preview_agent_id).first()
-            )
-            if preview_agent and preview_agent.status == AgentStatus.PUBLISHED:
-                tool_config._excluded_agent_id = int(preview_agent.id)
-                logger.info(
-                    f"Preview is for published agent {preview_agent.id} ({preview_agent.name}), will exclude from agent tools"
-                )
-
-        # Execute task
-        from .agents import enhance_system_prompt_with_kb
-
-        enhanced_system_prompt = enhance_system_prompt_with_kb(
-            instructions or None, knowledge_bases
-        )
-
-        # Determine execution mode and map to pattern.
-        pattern = get_agent_pattern_for_execution_mode(execution_mode)
-
-        logger.info(f"Preview execution_mode={execution_mode} -> pattern={pattern}")
-
-        # Create agent service (using WebSocket tracer)
-        if not hasattr(websocket.state, "preview_memory"):
-            websocket.state.preview_memory = InMemoryMemoryStore()
-        memory = websocket.state.preview_memory
-
-        if not hasattr(websocket.state, "preview_history"):
-            websocket.state.preview_history = []
-
-        agent_service = AgentService(
-            name="build_preview_agent",
-            llm=default_llm,
-            fast_llm=fast_llm,
-            vision_llm=vision_llm,
-            compact_llm=compact_llm,
-            memory=memory,
-            tool_config=tool_config,
-            pattern=pattern,  # Use pattern instead of use_dag_pattern
-            id=preview_task_id,
-            enable_workspace=True,
-            workspace_base_dir=preview_workspace_base_dir,
-            allowed_external_dirs=allowed_external_dirs,
-            task_id=preview_task_id,
-            tracer=preview_tracer,
-            system_prompt=enhanced_system_prompt,
-            memory_enabled=False,
-        )
-
-        # Save agent service to websocket state for pause functionality
-        websocket.state.preview_agent_service = agent_service
-
-        # Send preview start event
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "preview_started",
-                    "task_id": preview_task_id,
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                }
-            )
-        )
-
-        # Handle file upload (if any)
-        uploaded_files = []
-        file_info_list = []
-        file_prompt = ""
-        if files_data:
-            try:
-                from pathlib import Path
-
-                from ..models.uploaded_file import UploadedFile
-
-                for file_info in files_data:
-                    file_id = file_info.get("file_id")
-                    if not file_id:
-                        logger.warning(
-                            f"No file_id provided in preview file info: {file_info}"
-                        )
-                        continue
-
-                    file_record = (
-                        db.query(UploadedFile)
-                        .filter(UploadedFile.file_id == file_id)
-                        .first()
-                    )
-                    if not file_record:
-                        logger.warning(f"File record not found for file_id: {file_id}")
-                        continue
-
-                    file_name = file_record.filename
-                    file_size = file_record.file_size
-                    file_type = file_record.mime_type
-                    source_path = ensure_uploaded_file_local_path(file_record)
-
-                    if not source_path.exists():
-                        logger.warning(f"Physical file not found: {source_path}")
-                        continue
-
-                    try:
-                        if not agent_service.workspace:
-                            logger.warning(
-                                "Agent service workspace is not available for file upload"
-                            )
-                            continue
-
-                        # Normalize filename
-                        original_file_name = Path(file_name).name
-                        normalized_file_name = normalize_filename(original_file_name)
-
-                        # Do not copy file to workspace input directory to avoid duplication
-                        # Use the user directory file directly
-                        target_path = source_path
-                        uploaded_files.append(str(target_path))
-
-                        if agent_service.workspace:
-                            # Pass absolute path — resolve_path() else mistakes
-                            # CWD-relative for workspace-relative.
-                            agent_service.workspace.register_file(
-                                str(target_path.resolve()),
-                                file_id=str(file_record.file_id),
-                            )
-
-                        file_info_list.append(
-                            {
-                                "file_id": file_record.file_id,
-                                "name": normalized_file_name,
-                                "original_name": original_file_name,
-                                "size": file_size,
-                                "type": file_type,
-                                "path": str(target_path),
-                            }
-                        )
-
-                        logger.info(
-                            f"File added to workspace: {target_path} (original: {original_file_name} -> normalized: {normalized_file_name})"
-                        )
-
-                    except Exception as e:
-                        logger.error(
-                            f"Error handling file {file_info.get('name')}: {e}"
-                        )
-                        continue
-
-                if file_info_list:
-                    file_summary = "\n".join(
-                        [
-                            f"- {f['name']} (ID: {f['file_id']}, {f['size']} bytes, {f['type']}, Path: {f['path']})"
-                            for f in file_info_list
-                        ]
-                    )
-                    file_prompt = (
-                        "Uploaded files are available at the following absolute paths:\n"
-                        f"{file_summary}"
-                    )
-
-                logger.info(
-                    f"🎉 File upload completed, uploaded {len(uploaded_files)} files"
-                )
-                db.commit()
-
-            except Exception as e:
-                logger.error(
-                    f"Error handling file upload for build preview: {e}", exc_info=True
-                )
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "message": f"File upload failed: {str(e)}",
-                        }
-                    )
-                )
-                return
-
-        execution_context: dict[str, Any] = {}
-        if enhanced_system_prompt:
-            execution_context["system_prompt"] = enhanced_system_prompt
-        if file_prompt:
-            if user_message:
-                user_message = f"{user_message}\n\n{file_prompt}"
-            else:
-                user_message = file_prompt
-        websocket.state.preview_pending_user_message = user_message
-
-        if uploaded_files:
-            execution_context["uploaded_files"] = uploaded_files
-        if file_info_list:
-            execution_context["file_info"] = file_info_list
-
-        # Load preserved history from the connection state
-        if websocket.state.preview_history:
-            agent_service.set_conversation_history(websocket.state.preview_history)
-
-        with UserContext(int(user.id)):
-            result = await agent_service.execute_task(
-                task=user_message,
-                context=execution_context if execution_context else None,
-                task_id=preview_task_id,
-            )
-
-        result_status = str(result.get("status") or "")
-        if result_status == "interrupted":
-            _append_preview_user_turn_if_needed(websocket, user_message)
-            if not getattr(websocket.state, "preview_pause_requested", False):
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "task_paused",
-                            "timestamp": datetime.now(timezone.utc).timestamp(),
-                        }
-                    )
-                )
-            logger.info(f"Build preview {preview_task_id} paused")
-            return
-
-        # Append the new interaction to the history
-        _append_preview_user_turn_if_needed(websocket, user_message)
-        assistant_output = result.get("output", "")
-        websocket.state.preview_history.append(
-            {"role": "assistant", "content": assistant_output}
-        )
-        websocket.state.preview_pending_user_message = None
-
-        # Send preview completion event
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "task_completed",
-                    "result": result.get("output", ""),
-                    "success": result.get("success", False),
-                    "chat_response": result.get("chat_response"),
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                }
-            )
-        )
-
-        logger.info(f"Build preview {preview_task_id} completed")
-
-    except Exception as e:
-        logger.error(f"Error in build preview execution: {e}", exc_info=True)
-        try:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "task_error",
-                        "error": str(e),
-                        "timestamp": datetime.now(timezone.utc).timestamp(),
-                    }
-                )
-            )
-        except Exception:
-            pass
-    finally:
-        db.close()

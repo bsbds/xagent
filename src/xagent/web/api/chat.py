@@ -31,7 +31,7 @@ from ..models.agent import Agent
 from ..models.chat_message import TaskChatMessage
 from ..models.database import get_db
 from ..models.model import Model as DBModel
-from ..models.task import AgentType, Task, TaskRuntimeKind, TaskStatus, TraceEvent
+from ..models.task import AgentType, Task, TaskStatus, TraceEvent
 from ..models.user import User
 from ..schemas.chat import TaskCreateRequest, TaskCreateResponse
 from ..services.chat_history_service import (
@@ -50,7 +50,6 @@ from ..services.hot_path_cache import (
 from ..services.llm_utils import resolve_llms_from_names
 from ..services.managed_file_ref import ensure_uploaded_file_local_path
 from ..services.model_service import _get_visible_user_ids
-from ..services.preview_file_store import preview_file_store
 from ..services.task_execution_context_service import (
     load_task_execution_recovery_state,
 )
@@ -75,14 +74,6 @@ chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 _TERMINAL_CACHE_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED}
 
 
-def _is_build_preview_task(task: Any) -> bool:
-    runtime_kind = getattr(task, "runtime_kind", None)
-    if runtime_kind == TaskRuntimeKind.BUILD_PREVIEW.value:
-        return True
-    agent_config = getattr(task, "agent_config", None)
-    return isinstance(agent_config, dict) and agent_config.get("is_preview") is True
-
-
 def _build_task_agent_config(
     request_agent_config: Optional[Dict[str, Any]],
     selected_file_ids: list[str],
@@ -95,14 +86,6 @@ def _build_task_agent_config(
     if selected_file_ids:
         task_agent_config["selected_file_ids"] = selected_file_ids
     return task_agent_config or None
-
-
-def _normalize_task_runtime_kind(request: TaskCreateRequest) -> str:
-    if request.is_preview:
-        return TaskRuntimeKind.BUILD_PREVIEW.value
-    if request.runtime_kind == TaskRuntimeKind.BUILD_PREVIEW.value:
-        return TaskRuntimeKind.BUILD_PREVIEW.value
-    return TaskRuntimeKind.NORMAL.value
 
 
 def _get_task_activity_ids(db: Session, task_id: int) -> tuple[int, int]:
@@ -134,12 +117,8 @@ def resolve_agent_service_memory_policy(
     *,
     task: Optional[Task] = None,
     agent_config: Optional[Mapping[str, Any]] = None,
-    runtime_kind: str = "task",
 ) -> AgentServiceMemoryPolicy:
     """Resolve the memory store and enablement for an AgentService runtime."""
-    if runtime_kind in {"build_preview", "agent_preview"}:
-        return AgentServiceMemoryPolicy(InMemoryMemoryStore(), False)
-
     config = agent_config
     if config is None:
         task_config = getattr(task, "agent_config", None)
@@ -1864,17 +1843,6 @@ async def create_task(
             file_paths = []
 
             for file_id in request.files:
-                if request.is_preview:
-                    preview_file = preview_file_store.get(file_id)
-                    if preview_file is not None and preview_file.owner_user_id == int(
-                        user.id
-                    ):
-                        selected_file_ids.append(str(file_id))
-                        file_info_list.append(
-                            f"File: {preview_file.filename} (Preview file ID: {file_id})"
-                        )
-                        continue
-
                 uploaded_file = (
                     db.query(UploadedFile)
                     .filter(
@@ -2109,14 +2077,11 @@ async def create_task(
 
         task_agent_config = _build_task_agent_config(
             request.agent_config,
-            [] if request.is_preview else selected_file_ids,
+            selected_file_ids,
         )
         if request.is_preview:
             task_agent_config = task_agent_config or {}
             task_agent_config["is_preview"] = True
-            if request.preview_session_id:
-                task_agent_config["preview_session_id"] = request.preview_session_id
-        task_runtime_kind = _normalize_task_runtime_kind(request)
 
         task_execution_mode = request.execution_mode
         if not task_execution_mode:
@@ -2147,7 +2112,7 @@ async def create_task(
             process_description=request.process_description,
             examples=examples_data,
             agent_id=request.agent_id,  # Set agent_id if provided
-            runtime_kind=task_runtime_kind,
+            is_visible=False if request.is_preview else request.is_visible,
         )
 
         # Set agent_type using the property to avoid Column type issues
@@ -2170,36 +2135,18 @@ async def create_task(
         if selected_file_ids:
             from ..models.uploaded_file import UploadedFile
 
-            preview_file_ids = [
-                file_id
-                for file_id in selected_file_ids
-                if preview_file_store.get(file_id) is not None
-            ]
-            persistent_file_ids = [
-                file_id
-                for file_id in selected_file_ids
-                if preview_file_store.get(file_id) is None
-            ]
-
-            if persistent_file_ids:
-                (
-                    db.query(UploadedFile)
-                    .filter(
-                        UploadedFile.file_id.in_(persistent_file_ids),
-                        UploadedFile.user_id == int(user.id),
-                        UploadedFile.task_id.is_(None),
-                    )
-                    .update(
-                        {UploadedFile.task_id: int(task.id)},
-                        synchronize_session=False,
-                    )
+            (
+                db.query(UploadedFile)
+                .filter(
+                    UploadedFile.file_id.in_(selected_file_ids),
+                    UploadedFile.user_id == int(user.id),
+                    UploadedFile.task_id.is_(None),
                 )
-            if preview_file_ids:
-                preview_file_store.bind_to_task(
-                    preview_file_ids,
-                    int(task.id),
-                    int(user.id),
+                .update(
+                    {UploadedFile.task_id: int(task.id)},
+                    synchronize_session=False,
                 )
+            )
 
         db.commit()
         db.refresh(task)
@@ -2240,7 +2187,7 @@ async def get_tasks(
     exclude_agent_type: Optional[str] = None,
     execution_mode: Optional[str] = None,
     exclude_execution_mode: Optional[str] = None,
-    include_preview: bool = False,
+    include_hidden: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -2258,13 +2205,8 @@ async def get_tasks(
                 # Regular users can only see their own tasks
                 query = db.query(Task).filter(Task.user_id == user.id)
 
-            if not include_preview:
-                query = query.filter(
-                    or_(
-                        Task.runtime_kind.is_(None),
-                        Task.runtime_kind != TaskRuntimeKind.BUILD_PREVIEW.value,
-                    )
-                )
+            if not include_hidden:
+                query = query.filter(Task.is_visible.is_(True))
 
             # Apply search filter if provided
             if search:

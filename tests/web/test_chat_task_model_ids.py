@@ -539,9 +539,9 @@ def test_get_task_llm_ids_preserves_stored_id_when_model_missing(test_db):
         db.close()
 
 
-def test_get_tasks_hides_build_preview_by_default(test_db, user1_headers):
+def test_get_tasks_hides_invisible_tasks_by_default(test_db, user1_headers):
     from xagent.web.models.database import get_db
-    from xagent.web.models.task import Task, TaskRuntimeKind, TaskStatus
+    from xagent.web.models.task import Task, TaskStatus
     from xagent.web.models.user import User
 
     db = next(get_db())
@@ -558,8 +558,7 @@ def test_get_tasks_hides_build_preview_by_default(test_db, user1_headers):
             title="preview task",
             description="preview",
             status=TaskStatus.PENDING,
-            runtime_kind=TaskRuntimeKind.BUILD_PREVIEW.value,
-            agent_config={"is_preview": True},
+            is_visible=False,
         )
         db.add_all([normal_task, preview_task])
         db.commit()
@@ -571,7 +570,7 @@ def test_get_tasks_hides_build_preview_by_default(test_db, user1_headers):
         ]
 
         include_response = client.get(
-            "/api/chat/tasks?include_preview=true",
+            "/api/chat/tasks?include_hidden=true",
             headers=user1_headers,
         )
         assert include_response.status_code == 200
