@@ -1,6 +1,6 @@
 import React from "react"
-import { render, screen } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { cleanup, render, screen } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 const appState = vi.hoisted(() => ({
   messages: [],
@@ -32,8 +32,26 @@ vi.mock("@/contexts/i18n-context", () => ({
 }))
 
 vi.mock("@/components/chat/ChatMessage", () => ({
-  ChatMessage: ({ content, interactionsActive }: { content?: string | null; interactionsActive?: boolean }) => (
-    <div data-testid="chat-message" data-active={interactionsActive ? "true" : "false"}>
+  ChatMessage: ({
+    content,
+    interactionsActive,
+    traceEvents,
+    taskStatus,
+    showEmptyStatus,
+  }: {
+    content?: string | null
+    interactionsActive?: boolean
+    traceEvents?: unknown[]
+    taskStatus?: string
+    showEmptyStatus?: boolean
+  }) => (
+    <div
+      data-testid="chat-message"
+      data-active={interactionsActive ? "true" : "false"}
+      data-trace-count={traceEvents?.length ?? 0}
+      data-task-status={taskStatus || ""}
+      data-show-empty-status={showEmptyStatus ? "true" : "false"}
+    >
       {content}
     </div>
   ),
@@ -70,6 +88,15 @@ vi.mock("@/components/layout/center-panel", () => ({
 import { TaskConversationPanel } from "./task-conversation-panel"
 
 describe("TaskConversationPanel", () => {
+  afterEach(() => {
+    cleanup()
+    appState.messages = []
+    appState.traceEvents = []
+    appState.currentTask = null
+    appState.isProcessing = false
+    appState.isHistoryLoading = false
+  })
+
   it("renders waiting-for-user prompts from normal task state", () => {
     appState.messages = []
     appState.traceEvents = []
@@ -96,5 +123,48 @@ describe("TaskConversationPanel", () => {
 
     expect(screen.getByText("Which dataset should I use?")).toBeInTheDocument()
     expect(screen.getByTestId("chat-message")).toHaveAttribute("data-active", "true")
+  })
+
+  it("renders trace process events as separate timeline items between messages", () => {
+    appState.messages = [
+      {
+        id: "msg-user",
+        role: "user",
+        content: "Run analysis",
+        timestamp: "1000",
+      },
+      {
+        id: "msg-result",
+        role: "assistant",
+        content: "Done",
+        timestamp: "3000",
+        isResult: true,
+      },
+    ] as any
+    appState.traceEvents = [
+      {
+        event_id: "trace-1",
+        event_type: "tool_call",
+        timestamp: 2000,
+        data: { message: "Using tool" },
+      },
+    ] as any
+    appState.currentTask = {
+      id: "42",
+      title: "Task",
+      description: "Task",
+      status: "completed",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    } as any
+    appState.isHistoryLoading = false
+
+    render(<TaskConversationPanel mode="page" />)
+
+    const renderedMessages = screen.getAllByTestId("chat-message")
+    expect(renderedMessages).toHaveLength(3)
+    expect(renderedMessages[0]).toHaveTextContent("Run analysis")
+    expect(renderedMessages[1]).toHaveAttribute("data-trace-count", "1")
+    expect(renderedMessages[2]).toHaveTextContent("Done")
   })
 })

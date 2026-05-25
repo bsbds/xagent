@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button"
 import { useApp } from "@/contexts/app-context-chat"
 import { useI18n } from "@/contexts/i18n-context"
 import { apiRequest } from "@/lib/api-wrapper"
+import { isStreamingFinalAnswerMessage } from "@/lib/streaming-final-answer"
+import { getProcessGroupIndex } from "@/lib/task-timeline"
 import { cn, getApiUrl } from "@/lib/utils"
 
 export type TaskConversationPanelMode = "page" | "embedded-preview"
@@ -36,8 +38,12 @@ type CombinedItem = {
   content: string | React.ReactNode
   rawContent?: string
   timestamp: number
+  status?: string
+  isStreamingFinalAnswer?: boolean
   traceEvents?: any[]
   interactions?: any[]
+  showEmptyStatus?: boolean
+  timelineOrder?: number
 }
 
 const toTimestampMs = (timestamp: unknown): number => {
@@ -135,20 +141,139 @@ export function TaskConversationPanel({
     setFiles([])
   }
 
-  const combinedItems = useMemo<CombinedItem[]>(() => {
-    return state.messages
+  const messageItems = useMemo<CombinedItem[]>(() => {
+    const items = state.messages
       .filter((message: any) => message.role === "user" || message.isResult)
-      .map((message: any) => ({
-        id: message.id || `${message.role}-${toTimestampMs(message.timestamp)}`,
-        role: message.role,
-        content: message.content,
-        rawContent: message.rawContent,
-        timestamp: toTimestampMs(message.timestamp),
-        traceEvents: message.traceEvents,
-        interactions: message.interactions,
-      }))
-      .sort((a, b) => a.timestamp - b.timestamp)
+      .map((message: any) => {
+        const id = message.id || `${message.role}-${toTimestampMs(message.timestamp)}`
+        return {
+          id,
+          role: message.role,
+          content: message.content,
+          rawContent: message.rawContent,
+          timestamp: toTimestampMs(message.timestamp),
+          status: message.status,
+          isStreamingFinalAnswer: isStreamingFinalAnswerMessage({
+            id,
+            role: message.role,
+            isResult: message.isResult,
+          }),
+          traceEvents: message.traceEvents,
+          interactions: message.interactions,
+        }
+      })
+
+    items.sort((a, b) => a.timestamp - b.timestamp)
+    return items
   }, [state.messages])
+
+  const lastMessageItem = messageItems[messageItems.length - 1]
+  const hasFinalAssistantMessage =
+    !!lastMessageItem &&
+    lastMessageItem.role === "assistant" &&
+    !(
+      lastMessageItem.isStreamingFinalAnswer &&
+      lastMessageItem.status === "failed"
+    )
+
+  const timelineItems = useMemo<CombinedItem[]>(() => {
+    const sortedMessages = [...messageItems].sort((a, b) => a.timestamp - b.timestamp)
+    const items: CombinedItem[] = sortedMessages.map((item, index) => ({
+      ...item,
+      traceEvents: undefined,
+      timelineOrder: index * 2 + 1,
+    }))
+
+    type TimelineProcessEvent = {
+      event_id?: string
+      event_type?: string
+      timestamp?: unknown
+      [key: string]: unknown
+    }
+
+    const processEventsById = new Map<string, TimelineProcessEvent>()
+    const addProcessEvent = (event: unknown, fallbackKey: string) => {
+      if (!event || typeof event !== "object") {
+        return
+      }
+      const processEvent = event as TimelineProcessEvent
+      const eventKey =
+        typeof processEvent.event_id === "string" && processEvent.event_id
+          ? processEvent.event_id
+          : fallbackKey
+      if (!processEventsById.has(eventKey)) {
+        processEventsById.set(eventKey, processEvent)
+      }
+    }
+
+    if (Array.isArray(state.traceEvents)) {
+      state.traceEvents.forEach((event: unknown, index: number) => {
+        addProcessEvent(event, `state-${index}`)
+      })
+    }
+    messageItems.forEach((item) => {
+      item.traceEvents?.forEach((event, index) => {
+        addProcessEvent(event, `${item.id}-${index}`)
+      })
+    })
+
+    const processEvents = Array.from(processEventsById.values())
+    if (processEvents.length === 0) {
+      return items
+    }
+
+    const processGroups = new Map<number, TimelineProcessEvent[]>()
+    processEvents.forEach((event) => {
+      const eventTime = toTimestampMs(event.timestamp)
+      const groupIndex = getProcessGroupIndex(sortedMessages, eventTime)
+      const group = processGroups.get(groupIndex) || []
+      group.push(event)
+      processGroups.set(groupIndex, group)
+    })
+
+    const groupEntries = Array.from(processGroups.entries()).sort((a, b) => a[0] - b[0])
+    const latestGroupIndex =
+      groupEntries.length > 0 ? groupEntries[groupEntries.length - 1][0] : -1
+
+    groupEntries.forEach(([groupIndex, events]) => {
+      if (events.length === 0) {
+        return
+      }
+
+      const groupTimestamp = Math.min(
+        ...events.map((event) => toTimestampMs(event.timestamp))
+      )
+      const firstEvent = events[0]
+      const shouldShowEmptyStatus =
+        !hasFinalAssistantMessage &&
+        groupIndex === latestGroupIndex &&
+        groupIndex >= sortedMessages.length
+
+      items.push({
+        id: `process-${groupIndex}-${firstEvent?.event_id || groupTimestamp}`,
+        role: "assistant",
+        content: null,
+        timestamp: groupTimestamp,
+        status: shouldShowEmptyStatus ? state.currentTask?.status : undefined,
+        traceEvents: events,
+        showEmptyStatus: shouldShowEmptyStatus,
+        timelineOrder: groupIndex * 2,
+      })
+    })
+
+    items.sort(
+      (a, b) =>
+        a.timestamp - b.timestamp ||
+        (a.timelineOrder ?? Number.MAX_SAFE_INTEGER) -
+          (b.timelineOrder ?? Number.MAX_SAFE_INTEGER)
+    )
+    return items
+  }, [
+    hasFinalAssistantMessage,
+    messageItems,
+    state.currentTask?.status,
+    state.traceEvents,
+  ])
 
   const waitingPrompt = useMemo(
     () => findWaitingPrompt(state.currentTask, state.traceEvents as any[]),
@@ -166,23 +291,23 @@ export function TaskConversationPanel({
 
     if (waitingPrompt) {
       const normalizedPrompt = waitingPrompt.trim()
-      for (let i = combinedItems.length - 1; i >= 0; i--) {
-        const item = combinedItems[i]
+      for (let i = messageItems.length - 1; i >= 0; i--) {
+        const item = messageItems[i]
         if (item.role === "assistant" && typeof item.content === "string" && item.content.trim() === normalizedPrompt) {
           return item.id
         }
       }
     }
 
-    for (let i = combinedItems.length - 1; i >= 0; i--) {
-      const item = combinedItems[i]
+    for (let i = messageItems.length - 1; i >= 0; i--) {
+      const item = messageItems[i]
       if (item.role === "assistant" && item.interactions && item.interactions.length > 0) {
         return item.id
       }
     }
 
     return null
-  }, [combinedItems, state.currentTask?.status, waitingPrompt])
+  }, [messageItems, state.currentTask?.status, waitingPrompt])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" })
@@ -336,19 +461,19 @@ export function TaskConversationPanel({
     ))
     : []
 
-  const hasFinalAssistantMessage = combinedItems.length > 0 && combinedItems[combinedItems.length - 1].role === "assistant"
   const isPlanning = dagNodes.length === 0 && state.dagExecution?.phase === "planning"
   const hasError = dagNodes.length === 0 && (state.dagExecution?.phase === "failed" || state.currentTask?.status === "failed")
   const shouldShowHistoryLoading =
-    combinedItems.length === 0 &&
+    timelineItems.length === 0 &&
     state.currentTask?.status !== "waiting_for_user" &&
-    (state.isHistoryLoading || mode === "page")
+    state.isHistoryLoading
   const shouldShowVirtualMessage =
     (state.isProcessing ||
-      (state.traceEvents?.length || 0) > 0 ||
       state.currentTask?.status === "paused" ||
-      state.currentTask?.status === "waiting_for_user") &&
-    !hasFinalAssistantMessage
+      state.currentTask?.status === "waiting_for_user" ||
+      state.currentTask?.status === "failed") &&
+    !hasFinalAssistantMessage &&
+    !timelineItems.some((item) => item.showEmptyStatus)
 
   return (
     <div
@@ -380,19 +505,31 @@ export function TaskConversationPanel({
                 </div>
               ) : (
                 <>
-                  {combinedItems.map((item) => (
-                    <ChatMessage
-                      key={item.id}
-                      role={item.role}
-                      content={item.content}
-                      rawContent={item.rawContent}
-                      traceEvents={item.traceEvents as any || []}
-                      showProcessView={true}
-                      timestamp={item.timestamp}
-                      interactions={item.interactions}
-                      interactionsActive={item.id === activeWaitingMessageId}
-                    />
-                  ))}
+                  {timelineItems.map((item) => {
+                    const isFailedFinalAnswerStream =
+                      item.isStreamingFinalAnswer && item.status === "failed"
+                    return (
+                      <ChatMessage
+                        key={item.id}
+                        role={item.role}
+                        content={item.content}
+                        rawContent={item.rawContent}
+                        traceEvents={item.traceEvents as any || []}
+                        showProcessView={true}
+                        taskStatus={
+                          isFailedFinalAnswerStream
+                            ? "failed"
+                            : item.showEmptyStatus
+                              ? item.status
+                              : undefined
+                        }
+                        timestamp={item.timestamp}
+                        interactions={item.interactions}
+                        interactionsActive={item.id === activeWaitingMessageId}
+                        showEmptyStatus={item.showEmptyStatus}
+                      />
+                    )
+                  })}
 
                   {shouldShowVirtualMessage && (
                     <ChatMessage
