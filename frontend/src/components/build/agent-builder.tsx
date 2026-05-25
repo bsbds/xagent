@@ -44,6 +44,7 @@ import { cn } from "@/lib/utils"
 import { getBrandingFromEnv } from "@/lib/branding"
 import { extractBuildPreviewResponse } from "@/lib/chat-response"
 import { BuildFilePreviewSheet } from "./build-file-preview-sheet"
+import { getBuildPreviewTerminalErrorMessage } from "./agent-builder-preview-events"
 
 interface KnowledgeBase {
   name: string
@@ -486,13 +487,36 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 return prev
               })
             } else if (message.type === 'task_error') {
+              const errorMessage = getBuildPreviewTerminalErrorMessage(message)
               setIsChatLoading(false)
               setTaskStatus('idle')
               setMessages(prev => [...prev, {
                 role: "assistant",
-                content: `Error: ${message.error}`,
+                content: errorMessage || "Error: Preview failed",
                 timestamp: Date.now()
               }])
+            } else {
+              const errorMessage = getBuildPreviewTerminalErrorMessage(message)
+              if (errorMessage) {
+                setIsChatLoading(false)
+                setTaskStatus('idle')
+                setMessages(prev => {
+                  const newMessages = [...prev]
+                  const lastMsg = newMessages[newMessages.length - 1]
+                  if (lastMsg && lastMsg.role === 'assistant') {
+                    newMessages[newMessages.length - 1] = {
+                      ...lastMsg,
+                      content: errorMessage
+                    }
+                    return newMessages
+                  }
+                  return [...prev, {
+                    role: "assistant",
+                    content: errorMessage,
+                    timestamp: Date.now()
+                  }]
+                })
+              }
             }
           } catch (error) {
             console.error('Failed to parse WebSocket message:', error)
