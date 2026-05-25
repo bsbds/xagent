@@ -30,6 +30,13 @@ class TaskStatus(enum.Enum):
     FAILED = "failed"
 
 
+class TaskRuntimeKind(enum.Enum):
+    """Task runtime/lifecycle classifier."""
+
+    NORMAL = "normal"
+    BUILD_PREVIEW = "build_preview"
+
+
 class DAGExecutionPhase(enum.Enum):
     """DAG execution phase enumeration"""
 
@@ -164,6 +171,16 @@ class Task(Base):  # type: ignore
         String(20),
         default="internal",
         server_default="internal",
+        nullable=True,
+        index=True,
+    )
+
+    # Lifecycle classifier. Build-preview tasks reuse the normal task
+    # executor but stay hidden from normal task history and use ephemeral files.
+    runtime_kind = Column(
+        String(30),
+        default=TaskRuntimeKind.NORMAL.value,
+        server_default=TaskRuntimeKind.NORMAL.value,
         nullable=True,
         index=True,
     )

@@ -31,7 +31,7 @@ from ..models.agent import Agent
 from ..models.chat_message import TaskChatMessage
 from ..models.database import get_db
 from ..models.model import Model as DBModel
-from ..models.task import AgentType, Task, TaskStatus, TraceEvent
+from ..models.task import AgentType, Task, TaskRuntimeKind, TaskStatus, TraceEvent
 from ..models.user import User
 from ..schemas.chat import TaskCreateRequest, TaskCreateResponse
 from ..services.chat_history_service import (
@@ -75,6 +75,14 @@ chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 _TERMINAL_CACHE_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED}
 
 
+def _is_build_preview_task(task: Any) -> bool:
+    runtime_kind = getattr(task, "runtime_kind", None)
+    if runtime_kind == TaskRuntimeKind.BUILD_PREVIEW.value:
+        return True
+    agent_config = getattr(task, "agent_config", None)
+    return isinstance(agent_config, dict) and agent_config.get("is_preview") is True
+
+
 def _build_task_agent_config(
     request_agent_config: Optional[Dict[str, Any]],
     selected_file_ids: list[str],
@@ -87,6 +95,14 @@ def _build_task_agent_config(
     if selected_file_ids:
         task_agent_config["selected_file_ids"] = selected_file_ids
     return task_agent_config or None
+
+
+def _normalize_task_runtime_kind(request: TaskCreateRequest) -> str:
+    if request.is_preview:
+        return TaskRuntimeKind.BUILD_PREVIEW.value
+    if request.runtime_kind == TaskRuntimeKind.BUILD_PREVIEW.value:
+        return TaskRuntimeKind.BUILD_PREVIEW.value
+    return TaskRuntimeKind.NORMAL.value
 
 
 def _get_task_activity_ids(db: Session, task_id: int) -> tuple[int, int]:
@@ -2093,13 +2109,14 @@ async def create_task(
 
         task_agent_config = _build_task_agent_config(
             request.agent_config,
-            selected_file_ids,
+            [] if request.is_preview else selected_file_ids,
         )
         if request.is_preview:
             task_agent_config = task_agent_config or {}
             task_agent_config["is_preview"] = True
             if request.preview_session_id:
                 task_agent_config["preview_session_id"] = request.preview_session_id
+        task_runtime_kind = _normalize_task_runtime_kind(request)
 
         task_execution_mode = request.execution_mode
         if not task_execution_mode:
@@ -2130,6 +2147,7 @@ async def create_task(
             process_description=request.process_description,
             examples=examples_data,
             agent_id=request.agent_id,  # Set agent_id if provided
+            runtime_kind=task_runtime_kind,
         )
 
         # Set agent_type using the property to avoid Column type issues
@@ -2222,6 +2240,7 @@ async def get_tasks(
     exclude_agent_type: Optional[str] = None,
     execution_mode: Optional[str] = None,
     exclude_execution_mode: Optional[str] = None,
+    include_preview: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -2238,6 +2257,14 @@ async def get_tasks(
             else:
                 # Regular users can only see their own tasks
                 query = db.query(Task).filter(Task.user_id == user.id)
+
+            if not include_preview:
+                query = query.filter(
+                    or_(
+                        Task.runtime_kind.is_(None),
+                        Task.runtime_kind != TaskRuntimeKind.BUILD_PREVIEW.value,
+                    )
+                )
 
             # Apply search filter if provided
             if search:

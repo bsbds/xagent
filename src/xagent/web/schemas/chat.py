@@ -64,6 +64,7 @@ class TaskCreateRequest(BaseModel):
         False  # Build preview tasks are normal tasks with ephemeral files.
     )
     preview_session_id: Optional[str] = None
+    runtime_kind: Optional[str] = None
 
     # Execution mode field
     execution_mode: Optional[str] = None  # "flash", "balanced", "think", or "auto"
