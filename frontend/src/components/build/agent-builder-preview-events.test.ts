@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 
-import { getBuildPreviewTerminalErrorMessage } from "./agent-builder-preview-events"
+import {
+  getBuildPreviewTerminalErrorMessage,
+  getBuildPreviewWaitingForUser,
+} from "./agent-builder-preview-events"
 
 describe("getBuildPreviewTerminalErrorMessage", () => {
   it("treats normal task-flow agent errors as terminal preview errors", () => {
@@ -26,6 +29,56 @@ describe("getBuildPreviewTerminalErrorMessage", () => {
       getBuildPreviewTerminalErrorMessage({
         type: "task_info",
         status: "running",
+      })
+    ).toBeNull()
+  })
+})
+
+describe("getBuildPreviewWaitingForUser", () => {
+  it("extracts waiting-for-user messages from normal ReAct task end events", () => {
+    expect(
+      getBuildPreviewWaitingForUser({
+        type: "trace_event",
+        event_type: "react_task_end",
+        data: {
+          result: {
+            status: "waiting_for_user",
+            message: "How should I use this file?",
+            interactions: [
+              {
+                type: "select_one",
+                field: "intent",
+                label: "Choose an action",
+                options: [{ label: "Summarize", value: "summarize" }],
+              },
+            ],
+          },
+        },
+      })
+    ).toEqual({
+      message: "How should I use this file?",
+      interactions: [
+        {
+          type: "select_one",
+          field: "intent",
+          label: "Choose an action",
+          options: [{ label: "Summarize", value: "summarize" }],
+        },
+      ],
+    })
+  })
+
+  it("ignores non-waiting task end events", () => {
+    expect(
+      getBuildPreviewWaitingForUser({
+        type: "trace_event",
+        event_type: "react_task_end",
+        data: {
+          result: {
+            status: "completed",
+            message: "Done",
+          },
+        },
       })
     ).toBeNull()
   })

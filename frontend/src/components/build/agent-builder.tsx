@@ -44,7 +44,10 @@ import { cn } from "@/lib/utils"
 import { getBrandingFromEnv } from "@/lib/branding"
 import { extractBuildPreviewResponse } from "@/lib/chat-response"
 import { BuildFilePreviewSheet } from "./build-file-preview-sheet"
-import { getBuildPreviewTerminalErrorMessage } from "./agent-builder-preview-events"
+import {
+  getBuildPreviewTerminalErrorMessage,
+  getBuildPreviewWaitingForUser,
+} from "./agent-builder-preview-events"
 
 interface KnowledgeBase {
   name: string
@@ -371,7 +374,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }, [t])
 
   const [isChatLoading, setIsChatLoading] = useState(false)
-  const [taskStatus, setTaskStatus] = useState<"idle" | "running" | "paused">("idle")
+  const [taskStatus, setTaskStatus] = useState<"idle" | "running" | "paused" | "waiting_for_user">("idle")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [files, setFiles] = useState<File[]>([])
 
@@ -395,13 +398,37 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }
 
   const handlePreviewWsMessage = (message: any) => {
+    const waitingForUser = getBuildPreviewWaitingForUser(message)
+    if (waitingForUser) {
+      setIsChatLoading(false)
+      setTaskStatus('waiting_for_user')
+      setMessages(prev => {
+        const newMessages = [...prev]
+        const lastMsg = newMessages[newMessages.length - 1]
+        if (lastMsg && lastMsg.role === 'assistant') {
+          newMessages[newMessages.length - 1] = {
+            ...lastMsg,
+            content: waitingForUser.message,
+            interactions: waitingForUser.interactions
+          }
+          return newMessages
+        }
+        return [...prev, {
+          role: "assistant",
+          content: waitingForUser.message,
+          interactions: waitingForUser.interactions,
+          timestamp: Date.now()
+        }]
+      })
+    }
+
     if (message.type === 'task_info') {
       const status = message.data?.status ?? message.status
       if (status === 'running') {
         setTaskStatus('running')
       } else if (status === 'paused' || status === 'waiting_for_user') {
         setIsChatLoading(false)
-        setTaskStatus('paused')
+        setTaskStatus(status === 'waiting_for_user' ? 'waiting_for_user' : 'paused')
       }
     } else if (message.type === 'message_received') {
       setIsChatLoading(true)
@@ -411,7 +438,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       appendAssistantPlaceholder()
     } else if (message.type === 'task_paused' || message.type === 'task_waiting_for_user') {
       setIsChatLoading(false)
-      setTaskStatus('paused')
+      setTaskStatus(message.type === 'task_waiting_for_user' ? 'waiting_for_user' : 'paused')
     } else if (message.type === 'task_resumed') {
       setIsChatLoading(true)
       setTaskStatus('running')
@@ -2203,6 +2230,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
                 timestamp={msg.timestamp}
                 taskStatus={index === messages.length - 1 && msg.role === 'assistant' ? taskStatus : undefined}
                 interactions={msg.interactions}
+                interactionsActive={index === messages.length - 1 && taskStatus === 'waiting_for_user'}
                 onSendInteraction={handlePreviewInteractionSend}
               />
             ))}
