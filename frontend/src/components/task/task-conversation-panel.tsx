@@ -320,7 +320,7 @@ export function TaskConversationPanel({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" })
-  }, [state.messages, state.steps, state.traceEvents])
+  }, [state.messages, state.steps])
 
   useEffect(() => {
     if (state.filePreview.isOpen) {
@@ -536,14 +536,14 @@ export function TaskConversationPanel({
           <main className={cn("mx-auto px-4 relative z-0 transition-all", mode === "page" ? "container max-w-4xl py-8" : "max-w-3xl py-4")}>
             <div className={cn(mode === "page" ? "space-y-6 pb-4" : "space-y-4 pb-4")}>
               {shouldShowHistoryLoading ? (
-                <div className="flex flex-col items-center justify-center min-h-[40vh] py-16 text-center">
+                <div className={cn("flex flex-col items-center justify-center py-16 text-center", mode === "page" ? "min-h-[60vh]" : "min-h-[40vh]")}>
                   <div className="relative mb-6">
                     <div className="w-16 h-16 rounded-2xl bg-muted/30 flex items-center justify-center animate-pulse">
                       <Loader2 className="w-8 h-8 text-primary animate-spin" />
                     </div>
                   </div>
                   <h2 className="text-xl font-medium mb-2 text-foreground/80">
-                    {state.isHistoryLoading ? t("common.loading") : t("builds.preview.initialMessage")}
+                    {t("common.loading")}
                   </h2>
                 </div>
               ) : (

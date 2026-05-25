@@ -354,8 +354,16 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     dispatch({ type: "SET_STEPS", payload: [] })
     dispatch({ type: "SET_DAG_EXECUTION", payload: null })
     dispatch({ type: "SET_CURRENT_TASK", payload: null })
+    dispatch({ type: "SET_HISTORY_LOADING", payload: false })
     setTaskId(null, { navigate: false })
   }, [closeFilePreview, dispatch, setTaskId])
+
+  useEffect(() => {
+    resetPreviewSession()
+    return () => {
+      resetPreviewSession()
+    }
+  }, [resetPreviewSession])
 
   useEffect(() => {
     if (!previewTaskIdRef.current) {
