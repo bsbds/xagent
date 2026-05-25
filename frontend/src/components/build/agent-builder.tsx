@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useRef, useMemo } from "react"
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { ResizableThreeColumnLayout } from "@/components/layout/resizable-three-column-layout"
 import { AgentBuilderChat } from "./agent-builder-chat"
 import { Input } from "@/components/ui/input"
@@ -345,6 +345,24 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const previewTaskIdRef = useRef<number | null>(null)
+
+  const resetPreviewSession = useCallback(() => {
+    previewTaskIdRef.current = null
+    closeFilePreview()
+    dispatch({ type: "CLEAR_MESSAGES" })
+    dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
+    dispatch({ type: "SET_STEPS", payload: [] })
+    dispatch({ type: "SET_DAG_EXECUTION", payload: null })
+    dispatch({ type: "SET_CURRENT_TASK", payload: null })
+    setTaskId(null, { navigate: false })
+  }, [closeFilePreview, dispatch, setTaskId])
+
+  useEffect(() => {
+    if (!previewTaskIdRef.current) {
+      return
+    }
+    resetPreviewSession()
+  }, [instructions, executionMode, selectedKbs, selectedSkills, selectedToolCategories, selectedMcpServers, modelConfig, resetPreviewSession])
 
   // Fetch Data
   useEffect(() => {
@@ -1819,16 +1837,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
             variant="ghost"
             size="icon"
             className="h-8 w-8 text-muted-foreground hover:text-foreground"
-            onClick={() => {
-              previewTaskIdRef.current = null
-              closeFilePreview()
-              dispatch({ type: "CLEAR_MESSAGES" })
-              dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
-              dispatch({ type: "SET_STEPS", payload: [] })
-              dispatch({ type: "SET_DAG_EXECUTION", payload: null })
-              dispatch({ type: "SET_CURRENT_TASK", payload: null })
-              setTaskId(null, { navigate: false })
-            }}
+            onClick={resetPreviewSession}
             title={t("common.clear") || "Clear"}
           >
             <Trash2 className="h-4 w-4" />

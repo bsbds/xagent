@@ -1,5 +1,5 @@
 import React from "react"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const apiRequestMock = vi.hoisted(() => vi.fn())
@@ -198,6 +198,7 @@ describe("AgentBuilder preview", () => {
   })
 
   afterEach(() => {
+    cleanup()
     globalThis.WebSocket = originalWebSocket
   })
 
@@ -232,5 +233,52 @@ describe("AgentBuilder preview", () => {
       expect(sendMessageMock).toHaveBeenCalledWith("Preview this", expect.objectContaining({ force: true }), undefined)
     })
     expect(globalThis.WebSocket).not.toHaveBeenCalled()
+  })
+
+  it("recreates the hidden preview task after builder config changes", async () => {
+    render(<AgentBuilder />)
+
+    fireEvent.click(await screen.findByText("send-preview-message"))
+
+    await waitFor(() => {
+      expect(setTaskIdMock).toHaveBeenCalledWith(123, { navigate: false })
+    })
+
+    apiRequestMock.mockClear()
+    dispatchMock.mockClear()
+    setTaskIdMock.mockClear()
+    sendMessageMock.mockClear()
+
+    fireEvent.click(screen.getByText("builds.configForm.executionMode.think.title"))
+
+    await waitFor(() => {
+      expect(setTaskIdMock).toHaveBeenCalledWith(null, { navigate: false })
+    })
+    expect(dispatchMock).toHaveBeenCalledWith({ type: "CLEAR_MESSAGES" })
+    expect(dispatchMock).toHaveBeenCalledWith({ type: "SET_TRACE_EVENTS", payload: [] })
+    expect(dispatchMock).toHaveBeenCalledWith({ type: "SET_STEPS", payload: [] })
+    expect(dispatchMock).toHaveBeenCalledWith({ type: "SET_DAG_EXECUTION", payload: null })
+    expect(dispatchMock).toHaveBeenCalledWith({ type: "SET_CURRENT_TASK", payload: null })
+
+    fireEvent.click(screen.getByText("send-preview-message"))
+
+    await waitFor(() => {
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        "http://api.local/api/chat/task/create",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.any(String),
+        })
+      )
+    })
+
+    const createCall = apiRequestMock.mock.calls.find(([url]) => String(url).endsWith("/api/chat/task/create"))
+    expect(JSON.parse(createCall?.[1]?.body as string)).toMatchObject({
+      execution_mode: "think",
+      is_visible: false,
+      agent_config: {
+        is_preview: true,
+      },
+    })
   })
 })
