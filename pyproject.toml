@@ -76,6 +76,8 @@ dependencies = [
   "aiohttp-socks>=0.8.4",
   "lark-oapi>=1.5.3",
   "s3fs>=2026.2.0",
+  "authlib>=1.7.2",
+  "itsdangerous>=2.2.0",
 ]
 
 [project.optional-dependencies]

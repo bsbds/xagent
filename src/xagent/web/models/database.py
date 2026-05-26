@@ -60,6 +60,7 @@ def init_db(db_url: str | None = None) -> None:
         User,
         UserApiKey,
         UserDefaultModel,
+        UserIdentity,
         UserModel,
         UserTemplateRelation,
         Workforce,
