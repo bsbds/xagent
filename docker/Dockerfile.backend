@@ -19,6 +19,10 @@ WORKDIR /opt/xagent
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+ENV UV_PYTHON_DOWNLOADS=0
+
 RUN if [ -n "$APT_MIRROR" ]; then \
         sed -i "s|http://deb.debian.org/debian|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources \
         || sed -i "s|http://deb.debian.org/debian|$APT_MIRROR|g" /etc/apt/sources.list; \
@@ -54,15 +58,11 @@ FROM backend-base AS backend-deps
 
 ARG PYPI_INDEX_URL=""
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip compile pyproject.toml --extra backend-image --no-emit-package xagent \
-    --torch-backend cpu \
-    --output-file /tmp/backend-requirements.txt \
-    ${PYPI_INDEX_URL:+--default-index $PYPI_INDEX_URL} \
-    && VIRTUAL_ENV=/opt/venv uv pip sync /tmp/backend-requirements.txt \
-    --torch-backend cpu \
+    VIRTUAL_ENV=/opt/venv uv sync --active --locked --no-dev --no-install-project --no-editable \
+    --group backend-image \
     ${PYPI_INDEX_URL:+--default-index $PYPI_INDEX_URL}
 
 ############################
@@ -88,7 +88,10 @@ ARG PYPI_INDEX_URL=""
 COPY src ./src
 COPY alembic.ini .
 
-RUN /opt/venv/bin/pip install --no-cache-dir ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} --no-deps .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    VIRTUAL_ENV=/opt/venv uv sync --active --locked --no-dev --no-editable \
+    --group backend-image \
+    ${PYPI_INDEX_URL:+--default-index $PYPI_INDEX_URL}
 
 ############################
 # Runtime
