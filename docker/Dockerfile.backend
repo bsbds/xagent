@@ -53,7 +53,6 @@ RUN python -m venv /opt/venv \
 FROM backend-base AS backend-deps
 
 ARG PYPI_INDEX_URL=""
-ARG XAGENT_PACKAGE_VERSION=0.0.0
 
 COPY pyproject.toml README.md ./
 
@@ -85,15 +84,11 @@ RUN --mount=type=cache,id=xagent-deepdoc-model-cache,target=/tmp/deepdoc-cache,s
 FROM backend-deps AS backend-build
 
 ARG PYPI_INDEX_URL=""
-ARG XAGENT_PACKAGE_VERSION=0.0.0
 
 COPY src ./src
 COPY alembic.ini .
-COPY .git .git
 
-RUN SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XAGENT="${XAGENT_PACKAGE_VERSION}" \
-    VCS_VERSIONING_PRETEND_VERSION_FOR_XAGENT="${XAGENT_PACKAGE_VERSION}" \
-    /opt/venv/bin/pip install --no-cache-dir ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} --no-deps .
+RUN /opt/venv/bin/pip install --no-cache-dir ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} --no-deps .
 
 ############################
 # Runtime

@@ -85,6 +85,7 @@ jobs:
           NIGHTLY_DATE="$(date -u +%Y%m%d)"
           NIGHTLY_VERSION="nightly-$NIGHTLY_DATE"
           PACKAGE_VERSION="0.0.dev$NIGHTLY_DATE"
+          python scripts/write_package_version.py "$PACKAGE_VERSION"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "nightly_version=$NIGHTLY_VERSION" >> "$GITHUB_OUTPUT"
           echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
@@ -108,7 +109,6 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             XAGENT_VERSION=${{ steps.version-meta.outputs.nightly_version }}
-            XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}
             XAGENT_GIT_COMMIT=${{ github.sha }}
             XAGENT_BUILD_TIME=${{ steps.version-meta.outputs.build_time }}
           cache-from: type=registry,ref=${{ env.BACKEND_IMAGE }}:buildcache
@@ -174,7 +174,6 @@ jobs:
           labels: ${{ steps.meta-backend-ghcr.outputs.labels }}
           build-args: |
             XAGENT_VERSION=${{ steps.version-meta.outputs.nightly_version }}
-            XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}
             XAGENT_GIT_COMMIT=${{ github.sha }}
             XAGENT_BUILD_TIME=${{ steps.version-meta.outputs.build_time }}
 
