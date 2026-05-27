@@ -596,14 +596,12 @@ def process_document(
             provider or "unknown",
         )
         resolve_elapsed = int((time.time() - resolve_start) * 1000)
-        completed_steps.append(
-            IngestionStepResult(
-                name="resolve_embedding_adapter",
-                metadata={
-                    "model_id": selected_model_id,
-                    "elapsed_ms": resolve_elapsed,
-                },
-            )
+        resolve_step = IngestionStepResult(
+            name="resolve_embedding_adapter",
+            metadata={
+                "model_id": selected_model_id,
+                "elapsed_ms": resolve_elapsed,
+            },
         )
 
         # Step 0: Initialize collection embedding config if needed.
@@ -638,6 +636,8 @@ def process_document(
                 # Metadata doesn't exist, create basic entry
                 update_collection_stats_sync(collection_name=collection)
                 logger.info("Created basic metadata for collection '%s'", collection)
+
+        completed_steps.append(resolve_step)
 
         init_elapsed = int((time.time() - init_start) * 1000)
         completed_steps.append(

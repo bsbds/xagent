@@ -394,6 +394,55 @@ def test_process_document_reuses_existing_collection_embedding_model_before_init
     assert initialized_model_ids == [canonical_model_id]
 
 
+def test_process_document_init_failure_after_resolve_is_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preflight model resolution should not make init failures partial."""
+
+    _patch_pipeline_dependencies(monkeypatch)
+
+    canonical_model_id = "text-embedding-v4-dashscope-1-37c6d7dd"
+    stub_config = EmbeddingModelConfig(
+        id=canonical_model_id,
+        model_name="text-embedding-v4",
+        model_provider="dashscope",
+        dimension=2,
+    )
+    stub_adapter = _StubEmbeddingAdapter()
+
+    monkeypatch.setattr(
+        document_ingestion,
+        "resolve_effective_embedding_model_sync",
+        lambda _collection, _model_id=None: canonical_model_id,
+    )
+    monkeypatch.setattr(
+        document_ingestion,
+        "_resolve_embedding_adapter",
+        lambda _cfg: (stub_config, stub_adapter),
+    )
+
+    def _raise_init_error(*, collection_name: str, embedding_model_id: str) -> None:
+        raise ValueError("collection already initialized with another model")
+
+    monkeypatch.setattr(
+        document_ingestion,
+        "initialize_collection_embedding_sync",
+        _raise_init_error,
+    )
+
+    result = document_ingestion.process_document(
+        collection="demo",
+        source_path="/tmp/doc.pdf",
+        config=IngestionConfig(embedding_model_id="text-embedding-v4"),
+    )
+
+    assert result.status == "error"
+    assert result.failed_step == "initialize_collection"
+    assert result.completed_steps == []
+    assert result.doc_id is None
+    assert STATUS_EVENTS == []
+
+
 def test_process_document_applies_spreadsheet_safeguards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
