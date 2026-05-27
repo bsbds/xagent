@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { getApiUrl } from "@/lib/utils"
 import { clearAuthTokenPayload, storeAuthTokenPayload } from "@/lib/auth-cache"
 import { useI18n } from "@/contexts/i18n-context"
@@ -8,8 +8,12 @@ import { useI18n } from "@/contexts/i18n-context"
 export function OidcCallbackPage() {
   const { t } = useI18n()
   const [message, setMessage] = useState(t("login.google.completing"))
+  const started = useRef(false)
 
   useEffect(() => {
+    if (started.current) return
+    started.current = true
+
     const completeLogin = async () => {
       const params = new URLSearchParams(window.location.search)
       const provider = params.get("provider")
