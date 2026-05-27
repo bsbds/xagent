@@ -40,6 +40,46 @@ def reset_locks_for_testing() -> None:
         _collection_locks.clear()
 
 
+def _normalize_model_id(model_id: Optional[str]) -> Optional[str]:
+    if not isinstance(model_id, str):
+        return None
+    normalized = model_id.strip()
+    if not normalized or normalized.lower() == "none":
+        return None
+    return normalized
+
+
+def _model_dimension(model_config: Any) -> Optional[int]:
+    dimension = getattr(model_config, "dimension", None)
+    return dimension if isinstance(dimension, int) else None
+
+
+def _embedding_model_ids_equivalent(
+    existing_model_id: str, requested_model_id: str
+) -> tuple[bool, Optional[str], Optional[int]]:
+    """Return whether two IDs resolve to the same embedding model.
+
+    The model hub supports loading by both model_id and model_name, so this lets
+    legacy name/alias bindings migrate to the canonical hub ID without treating
+    the operation as a model switch.
+    """
+    existing_config, _ = resolve_embedding_adapter(existing_model_id)
+    requested_config, _ = resolve_embedding_adapter(requested_model_id)
+
+    existing_canonical_id = _normalize_model_id(getattr(existing_config, "id", None))
+    requested_canonical_id = _normalize_model_id(getattr(requested_config, "id", None))
+    dimension = _model_dimension(requested_config)
+    if dimension is None:
+        dimension = _model_dimension(existing_config)
+
+    return (
+        existing_canonical_id is not None
+        and existing_canonical_id == requested_canonical_id,
+        requested_canonical_id,
+        dimension,
+    )
+
+
 def _run_in_separate_loop(coro: Awaitable[T]) -> T:
     """Safely run an async coroutine synchronously, even if an event loop is already running.
 
@@ -374,7 +414,49 @@ class CollectionManager:
 
             # Check if already initialized
             if collection.is_initialized:
-                if collection.embedding_model_id != embedding_model_id:
+                existing_model_id = _normalize_model_id(collection.embedding_model_id)
+                requested_model_id = _normalize_model_id(embedding_model_id)
+                if existing_model_id != requested_model_id:
+                    equivalent = False
+                    canonical_model_id: Optional[str] = None
+                    canonical_dimension: Optional[int] = None
+                    if existing_model_id and requested_model_id:
+                        try:
+                            (
+                                equivalent,
+                                canonical_model_id,
+                                canonical_dimension,
+                            ) = _embedding_model_ids_equivalent(
+                                existing_model_id, requested_model_id
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "Failed to compare embedding model IDs for collection '%s': %s",
+                                collection_name,
+                                exc,
+                            )
+
+                    if equivalent and canonical_model_id:
+                        updated_collection = collection.model_copy(
+                            update={
+                                "embedding_model_id": canonical_model_id,
+                                "embedding_dimension": canonical_dimension
+                                if canonical_dimension is not None
+                                else collection.embedding_dimension,
+                                "updated_at": datetime.now(timezone.utc).replace(
+                                    tzinfo=None
+                                ),
+                            }
+                        )
+                        await self._save_collection_with_retry(updated_collection)
+                        logger.info(
+                            "Migrated collection '%s' embedding model from '%s' to canonical ID '%s'",
+                            collection_name,
+                            existing_model_id,
+                            canonical_model_id,
+                        )
+                        return updated_collection
+
                     raise ValueError(
                         f"Collection '{collection_name}' already initialized with "
                         f"model '{collection.embedding_model_id}'. Cannot change to '{embedding_model_id}'."
@@ -384,11 +466,15 @@ class CollectionManager:
 
             # Initialize embedding config
             embedding_config, _ = resolve_embedding_adapter(embedding_model_id)
+            canonical_model_id = (
+                _normalize_model_id(getattr(embedding_config, "id", None))
+                or embedding_model_id
+            )
 
             # Update collection
             updated_collection = collection.model_copy(
                 update={
-                    "embedding_model_id": embedding_model_id,
+                    "embedding_model_id": canonical_model_id,
                     "embedding_dimension": embedding_config.dimension,
                     "updated_at": datetime.now(timezone.utc).replace(tzinfo=None),
                 }
@@ -400,7 +486,7 @@ class CollectionManager:
             logger.info(
                 "Initialized collection '%s' with embedding model '%s'",
                 collection_name,
-                embedding_model_id,
+                canonical_model_id,
             )
             logger.debug("[COLLECTION_INIT] Releasing lock for '%s'", collection_name)
             return updated_collection
@@ -674,14 +760,6 @@ def resolve_effective_embedding_model_sync(
     Raises:
         ValueError: If model cannot be resolved or collection not found.
     """
-
-    def _normalize_model_id(model_id: Optional[str]) -> Optional[str]:
-        if not isinstance(model_id, str):
-            return None
-        normalized = model_id.strip()
-        if not normalized or normalized.lower() == "none":
-            return None
-        return normalized
 
     # Treat empty/whitespace-only IDs and the tool-layer "none" placeholder as missing.
     config_model_id = _normalize_model_id(config_model_id)
