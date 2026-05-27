@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -11,7 +10,6 @@ from sqlalchemy.orm import sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
 from xagent.web.api.auth import auth_router, set_registration_enabled
-from xagent.web.api.oidc_google import SingleUseTransactionStore
 from xagent.web.models.database import Base, get_db
 from xagent.web.models.user import User
 from xagent.web.models.user_identity import UserIdentity
@@ -140,30 +138,6 @@ def _start_google_login(client: TestClient) -> str:
     assert "state" in query
     assert "nonce" in query
     return query["state"][0]
-
-
-def test_single_use_transaction_store_consumes_once():
-    now = datetime.now(timezone.utc)
-    store: SingleUseTransactionStore[str] = SingleUseTransactionStore(
-        now_func=lambda: now
-    )
-
-    key = store.put("payload", ttl_seconds=60)
-
-    assert store.consume(key) == "payload"
-    assert store.consume(key) is None
-
-
-def test_single_use_transaction_store_expires_entries():
-    now_holder = {"now": datetime.now(timezone.utc)}
-    store: SingleUseTransactionStore[str] = SingleUseTransactionStore(
-        now_func=lambda: now_holder["now"]
-    )
-    key = store.put("payload", ttl_seconds=60)
-
-    now_holder["now"] = now_holder["now"] + timedelta(seconds=61)
-
-    assert store.consume(key) is None
 
 
 def _complete_google_callback(client: TestClient, state: str) -> str:
@@ -303,7 +277,9 @@ def test_google_oidc_rejects_unverified_email(oidc_client, monkeypatch):
     assert query["oidc_error"] == ["email_unverified"]
 
 
-def test_google_oidc_exchange_code_is_single_use(oidc_client, monkeypatch):
+def test_google_oidc_exchange_code_is_stateless_across_workers(
+    oidc_client, monkeypatch
+):
     client, SessionLocal = oidc_client
     _create_admin(SessionLocal)
     _install_authlib_login_fake(monkeypatch)
@@ -319,12 +295,37 @@ def test_google_oidc_exchange_code_is_single_use(oidc_client, monkeypatch):
     state = _start_google_login(client)
     exchange_code = _complete_google_callback(client, state)
 
-    first = client.post("/api/auth/oidc/google/exchange", json={"code": exchange_code})
-    assert first.status_code == 200
+    from xagent.web.api.oidc_google import _consume_exchange_code
 
-    second = client.post("/api/auth/oidc/google/exchange", json={"code": exchange_code})
-    assert second.status_code == 400
-    assert second.json()["detail"] == "Invalid or expired OIDC exchange code"
+    transaction = _consume_exchange_code(exchange_code)
+
+    assert transaction is not None
+    assert isinstance(transaction.user_id, int)
+
+
+def test_google_oidc_exchange_code_rejects_tampering(oidc_client, monkeypatch):
+    client, SessionLocal = oidc_client
+    _create_admin(SessionLocal)
+    _install_authlib_login_fake(monkeypatch)
+    _install_google_fakes(
+        monkeypatch,
+        {
+            "sub": "google-sub-tamper",
+            "email": "tamper@example.com",
+            "email_verified": True,
+        },
+    )
+
+    state = _start_google_login(client)
+    exchange_code = _complete_google_callback(client, state)
+    tampered_code = f"{exchange_code}x"
+
+    response = client.post(
+        "/api/auth/oidc/google/exchange", json={"code": tampered_code}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid or expired OIDC exchange code"
 
 
 def test_existing_google_identity_logs_in_when_registration_disabled(

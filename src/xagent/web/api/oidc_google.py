@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import secrets
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Generic, TypeVar
+from typing import Any
 from urllib.parse import urlencode
 
 from authlib.integrations.base_client import OAuthError  # type: ignore[import-untyped]
 from authlib.integrations.starlette_client import OAuth  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -23,6 +22,7 @@ from ...config import (
     get_google_oidc_client_secret,
     get_google_oidc_redirect_uri,
     get_oidc_exchange_ttl_seconds,
+    get_session_secret,
 )
 from ..auth_config import ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
 from ..models.database import get_db
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_METADATA_URL = "https://accounts.google.com/.well-known/openid-configuration"
 GOOGLE_PROVIDER = "google"
+OIDC_EXCHANGE_SALT = "oidc-google-exchange"
 OIDC_UNUSABLE_PASSWORD_HASH = "!oidc-google"
 
 router = APIRouter(prefix="/oidc/google", tags=["Authentication"])
@@ -49,62 +50,16 @@ class OidcExchangeTransaction:
     user_id: int
 
 
-T = TypeVar("T")
-
-
-@dataclass(frozen=True)
-class _StoredTransaction(Generic[T]):
-    payload: T
-    expires_at: datetime
-
-
-class SingleUseTransactionStore(Generic[T]):
-    """Small in-memory store for short-lived, consume-once OIDC exchanges."""
-
-    def __init__(
-        self,
-        *,
-        now_func: Callable[[], datetime] | None = None,
-        token_factory: Callable[[], str] | None = None,
-    ) -> None:
-        self._now_func = now_func or (lambda: datetime.now(timezone.utc))
-        self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
-        self._items: dict[str, _StoredTransaction[T]] = {}
-
-    def put(self, payload: T, *, ttl_seconds: int) -> str:
-        self._cleanup_expired()
-        key = self._token_factory()
-        self._items[key] = _StoredTransaction(
-            payload=payload,
-            expires_at=self._now_func() + timedelta(seconds=ttl_seconds),
-        )
-        return key
-
-    def consume(self, key: str) -> T | None:
-        self._cleanup_expired()
-        item = self._items.pop(key, None)
-        if item is None or item.expires_at <= self._now_func():
-            return None
-        return item.payload
-
-    def _cleanup_expired(self) -> None:
-        now = self._now_func()
-        for key, item in list(self._items.items()):
-            if item.expires_at <= now:
-                self._items.pop(key, None)
-
-
-_exchange_transactions: SingleUseTransactionStore[OidcExchangeTransaction] = (
-    SingleUseTransactionStore(now_func=lambda: _utcnow())
-)
-
-
 class OidcExchangeRequest(BaseModel):
     code: str
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _exchange_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(get_session_secret(), salt=OIDC_EXCHANGE_SALT)
 
 
 def _is_google_oidc_configured() -> bool:
@@ -172,14 +127,23 @@ async def complete_google_oidc_authorization(
 
 
 def _create_exchange_code(user_id: int) -> str:
-    return _exchange_transactions.put(
-        OidcExchangeTransaction(user_id=user_id),
-        ttl_seconds=get_oidc_exchange_ttl_seconds(),
-    )
+    return str(_exchange_serializer().dumps({"user_id": user_id}))
 
 
 def _consume_exchange_code(code: str) -> OidcExchangeTransaction | None:
-    return _exchange_transactions.consume(code)
+    try:
+        data = _exchange_serializer().loads(
+            code,
+            max_age=get_oidc_exchange_ttl_seconds(),
+        )
+    except (BadSignature, SignatureExpired):
+        return None
+    if not isinstance(data, dict):
+        return None
+    user_id = data.get("user_id")
+    if not isinstance(user_id, int):
+        return None
+    return OidcExchangeTransaction(user_id=user_id)
 
 
 def _unique_google_username(db: Session, email: str, provider_subject: str) -> str:
