@@ -30,8 +30,8 @@ def upgrade() -> None:
         op.create_table(
             "user_identities",
             sa.Column("id", sa.Integer(), nullable=False),
-            sa.Column("user_id", sa.Integer(), nullable=False),
-            sa.Column("provider", sa.String(length=50), nullable=False),
+            sa.Column("user_id", sa.Integer(), nullable=False, index=True),
+            sa.Column("provider", sa.String(length=50), nullable=False, index=True),
             sa.Column("provider_subject", sa.String(length=255), nullable=False),
             sa.Column("email", sa.String(length=320), nullable=True),
             sa.Column("email_verified", sa.Boolean(), nullable=False),
@@ -58,36 +58,6 @@ def upgrade() -> None:
             ),
         )
 
-    indexes = {index["name"] for index in inspector.get_indexes("user_identities")}
-    if "ix_user_identities_id" not in indexes:
-        op.create_index(
-            op.f("ix_user_identities_id"),
-            "user_identities",
-            ["id"],
-            unique=False,
-        )
-    if "ix_user_identities_provider" not in indexes:
-        op.create_index(
-            op.f("ix_user_identities_provider"),
-            "user_identities",
-            ["provider"],
-            unique=False,
-        )
-    if "ix_user_identities_user_id" not in indexes:
-        op.create_index(
-            "ix_user_identities_user_id",
-            "user_identities",
-            ["user_id"],
-            unique=False,
-        )
-    if "ix_user_identities_provider_subject" not in indexes:
-        op.create_index(
-            "ix_user_identities_provider_subject",
-            "user_identities",
-            ["provider", "provider_subject"],
-            unique=False,
-        )
-
 
 def downgrade() -> None:
     from alembic import context
@@ -98,13 +68,4 @@ def downgrade() -> None:
     if "user_identities" not in inspector.get_table_names():
         return
 
-    indexes = {index["name"] for index in inspector.get_indexes("user_identities")}
-    for index_name in (
-        "ix_user_identities_provider_subject",
-        "ix_user_identities_user_id",
-        "ix_user_identities_provider",
-        "ix_user_identities_id",
-    ):
-        if index_name in indexes:
-            op.drop_index(index_name, table_name="user_identities")
     op.drop_table("user_identities")
