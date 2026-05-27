@@ -11,7 +11,11 @@ from authlib.integrations.base_client import OAuthError  # type: ignore[import-u
 from authlib.integrations.starlette_client import OAuth  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from itsdangerous import (  # type: ignore[import-not-found]
+    BadSignature,
+    SignatureExpired,
+    URLSafeTimedSerializer,
+)
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -58,7 +62,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _exchange_serializer() -> URLSafeTimedSerializer:
+def _exchange_serializer() -> Any:
     return URLSafeTimedSerializer(get_session_secret(), salt=OIDC_EXCHANGE_SALT)
 
 
