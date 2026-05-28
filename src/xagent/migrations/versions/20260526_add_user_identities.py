@@ -27,6 +27,12 @@ def upgrade() -> None:
     existing_tables = inspector.get_table_names()
 
     if "user_identities" not in existing_tables:
+        foreign_keys = []
+        if "users" in existing_tables:
+            foreign_keys.append(
+                sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE")
+            )
+
         op.create_table(
             "user_identities",
             sa.Column("id", sa.Integer(), nullable=False),
@@ -49,7 +55,7 @@ def upgrade() -> None:
                 server_default=sa.text("(CURRENT_TIMESTAMP)"),
                 nullable=True,
             ),
-            sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+            *foreign_keys,
             sa.PrimaryKeyConstraint("id"),
             sa.UniqueConstraint(
                 "provider",
