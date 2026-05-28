@@ -105,7 +105,6 @@ jobs:
           if [[ ! "$PACKAGE_VERSION" =~ ^[0-9]+([.][0-9]+)*([a-zA-Z0-9.+-]*)?$ ]]; then
             PACKAGE_VERSION="0.0.0+${GITHUB_SHA::12}"
           fi
-          python scripts/write_package_version.py "$PACKAGE_VERSION"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "release_version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
@@ -122,6 +121,7 @@ jobs:
           labels: ${{ steps.meta-backend.outputs.labels }}
           build-args: |
             XAGENT_VERSION=${{ steps.version-meta.outputs.release_version }}
+            XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}
             XAGENT_GIT_COMMIT=${{ github.sha }}
             XAGENT_BUILD_TIME=${{ steps.version-meta.outputs.build_time }}
           cache-from: type=registry,ref=${{ env.BACKEND_IMAGE }}:buildcache
@@ -171,6 +171,7 @@ jobs:
           labels: ${{ steps.meta-backend-ghcr.outputs.labels }}
           build-args: |
             XAGENT_VERSION=${{ steps.version-meta.outputs.release_version }}
+            XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}
             XAGENT_GIT_COMMIT=${{ github.sha }}
             XAGENT_BUILD_TIME=${{ steps.version-meta.outputs.build_time }}
 

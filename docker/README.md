@@ -158,9 +158,9 @@ expanded inside the backend container.
 
 ### Backend
 
-Backend image dependencies are resolved from `pyproject.toml` during the Docker
-build. The repository `uv.lock` is not copied into the image build context and
-is not required for backend image publishing.
+Backend image dependencies are resolved from the committed `pyproject.toml` and
+`uv.lock` during the Docker build. Keep `uv.lock` up to date before publishing;
+the backend image build runs `uv sync --locked` for reproducible installs.
 
 ```bash
 docker buildx build \

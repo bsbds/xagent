@@ -30,7 +30,11 @@ def test_nightly_build_uses_pep440_package_version() -> None:
     assert (
         "XAGENT_VERSION=${{ steps.version-meta.outputs.nightly_version }}" in workflow
     )
-    assert 'python scripts/write_package_version.py "$PACKAGE_VERSION"' in workflow
+    assert (
+        "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}"
+        in workflow
+    )
+    assert 'python scripts/write_package_version.py "$PACKAGE_VERSION"' not in workflow
     assert 'echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"' in workflow
     assert (
         "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.nightly_version }}"
@@ -46,7 +50,11 @@ def test_release_build_sanitizes_package_version_for_manual_runs() -> None:
     assert (
         "XAGENT_VERSION=${{ steps.version-meta.outputs.release_version }}" in workflow
     )
-    assert 'python scripts/write_package_version.py "$PACKAGE_VERSION"' in workflow
+    assert (
+        "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}"
+        in workflow
+    )
+    assert 'python scripts/write_package_version.py "$PACKAGE_VERSION"' not in workflow
     assert 'echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"' in workflow
     assert (
         "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.release_version }}"
@@ -57,9 +65,8 @@ def test_release_build_sanitizes_package_version_for_manual_runs() -> None:
 def test_backend_dockerfile_applies_package_specific_vcs_version() -> None:
     dockerfile = read_repo_file("docker/Dockerfile.backend")
 
-    assert "SETUPTOOLS_SCM_PRETEND_VERSION" not in dockerfile
-    assert "VCS_VERSIONING_PRETEND_VERSION" not in dockerfile
-    assert "XAGENT_PACKAGE_VERSION" not in dockerfile
+    assert 'ARG XAGENT_PACKAGE_VERSION="0.0.0+docker"' in dockerfile
+    assert 'SETUPTOOLS_SCM_PRETEND_VERSION="${XAGENT_PACKAGE_VERSION}"' in dockerfile
     assert "COPY .git .git" not in dockerfile
 
 
@@ -123,25 +130,20 @@ def test_boxlite_is_not_declared_for_linux_aarch64() -> None:
     )
 
 
-def test_publish_script_sanitizes_v_prefixed_package_version() -> None:
+def test_publish_script_derives_package_version_from_valid_tags() -> None:
     publish_script = read_repo_file("docker/publish.sh")
 
+    assert 'DEFAULT_PACKAGE_VERSION="${TAG#v}"' in publish_script
     assert (
-        'PACKAGE_VERSION="${XAGENT_PACKAGE_VERSION:-0.0.0+${GIT_COMMIT::12}}"'
+        'PACKAGE_VERSION="${XAGENT_PACKAGE_VERSION:-${DEFAULT_PACKAGE_VERSION}}"'
         in publish_script
     )
+    assert 'DEFAULT_PACKAGE_VERSION="0.0.0+${GIT_COMMIT::12}"' in publish_script
     assert 'XAGENT_VERSION="${XAGENT_VERSION:-${TAG}}"' in publish_script
     assert (
-        'python "${REPO_ROOT}/scripts/write_package_version.py" "${PACKAGE_VERSION}"'
-        in publish_script
+        'python "${REPO_ROOT}/scripts/write_package_version.py"' not in publish_script
     )
-    assert (
-        '--build-arg "XAGENT_PACKAGE_VERSION=${PACKAGE_VERSION}"' not in publish_script
-    )
-    assert (
-        '--build-arg "XAGENT_PACKAGE_VERSION=${XAGENT_PACKAGE_VERSION:-${XAGENT_VERSION:-${TAG}}}"'
-        not in publish_script
-    )
+    assert '--build-arg "XAGENT_PACKAGE_VERSION=${PACKAGE_VERSION}"' in publish_script
 
 
 def test_backend_dockerfile_uses_frontend_managed_pptxgenjs() -> None:
@@ -160,32 +162,42 @@ def test_backend_runtime_keeps_uv_binaries() -> None:
     assert dockerfile.count("COPY --from=uv /uv /uvx /usr/local/bin/") == 2
 
 
-def test_backend_package_version_is_file_based() -> None:
+def test_backend_package_version_is_vcs_based_for_normal_builds() -> None:
     pyproject = read_repo_file("pyproject.toml")
-    version_file = read_repo_file("src/xagent/_version.py")
 
     assert 'dynamic = ["version"]' in pyproject
-    assert 'path = "src/xagent/_version.py"' in pyproject
-    assert "hatch-vcs" not in pyproject
-    assert 'source = "vcs"' not in pyproject
-    assert '__version__ = "0.0.0"' in version_file
+    assert 'requires = ["hatchling", "hatch-vcs"]' in pyproject
+    assert 'source = "vcs"' in pyproject
+    assert 'path = "src/xagent/_version.py"' not in pyproject
+    assert not (ROOT / "src" / "xagent" / "_version.py").exists()
+    assert not (ROOT / "scripts" / "write_package_version.py").exists()
 
 
-def test_docker_workflows_write_package_version_before_build() -> None:
+def test_docker_workflows_pass_package_version_to_backend_build() -> None:
     release_workflow = read_workflow("docker-publish.yml")
     nightly_workflow = read_workflow("nightly-build.yml")
 
     assert (
-        'python scripts/write_package_version.py "$PACKAGE_VERSION"' in release_workflow
-    )
-    assert (
-        'python scripts/write_package_version.py "$PACKAGE_VERSION"' in nightly_workflow
-    )
-    assert (
-        "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}"
+        'python scripts/write_package_version.py "$PACKAGE_VERSION"'
         not in release_workflow
     )
     assert (
-        "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}"
+        'python scripts/write_package_version.py "$PACKAGE_VERSION"'
         not in nightly_workflow
     )
+    assert (
+        "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}"
+        in release_workflow
+    )
+    assert (
+        "XAGENT_PACKAGE_VERSION=${{ steps.version-meta.outputs.package_version }}"
+        in nightly_workflow
+    )
+
+
+def test_docker_readme_documents_lockfile_requirement() -> None:
+    readme = read_repo_file("docker/README.md")
+
+    assert "`uv.lock` during the Docker build" in readme
+    assert "uv sync --locked" in readme
+    assert "uv.lock` is not copied" not in readme

@@ -11,7 +11,11 @@ FRONTEND_IMAGE="${REGISTRY}/xagent-frontend"
 TAG="${1:-latest}"
 GIT_COMMIT="${XAGENT_GIT_COMMIT:-$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)}"
 GIT_COMMIT="${GIT_COMMIT:-local}"
-PACKAGE_VERSION="${XAGENT_PACKAGE_VERSION:-0.0.0+${GIT_COMMIT::12}}"
+DEFAULT_PACKAGE_VERSION="${TAG#v}"
+if [[ ! "${DEFAULT_PACKAGE_VERSION}" =~ ^[0-9]+([.][0-9]+)*([a-zA-Z0-9.+-]*)?$ ]]; then
+  DEFAULT_PACKAGE_VERSION="0.0.0+${GIT_COMMIT::12}"
+fi
+PACKAGE_VERSION="${XAGENT_PACKAGE_VERSION:-${DEFAULT_PACKAGE_VERSION}}"
 XAGENT_VERSION="${XAGENT_VERSION:-${TAG}}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 PUSH="${PUSH:-${CI:-false}}"
@@ -33,11 +37,10 @@ FRONTEND_CACHE_FROM=()
 FRONTEND_CACHE_TO=()
 BACKEND_BUILD_ARGS=(
   --build-arg "XAGENT_VERSION=${XAGENT_VERSION}"
+  --build-arg "XAGENT_PACKAGE_VERSION=${PACKAGE_VERSION}"
   --build-arg "XAGENT_GIT_COMMIT=${GIT_COMMIT}"
   --build-arg "XAGENT_BUILD_TIME=${XAGENT_BUILD_TIME:-}"
 )
-
-python "${REPO_ROOT}/scripts/write_package_version.py" "${PACKAGE_VERSION}"
 
 if [[ "${CACHE}" == "true" || "${CACHE}" == "1" ]]; then
   if [[ "${INLINE_CACHE}" == "true" || "${INLINE_CACHE}" == "1" ]]; then

@@ -187,7 +187,7 @@ xagent-web = "xagent.web.__main__:main"
 
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.uv.sources]
@@ -200,7 +200,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.hatch.version]
-path = "src/xagent/_version.py"
+source = "vcs"
 
 [tool.pytest.ini_options]
 
