@@ -27,6 +27,7 @@ from ...config import (
     get_google_oidc_client_secret,
     get_google_oidc_redirect_uri,
     get_oidc_exchange_ttl_seconds,
+    get_oidc_login_ttl_seconds,
     get_session_secret,
 )
 from ..auth_config import ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
@@ -95,7 +96,7 @@ def _google_oauth_client() -> Any:
         raise RuntimeError("Google OIDC is not configured")
 
     oauth = OAuth()
-    return oauth.register(
+    client = oauth.register(
         name=GOOGLE_PROVIDER,
         client_id=client_id,
         client_secret=client_secret,
@@ -105,6 +106,8 @@ def _google_oauth_client() -> Any:
             "code_challenge_method": "S256",
         },
     )
+    client.framework.expires_in = get_oidc_login_ttl_seconds()
+    return client
 
 
 async def start_google_oidc_authorization(request: Request) -> RedirectResponse:

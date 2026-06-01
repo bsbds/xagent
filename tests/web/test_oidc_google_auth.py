@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -333,9 +334,7 @@ def test_google_oidc_exchange_code_rejects_replay(oidc_client, monkeypatch):
 
     assert first_response.status_code == 200
     assert second_response.status_code == 400
-    assert (
-        second_response.json()["detail"] == "Invalid or expired OIDC exchange code"
-    )
+    assert second_response.json()["detail"] == "Invalid or expired OIDC exchange code"
 
 
 def test_google_oidc_exchange_code_rejects_tampering(oidc_client, monkeypatch):
@@ -434,3 +433,28 @@ def test_oidc_state_expires(oidc_client, monkeypatch):
     query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["oidc_error"] == ["invalid_state"]
 
+
+def test_google_oidc_login_uses_configured_state_ttl(oidc_client, monkeypatch):
+    monkeypatch.setenv("XAGENT_OIDC_LOGIN_TTL_SECONDS", "7")
+
+    from xagent.web.api.oidc_google import _google_oauth_client
+
+    class RequestStub:
+        session: dict[str, object] = {}
+
+    started_at = time.time()
+    client = _google_oauth_client()
+    request = RequestStub()
+    asyncio.run(
+        client.save_authorize_data(
+            request,
+            state="short-state",
+            redirect_uri="http://testserver/api/auth/oidc/google/callback",
+        )
+    )
+
+    assert client.framework.expires_in == 7
+    assert request.session["_state_google_short-state"]["exp"] == pytest.approx(
+        started_at + 7,
+        abs=2,
+    )
