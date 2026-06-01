@@ -9,6 +9,7 @@ import {
     Brain,
     Server,
     Layers,
+    Library,
     MessageSquare,
     Bot,
     Box,
@@ -145,6 +146,13 @@ export const getNavigationGroupsForUser = (user: any): NavigationGroup[] => [
                 href: "/memory",
                 icon: Brain,
                 color: "text-gray-500"
+            },
+            {
+                name: "Skill Hub",
+                nameKey: "nav.skillHub",
+                href: "/skill-hub",
+                icon: Library,
+                color: "text-emerald-400"
             },
             {
                 name: "More",

@@ -46,6 +46,7 @@ const en = {
     models: "Models",
     files: "Files",
     memory: "Memory",
+    skillHub: "Skill Hub",
     monitoring: "Monitoring",
     knowledgeBase: "Knowledge Base",
     knowledgeBaseDetail: "KB Detail",
