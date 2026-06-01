@@ -35,7 +35,6 @@ from .api.memory import MemoryManagementRouter
 from .api.model import model_router
 from .api.monitor import monitor_router
 from .api.progress_ws import progress_ws_router
-from .api.skill_hub import prewarm as skill_hub_prewarm
 from .api.skill_hub import router as skill_hub_router
 from .api.skills import router as skills_router
 from .api.system import system_router
@@ -480,12 +479,6 @@ async def startup_event() -> None:
     start_file_storage_startup_sync_task(app)
 
     initialize_langfuse()
-
-    # Skill Hub: warm Featured + stats caches in the background so
-    # the first user request to /skill-hub doesn't pay the full
-    # ClawHub fan-out cost. Fire-and-forget — failures are logged
-    # but don't block uvicorn startup.
-    asyncio.create_task(skill_hub_prewarm())
 
     # Initialize skill manager
     from ..skills.utils import create_skill_manager
