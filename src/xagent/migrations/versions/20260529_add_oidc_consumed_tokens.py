@@ -1,7 +1,7 @@
 """add consumed OIDC token table
 
 Revision ID: 20260529_add_oidc_consumed_tokens
-Revises: 20260526_add_user_identities
+Revises: 20260529_add_user_api_keys, 20260526_add_user_identities
 Create Date: 2026-05-29 00:00:00.000000
 
 """
@@ -13,7 +13,10 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260529_add_oidc_consumed_tokens"
-down_revision: Union[str, None] = "20260529_add_user_api_keys"
+down_revision: Union[str, tuple[str, str], None] = (
+    "20260529_add_user_api_keys",
+    "20260526_add_user_identities",
+)
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
