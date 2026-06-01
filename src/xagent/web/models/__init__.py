@@ -8,6 +8,7 @@ from .kb_ingest_target import KBIngestTarget
 from .mcp import MCPServer, UserMCPServer
 from .model import Model
 from .oauth_provider import OAuthProvider
+from .oidc_consumed_token import OidcConsumedToken
 from .public_mcp import PublicMCPApp
 from .sandbox import SandboxInfo, SandboxSnapshot
 from .system_setting import SystemSetting
@@ -57,6 +58,7 @@ __all__ = [
     "SandboxInfo",
     "SandboxSnapshot",
     "OAuthProvider",
+    "OidcConsumedToken",
     "PublicMCPApp",
     "Workforce",
     "WorkforceAgent",

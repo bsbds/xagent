@@ -49,6 +49,7 @@ def init_db(db_url: str | None = None) -> None:
         MCPServer,
         Model,
         OAuthProvider,
+        OidcConsumedToken,
         PublicMCPApp,
         SystemSetting,
         Task,

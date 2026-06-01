@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -30,6 +31,7 @@ from ...config import (
 )
 from ..auth_config import ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
 from ..models.database import get_db
+from ..models.oidc_consumed_token import OidcConsumedToken
 from ..models.user import User
 from ..models.user_identity import UserIdentity
 from .auth import (
@@ -52,6 +54,7 @@ router = APIRouter(prefix="/oidc/google", tags=["Authentication"])
 @dataclass(frozen=True)
 class OidcExchangeTransaction:
     user_id: int
+    token_id: str
 
 
 class OidcExchangeRequest(BaseModel):
@@ -131,10 +134,14 @@ async def complete_google_oidc_authorization(
 
 
 def _create_exchange_code(user_id: int) -> str:
-    return str(_exchange_serializer().dumps({"user_id": user_id}))
+    return str(
+        _exchange_serializer().dumps(
+            {"user_id": user_id, "jti": secrets.token_urlsafe(32)}
+        )
+    )
 
 
-def _consume_exchange_code(code: str) -> OidcExchangeTransaction | None:
+def _decode_exchange_code(code: str) -> OidcExchangeTransaction | None:
     try:
         data = _exchange_serializer().loads(
             code,
@@ -147,7 +154,33 @@ def _consume_exchange_code(code: str) -> OidcExchangeTransaction | None:
     user_id = data.get("user_id")
     if not isinstance(user_id, int):
         return None
-    return OidcExchangeTransaction(user_id=user_id)
+    token_id = data.get("jti")
+    if not isinstance(token_id, str) or not token_id:
+        return None
+    return OidcExchangeTransaction(user_id=user_id, token_id=token_id)
+
+
+def _consume_exchange_code(db: Session, code: str) -> OidcExchangeTransaction | None:
+    transaction = _decode_exchange_code(code)
+    if transaction is None:
+        return None
+
+    now = _utcnow()
+    db.query(OidcConsumedToken).filter(OidcConsumedToken.expires_at <= now).delete(
+        synchronize_session=False
+    )
+    db.add(
+        OidcConsumedToken(
+            token_id=transaction.token_id,
+            expires_at=now + timedelta(seconds=get_oidc_exchange_ttl_seconds()),
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return None
+    return transaction
 
 
 def _unique_google_username(db: Session, email: str, provider_subject: str) -> str:
@@ -347,7 +380,7 @@ def google_oidc_exchange(
     payload: OidcExchangeRequest,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    transaction = _consume_exchange_code(payload.code)
+    transaction = _consume_exchange_code(db, payload.code)
     if transaction is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

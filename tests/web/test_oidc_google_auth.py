@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -83,6 +84,9 @@ def _install_google_fakes(monkeypatch, claims: dict[str, object]) -> None:
 
 
 class FakeAuthlibGoogleClient:
+    def __init__(self, expires_in: int = 3600) -> None:
+        self.expires_in = expires_in
+
     async def authorize_redirect(self, request, redirect_uri, **authorize_params):
         from authlib.common.security import generate_token
         from authlib.oauth2.rfc7636 import create_s256_code_challenge
@@ -98,7 +102,7 @@ class FakeAuthlibGoogleClient:
                 "nonce": nonce,
                 "code_verifier": code_verifier,
             },
-            "exp": 9999999999,
+            "exp": time.time() + self.expires_in,
         }
         url = (
             "https://accounts.google.com/o/oauth2/v2/auth"
@@ -295,12 +299,43 @@ def test_google_oidc_exchange_code_is_stateless_across_workers(
     state = _start_google_login(client)
     exchange_code = _complete_google_callback(client, state)
 
-    from xagent.web.api.oidc_google import _consume_exchange_code
+    from xagent.web.api.oidc_google import _decode_exchange_code
 
-    transaction = _consume_exchange_code(exchange_code)
+    transaction = _decode_exchange_code(exchange_code)
 
     assert transaction is not None
     assert isinstance(transaction.user_id, int)
+    assert transaction.token_id
+
+
+def test_google_oidc_exchange_code_rejects_replay(oidc_client, monkeypatch):
+    client, SessionLocal = oidc_client
+    _create_admin(SessionLocal)
+    _install_authlib_login_fake(monkeypatch)
+    _install_google_fakes(
+        monkeypatch,
+        {
+            "sub": "google-sub-replay",
+            "email": "replay@example.com",
+            "email_verified": True,
+        },
+    )
+
+    state = _start_google_login(client)
+    exchange_code = _complete_google_callback(client, state)
+
+    first_response = client.post(
+        "/api/auth/oidc/google/exchange", json={"code": exchange_code}
+    )
+    second_response = client.post(
+        "/api/auth/oidc/google/exchange", json={"code": exchange_code}
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 400
+    assert (
+        second_response.json()["detail"] == "Invalid or expired OIDC exchange code"
+    )
 
 
 def test_google_oidc_exchange_code_rejects_tampering(oidc_client, monkeypatch):
@@ -398,3 +433,4 @@ def test_oidc_state_expires(oidc_client, monkeypatch):
     assert response.status_code == 307
     query = parse_qs(urlparse(response.headers["location"]).query)
     assert query["oidc_error"] == ["invalid_state"]
+
