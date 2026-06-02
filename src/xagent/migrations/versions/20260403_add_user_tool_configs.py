@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
@@ -17,9 +17,7 @@ def upgrade() -> None:
     existing_tables = inspector.get_table_names()
 
     if "tool_configs" in existing_tables:
-        tool_config_columns = {
-            column["name"] for column in inspector.get_columns("tool_configs")
-        }
+        tool_config_columns = {column["name"] for column in inspector.get_columns("tool_configs")}
         if "requires_configuration" not in tool_config_columns:
             op.add_column(
                 "tool_configs",
@@ -103,26 +101,16 @@ def downgrade() -> None:
     existing_tables = inspector.get_table_names()
 
     if "user_tool_configs" in existing_tables:
-        existing_indexes = [
-            idx["name"] for idx in inspector.get_indexes("user_tool_configs")
-        ]
+        existing_indexes = [idx["name"] for idx in inspector.get_indexes("user_tool_configs")]
         if "ix_user_tool_configs_tool_name" in existing_indexes:
-            op.drop_index(
-                op.f("ix_user_tool_configs_tool_name"), table_name="user_tool_configs"
-            )
+            op.drop_index(op.f("ix_user_tool_configs_tool_name"), table_name="user_tool_configs")
         if "ix_user_tool_configs_user_id" in existing_indexes:
-            op.drop_index(
-                op.f("ix_user_tool_configs_user_id"), table_name="user_tool_configs"
-            )
+            op.drop_index(op.f("ix_user_tool_configs_user_id"), table_name="user_tool_configs")
         if "ix_user_tool_configs_id" in existing_indexes:
-            op.drop_index(
-                op.f("ix_user_tool_configs_id"), table_name="user_tool_configs"
-            )
+            op.drop_index(op.f("ix_user_tool_configs_id"), table_name="user_tool_configs")
         op.drop_table("user_tool_configs")
 
     if "tool_configs" in existing_tables:
-        tool_config_columns = {
-            column["name"] for column in inspector.get_columns("tool_configs")
-        }
+        tool_config_columns = {column["name"] for column in inspector.get_columns("tool_configs")}
         if "requires_configuration" in tool_config_columns:
             op.drop_column("tool_configs", "requires_configuration")

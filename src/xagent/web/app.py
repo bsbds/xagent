@@ -40,6 +40,7 @@ from .api.progress_ws import progress_ws_router
 from .api.skills import router as skills_router
 from .api.system import system_router
 from .api.templates import router as templates_router
+from .api.tool_credentials import tool_credentials_router
 from .api.tools import tools_router
 from .api.v1 import v1_router
 from .api.v1.errors import V1ApiError, v1_api_error_handler
@@ -65,9 +66,7 @@ uploads_dir.mkdir(parents=True, exist_ok=True)
 
 
 # FastAPI app creation here
-app = FastAPI(
-    title="xagent", description="The Agent Operating System", redirect_slashes=False
-)
+app = FastAPI(title="xagent", description="The Agent Operating System", redirect_slashes=False)
 
 # Track background migration task for graceful shutdown cleanup.
 _migration_task: asyncio.Task[None] | None = None
@@ -95,8 +94,7 @@ def run_startup_file_storage_sync() -> None:
         result = sync_registered_files_to_durable_storage(db)
         if result.failed:
             raise RuntimeError(
-                "Startup file storage sync failed for "
-                f"{result.failed} registered file(s)"
+                f"Startup file storage sync failed for {result.failed} registered file(s)"
             )
     finally:
         db.close()
@@ -455,6 +453,7 @@ app.include_router(memory_router)
 app.include_router(mcp_router)
 app.include_router(custom_api_router)
 app.include_router(tools_router)
+app.include_router(tool_credentials_router)
 app.include_router(admin_users_router)
 app.include_router(admin_mcp_router)
 app.include_router(skills_router)
@@ -487,9 +486,7 @@ async def startup_event() -> None:
     skill_manager = create_skill_manager()
     await skill_manager.initialize()
     app.state.skill_manager = skill_manager
-    logger.info(
-        f"Skill manager initialized with {len(await skill_manager.list_skills())} skills"
-    )
+    logger.info(f"Skill manager initialized with {len(await skill_manager.list_skills())} skills")
 
     # Initialize template manager
     from ..templates.utils import create_template_manager
@@ -497,9 +494,8 @@ async def startup_event() -> None:
     template_manager = create_template_manager()
     await template_manager.initialize()
     app.state.template_manager = template_manager
-    logger.info(
-        f"Template manager initialized with {len(await template_manager.list_templates())} templates"
-    )
+    template_count = len(await template_manager.list_templates())
+    logger.info("Template manager initialized with %s templates", template_count)
 
     # Log memory store type (using dynamic manager)
     from .dynamic_memory_store import get_memory_store_manager
@@ -513,9 +509,7 @@ async def startup_event() -> None:
     else:
         logger.info("Using in-memory store (no vector search capabilities)")
 
-    logger.info(
-        f"Memory store similarity threshold: {store_info['similarity_threshold']}"
-    )
+    logger.info(f"Memory store similarity threshold: {store_info['similarity_threshold']}")
 
     # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
     # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: true)
@@ -600,12 +594,11 @@ async def startup_event() -> None:
 
                         # Log any skipped records
                         chunks_skipped = result.get("chunks", {}).get("skipped", 0)
-                        embeddings_skipped = result.get("embeddings", {}).get(
-                            "skipped", 0
-                        )
+                        embeddings_skipped = result.get("embeddings", {}).get("skipped", 0)
                         if chunks_skipped > 0 or embeddings_skipped > 0:
                             logger.warning(
-                                "Some records were skipped (no matching document): chunks=%s, embeddings=%s",
+                                "Some records were skipped (no matching document): "
+                                "chunks=%s, embeddings=%s",
                                 chunks_skipped,
                                 embeddings_skipped,
                             )
@@ -615,8 +608,8 @@ async def startup_event() -> None:
                         logger.error("=" * 60)
                         logger.error("Error: %s", e, exc_info=True)
                         logger.warning(
-                            "Some features may not work correctly. "
-                            "Please run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
+                            "Some features may not work correctly. Please run migration manually: "
+                            "python -m xagent.migrations.lancedb.backfill_user_id"
                         )
 
                 # Start background task without awaiting, but keep a reference
@@ -624,17 +617,17 @@ async def startup_event() -> None:
                 _migration_task = asyncio.create_task(run_migration_background())
             else:
                 logger.warning(
-                    "LANCEDB_AUTO_MIGRATE is disabled. "
-                    "Migration will NOT run automatically. "
+                    "LANCEDB_AUTO_MIGRATE is disabled. Migration will NOT run automatically. "
                     "To enable automatic migration, set LANCEDB_AUTO_MIGRATE=true. "
-                    "To run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
+                    "To run migration manually: "
+                    "python -m xagent.migrations.lancedb.backfill_user_id"
                 )
         else:
             logger.info("LanceDB tables are up to date, no migration needed")
     except Exception as e:
         logger.warning(
-            "Could not check LanceDB migration status: %s. "
-            "Application will continue, but some features may not work correctly.",
+            "Could not check LanceDB migration status: %s. Application will continue, "
+            "but some features may not work correctly.",
             e,
         )
 
@@ -656,9 +649,7 @@ async def startup_event() -> None:
 
                 fix_result = fix_file_id_nullable(dry_run=False, conn=conn)
                 if fix_result.get("fixed"):
-                    logger.info(
-                        "Auto-fixed file_id column to nullable in documents table"
-                    )
+                    logger.info("Auto-fixed file_id column to nullable in documents table")
             except Exception as e:
                 logger.warning("Could not fix file_id nullability: %s", e)
 
@@ -676,16 +667,12 @@ async def startup_event() -> None:
 
                 # Check for empty string file_id values
                 empty_file_id_count = len(
-                    query_to_list(
-                        documents_table.search().where("file_id = ''").limit(1)
-                    )
+                    query_to_list(documents_table.search().where("file_id = ''").limit(1))
                 )
 
                 # Check for NULL user_id values
                 null_user_id_count = len(
-                    query_to_list(
-                        documents_table.search().where("user_id IS NULL").limit(1)
-                    )
+                    query_to_list(documents_table.search().where("user_id IS NULL").limit(1))
                 )
 
                 if empty_file_id_count > 0 or null_user_id_count > 0:
@@ -703,9 +690,7 @@ async def startup_event() -> None:
                         )
 
                         try:
-                            result = await asyncio.to_thread(
-                                backfill_all, dry_run=False, conn=conn
-                            )
+                            result = await asyncio.to_thread(backfill_all, dry_run=False, conn=conn)
                             logger.info("=" * 60)
                             logger.info("DOCUMENTS TABLE BACKFILL COMPLETED")
                             logger.info("=" * 60)
@@ -741,13 +726,12 @@ async def startup_event() -> None:
                             logger.error("Error: %s", e, exc_info=True)
                             logger.warning(
                                 "Some features may not work correctly. "
-                                "Please run backfill manually: python -m xagent.migrations.lancedb.backfill_documents_file_id"
+                                "Please run backfill manually: "
+                                "python -m xagent.migrations.lancedb.backfill_documents_file_id"
                             )
 
                     # Start background task
-                    _migration_task = asyncio.create_task(
-                        run_documents_backfill_background()
-                    )
+                    _migration_task = asyncio.create_task(run_documents_backfill_background())
                 else:
                     logger.info("Documents table backfill not needed")
             except Exception as e:
@@ -757,8 +741,7 @@ async def startup_event() -> None:
                 _safe_close_table(documents_table)
         except Exception as e:
             logger.warning(
-                "Could not check documents table backfill status: %s. "
-                "Application will continue.",
+                "Could not check documents table backfill status: %s. Application will continue.",
                 e,
             )
 
@@ -781,9 +764,7 @@ async def startup_event() -> None:
                 logger.warning("Collection metadata rebuild failed: %s", e)
 
     if not os.getenv("PYTEST_CURRENT_TEST"):
-        app.state.metadata_rebuild_task = asyncio.create_task(
-            run_metadata_rebuild_background()
-        )
+        app.state.metadata_rebuild_task = asyncio.create_task(run_metadata_rebuild_background())
         logger.info(
             "Started background collection metadata rebuild task (interval=%sh)",
             os.getenv("XAGENT_METADATA_REBUILD_INTERVAL_HOURS", "6"),
@@ -805,7 +786,8 @@ async def startup_event() -> None:
                     await pending_migration_task
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
-                        "Documents table backfill did not complete before uploaded files reconcile: %s",
+                        "Documents table backfill did not complete before "
+                        "uploaded files reconcile: %s",
                         e,
                     )
 
@@ -814,9 +796,7 @@ async def startup_event() -> None:
                     backfill_all as backfill_uploaded_file_links,
                 )
 
-                link_result = await asyncio.to_thread(
-                    backfill_uploaded_file_links, dry_run=False
-                )
+                link_result = await asyncio.to_thread(backfill_uploaded_file_links, dry_run=False)
                 logger.info("Uploaded file links backfill completed: %s", link_result)
             except Exception as e:  # noqa: BLE001
                 logger.warning(

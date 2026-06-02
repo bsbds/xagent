@@ -1,7 +1,7 @@
 """Initialize tool configurations in database."""
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,7 @@ from .models.tool_config import ToolConfig
 logger = logging.getLogger(__name__)
 
 
-def get_default_tool_configs() -> list[Dict[str, Any]]:
+def get_default_tool_configs() -> list[dict[str, Any]]:
     """Get default tool configurations."""
     return [
         {
@@ -68,7 +68,9 @@ def get_default_tool_configs() -> list[Dict[str, Any]]:
             "tool_type": "builtin",
             "category": "search",
             "display_name": "Exa AI Search",
-            "description": "AI-powered web search using Exa, with content extraction and category filtering",
+            "description": (
+                "AI-powered web search using Exa, with content extraction and category filtering"
+            ),
             "enabled": True,
             "requires_configuration": True,
             "config": {
@@ -185,15 +187,11 @@ def init_tool_configs(db: Session) -> None:
     for config_data in default_configs:
         # Check if tool config already exists
         existing = (
-            db.query(ToolConfig)
-            .filter(ToolConfig.tool_name == config_data["tool_name"])
-            .first()
+            db.query(ToolConfig).filter(ToolConfig.tool_name == config_data["tool_name"]).first()
         )
 
         if existing:
-            logger.info(
-                f"Tool config '{config_data['tool_name']}' already exists, skipping..."
-            )
+            logger.info(f"Tool config '{config_data['tool_name']}' already exists, skipping...")
             continue
 
         # Create new tool config
