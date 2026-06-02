@@ -1,9 +1,9 @@
 import copy
 import os
+from typing import Any, cast
 
 from cryptography.fernet import Fernet
 from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String
-from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -40,12 +40,13 @@ class UserChannel(Base):  # type: ignore[no-any-unimported]
     # Relationships
     user = relationship("User", back_populates="channels")
 
-    @hybrid_property
+    @property
     def config(self) -> dict:
         if not self._config:
             return {}
         cipher = _get_cipher()
-        config_copy = copy.deepcopy(self._config)
+        raw_config = cast(dict[str, Any], self._config)
+        config_copy = copy.deepcopy(raw_config)
 
         # Decrypt sensitive fields
         if config_copy.get("bot_token"):
@@ -66,10 +67,10 @@ class UserChannel(Base):  # type: ignore[no-any-unimported]
 
         return config_copy
 
-    @config.setter  # type: ignore[no-redef]
+    @config.setter
     def config(self, value: dict) -> None:
         if not value:
-            self._config = value
+            self._config = value  # type: ignore[assignment]
             return
         cipher = _get_cipher()
         config_copy = copy.deepcopy(value)
@@ -91,7 +92,7 @@ class UserChannel(Base):  # type: ignore[no-any-unimported]
                     config_copy["app_secret"].encode()
                 ).decode()
 
-        self._config = config_copy
+        self._config = config_copy  # type: ignore[assignment]
 
     def __repr__(self) -> str:
         return f"<UserChannel(user_id={self.user_id}, type='{self.channel_type}', name='{self.channel_name}')>"
