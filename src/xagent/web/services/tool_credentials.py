@@ -23,6 +23,7 @@ ToolFieldSpec = dict[str, Any]
 # Returns per-user overrides for tool enable/disable.
 _get_user_tool_overrides_hook: Callable[[Session, Any], dict] | None = None
 
+
 @dataclass(frozen=True)
 class CredentialScopeRef:
     """A non-core credential fallback scope supplied by an embedding app."""
@@ -216,7 +217,7 @@ def _runtime_scope_entries(
     if user is not None:
         shared_scopes = get_credential_fallback_scopes(db, user)
         entries.extend((scope.scope_type, scope.scope_id) for scope in shared_scopes)
-    if include_instance and not shared_scopes:
+    if include_instance:
         entries.append(("instance", None))
     return tuple(entries)
 
@@ -655,7 +656,7 @@ def get_sql_connection_map(
     resolved_include_instance = (
         instance_credentials_enabled() if include_instance is None else include_instance
     )
-    if resolved_include_instance and not shared_scopes:
+    if resolved_include_instance:
         names.update(
             _sanitize_sql_connection_name(_row_field_name(row))
             for row in _rows_for_scope(
@@ -728,7 +729,7 @@ def get_sql_credential_view(
                 tool_name=SQL_TOOL_NAME,
             )
         )
-    if resolved_include_instance and not shared_scopes:
+    if resolved_include_instance:
         names.update(
             _sanitize_sql_connection_name(_row_field_name(row))
             for row in _rows_for_scope(

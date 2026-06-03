@@ -12,6 +12,7 @@ import tempfile
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from xagent.web.api.auth import auth_router
 from xagent.web.api.tool_credentials import tool_credentials_router
 from xagent.web.api.tools import tools_router
@@ -912,6 +913,99 @@ class TestWebToolConfigUserOverride:
             )
 
             assert cfg.get_sql_connections()["ANALYTICS"] == "sqlite:///analytics.db"
+        finally:
+            set_credential_fallback_scopes_hook(None)
+            db.close()
+            Base.metadata.drop_all(bind=engine)
+            shutil.rmtree(temp_dir)
+
+    def test_registered_fallback_scope_preserves_instance_credential_fallback(self):
+        """Shared scopes should precede, not replace, instance fallback credentials."""
+        from unittest.mock import MagicMock
+
+        from xagent.web.models.database import get_engine, get_session_local, init_db
+        from xagent.web.services.tool_credentials import (
+            CredentialScopeRef,
+            resolve_tool_credential,
+            set_credential_fallback_scopes_hook,
+            set_scoped_tool_credentials,
+        )
+
+        temp_dir = tempfile.mkdtemp()
+        temp_db_path = os.path.join(temp_dir, "test.db")
+        init_db(db_url=f"sqlite:///{temp_db_path}")
+        engine = get_engine()
+        SessionLocal = get_session_local()
+        db = SessionLocal()
+        set_credential_fallback_scopes_hook(
+            lambda _db, user: [
+                CredentialScopeRef("shared", getattr(user, "shared_scope_id", None), "Shared")
+            ]
+        )
+        try:
+            set_scoped_tool_credentials(
+                db,
+                scope_type="instance",
+                scope_id=None,
+                tool_name="tavily_web_search",
+                values={"api_key": "instance-tavily-key"},
+            )
+
+            assert (
+                resolve_tool_credential(
+                    db,
+                    "tavily_web_search",
+                    "api_key",
+                    user_id=42,
+                    user=MagicMock(id=42, shared_scope_id=7),
+                )
+                == "instance-tavily-key"
+            )
+        finally:
+            set_credential_fallback_scopes_hook(None)
+            db.close()
+            Base.metadata.drop_all(bind=engine)
+            shutil.rmtree(temp_dir)
+
+    def test_sql_connection_map_preserves_instance_entries_with_registered_fallback_scope(self):
+        """Instance SQL connections remain visible when shared scopes have no matching row."""
+        from unittest.mock import MagicMock
+
+        from xagent.web.models.database import get_engine, get_session_local, init_db
+        from xagent.web.services.tool_credentials import (
+            CredentialScopeRef,
+            get_sql_connection_map,
+            set_credential_fallback_scopes_hook,
+            set_scoped_tool_credentials,
+        )
+
+        temp_dir = tempfile.mkdtemp()
+        temp_db_path = os.path.join(temp_dir, "test.db")
+        init_db(db_url=f"sqlite:///{temp_db_path}")
+        engine = get_engine()
+        SessionLocal = get_session_local()
+        db = SessionLocal()
+        set_credential_fallback_scopes_hook(
+            lambda _db, user: [
+                CredentialScopeRef("shared", getattr(user, "shared_scope_id", None), "Shared")
+            ]
+        )
+        try:
+            set_scoped_tool_credentials(
+                db,
+                scope_type="instance",
+                scope_id=None,
+                tool_name="sql_query",
+                values={"analytics": "sqlite:///instance-analytics.db"},
+            )
+
+            connections = get_sql_connection_map(
+                db,
+                42,
+                user=MagicMock(id=42, shared_scope_id=7),
+            )
+
+            assert connections["ANALYTICS"] == "sqlite:///instance-analytics.db"
         finally:
             set_credential_fallback_scopes_hook(None)
             db.close()
