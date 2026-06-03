@@ -50,6 +50,8 @@ def init_db(db_url: str | None = None) -> None:
         Model,
         OAuthProvider,
         PublicMCPApp,
+        UserSkill,
+        UserSkillFile,
         SystemSetting,
         Task,
         TaskChatMessage,
