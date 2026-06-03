@@ -6,16 +6,170 @@ Create Date: 2026-06-02 00:00:00.000000
 
 """
 
-from collections.abc import Sequence
+import base64
+import hashlib
+import json
+import os
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy import and_, inspect
+from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import and_, inspect, text
 
 revision: str = "20260602_add_scoped_tool_credentials"
 down_revision: str | None = "20260529_merge_email_reset_and_agent_origin_heads"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+TOOL_CREDENTIAL_SPECS: dict[str, dict[str, dict[str, Any]]] = {
+    "exa_web_search": {"api_key": {"secret": True}},
+    "zhipu_web_search": {
+        "api_key": {"secret": True},
+        "base_url": {"secret": False},
+    },
+    "tavily_web_search": {"api_key": {"secret": True}},
+    "web_search": {
+        "api_key": {"secret": True},
+        "cse_id": {"secret": False},
+    },
+}
+
+
+def _build_fernet_key() -> bytes:
+    raw = os.getenv("XAGENT_SECRET_ENCRYPTION_KEY") or os.getenv("SECRET_KEY") or "xagent-dev-key"
+    digest = hashlib.sha256(raw.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
+def _fernet() -> Fernet:
+    return Fernet(_build_fernet_key())
+
+
+def _encrypt(value: str) -> str:
+    return _fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def _decrypt(ciphertext: str) -> str | None:
+    try:
+        return _fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return None
+
+
+def _mask_value(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{'*' * (len(value) - 4)}{value[-4:]}"
+
+
+def _coerce_json_mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        if isinstance(parsed, Mapping):
+            return parsed
+    return {}
+
+
+def _legacy_credential_value(stored: Any, *, secret: bool) -> str | None:
+    if isinstance(stored, Mapping):
+        if secret:
+            ciphertext = stored.get("ciphertext")
+            if isinstance(ciphertext, str):
+                return _decrypt(ciphertext)
+        else:
+            value = stored.get("value")
+            if isinstance(value, str):
+                return value
+        return None
+    if isinstance(stored, str):
+        return stored
+    return None
+
+
+def _legacy_credential_mask(stored: Any, value: str) -> str:
+    if isinstance(stored, Mapping):
+        masked = stored.get("masked")
+        if isinstance(masked, str) and masked:
+            return masked
+    return _mask_value(value)
+
+
+def _backfill_legacy_tool_config_credentials() -> None:
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if "tool_configs" not in inspector.get_table_names():
+        return
+
+    rows = bind.execute(
+        text("SELECT tool_name, config FROM tool_configs WHERE config IS NOT NULL")
+    ).mappings()
+    for row in rows:
+        tool_name = row["tool_name"]
+        if not isinstance(tool_name, str):
+            continue
+        specs = TOOL_CREDENTIAL_SPECS.get(tool_name)
+        if specs is None:
+            continue
+
+        config = _coerce_json_mapping(row["config"])
+        credentials = _coerce_json_mapping(config.get("credentials"))
+        if not credentials:
+            continue
+
+        for field_name, field_spec in specs.items():
+            value = _legacy_credential_value(
+                credentials.get(field_name),
+                secret=bool(field_spec.get("secret", False)),
+            )
+            if not value:
+                continue
+
+            bind.execute(
+                text("""
+                INSERT INTO scoped_tool_credentials (
+                    scope_type,
+                    scope_id,
+                    tool_name,
+                    field_name,
+                    encrypted_value,
+                    masked_value
+                )
+                SELECT
+                    :scope_type,
+                    NULL,
+                    :tool_name,
+                    :field_name,
+                    :encrypted_value,
+                    :masked_value
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM scoped_tool_credentials
+                    WHERE scope_type = :scope_type
+                        AND scope_id IS NULL
+                        AND tool_name = :tool_name
+                        AND field_name = :field_name
+                )
+            """),
+                {
+                    "scope_type": "instance",
+                    "tool_name": tool_name,
+                    "field_name": field_name,
+                    "encrypted_value": _encrypt(value),
+                    "masked_value": _legacy_credential_mask(
+                        credentials.get(field_name),
+                        value,
+                    ),
+                },
+            )
 
 
 def upgrade() -> None:
@@ -76,6 +230,8 @@ def upgrade() -> None:
                 sa.column("scope_id").is_(None),
             ),
         )
+
+    _backfill_legacy_tool_config_credentials()
 
 
 def downgrade() -> None:
