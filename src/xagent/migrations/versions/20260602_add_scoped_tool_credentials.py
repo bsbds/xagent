@@ -19,7 +19,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import and_, inspect, text
 
 revision: str = "20260602_add_scoped_tool_credentials"
-down_revision: str | None = "20260529_merge_email_reset_and_agent_origin_heads"
+down_revision: str | None = "20260529_add_oidc_consumed_tokens"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -38,7 +38,11 @@ TOOL_CREDENTIAL_SPECS: dict[str, dict[str, dict[str, Any]]] = {
 
 
 def _build_fernet_key() -> bytes:
-    raw = os.getenv("XAGENT_SECRET_ENCRYPTION_KEY") or os.getenv("SECRET_KEY") or "xagent-dev-key"
+    raw = (
+        os.getenv("XAGENT_SECRET_ENCRYPTION_KEY")
+        or os.getenv("SECRET_KEY")
+        or "xagent-dev-key"
+    )
     digest = hashlib.sha256(raw.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
 
