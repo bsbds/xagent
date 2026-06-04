@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -12,9 +12,9 @@ from ..auth_dependencies import get_current_user
 from ..models.database import get_db
 from ..models.user import User
 from ..services.tool_credentials import (
-    ApiScopeType,
     SQL_TOOL_NAME,
     TOOL_CREDENTIAL_SPECS,
+    ApiScopeType,
     clear_scoped_tool_credential,
     get_tool_credential_view,
     list_tool_credential_views,
@@ -23,7 +23,9 @@ from ..services.tool_credentials import (
 
 CredentialScope = ApiScopeType
 
-tool_credentials_router = APIRouter(prefix="/api/tool-credentials", tags=["tool-credentials"])
+tool_credentials_router = APIRouter(
+    prefix="/api/tool-credentials", tags=["tool-credentials"]
+)
 
 
 class CredentialFieldUpdate(BaseModel):
@@ -70,7 +72,9 @@ def _scope_context(
 
 def _ensure_configurable_tool(tool_name: str) -> None:
     if tool_name != SQL_TOOL_NAME and tool_name not in TOOL_CREDENTIAL_SPECS:
-        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' is not configurable")
+        raise HTTPException(
+            status_code=404, detail=f"Tool '{tool_name}' is not configurable"
+        )
 
 
 @tool_credentials_router.get("")
@@ -107,7 +111,8 @@ def update_tool_credentials(
     _ensure_configurable_tool(tool_name)
     ctx = _scope_context(scope=scope, current_user=current_user, db=db)
     updates = {
-        field_name: field_update.value for field_name, field_update in payload.credentials.items()
+        field_name: field_update.value
+        for field_name, field_update in payload.credentials.items()
     }
     try:
         set_scoped_tool_credentials(
@@ -131,8 +136,13 @@ def delete_tool_credential(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     _ensure_configurable_tool(tool_name)
-    if tool_name != SQL_TOOL_NAME and field_name not in TOOL_CREDENTIAL_SPECS[tool_name]:
-        raise HTTPException(status_code=404, detail=f"Field '{field_name}' is not configurable")
+    if (
+        tool_name != SQL_TOOL_NAME
+        and field_name not in TOOL_CREDENTIAL_SPECS[tool_name]
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"Field '{field_name}' is not configurable"
+        )
     ctx = _scope_context(scope=scope, current_user=current_user, db=db)
     clear_scoped_tool_credential(
         db,

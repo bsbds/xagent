@@ -73,9 +73,7 @@ def _create_tool_info(
         # vision tool depends on vision model
         if not vision_model:
             status = "missing_model"
-            status_reason = (
-                "Vision model not configured, please add a vision model in model management page"
-            )
+            status_reason = "Vision model not configured, please add a vision model in model management page"
             enabled = False
 
     elif category == "image":
@@ -90,7 +88,9 @@ def _create_tool_info(
             enabled = False
         elif tool_name == "edit_image":
             # Special check for image editing capability
-            has_edit_capability = any("edit" in model.abilities for model in image_models.values())
+            has_edit_capability = any(
+                "edit" in model.abilities for model in image_models.values()
+            )
             if not has_edit_capability:
                 status = "missing_capability"
                 status_reason = (
@@ -219,7 +219,9 @@ async def get_available_tools(
     # the list and can be shown as ``enabled=False`` in the UI.
     from ...core.tools.adapters.vibe.factory import ToolFactory
 
-    all_tools = await ToolFactory.create_all_tools(tool_config, apply_user_override_filter=False)
+    all_tools = await ToolFactory.create_all_tools(
+        tool_config, apply_user_override_filter=False
+    )
 
     # Helper function to get category from tool's metadata
     def get_tool_category(tool: Any) -> str:

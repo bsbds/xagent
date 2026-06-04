@@ -123,7 +123,9 @@ class TestToolsAvailableAPI:
         assert credential_response.status_code == 200
 
         # Make request to /api/tools/available
-        response = client.get("/api/tools/available", headers={"Authorization": f"Bearer {token}"})
+        response = client.get(
+            "/api/tools/available", headers={"Authorization": f"Bearer {token}"}
+        )
 
         # Should succeed without errors
         assert response.status_code == 200
@@ -158,7 +160,9 @@ class TestToolsAvailableAPI:
 
         # Code execution tools should now be present (workspace is created)
         assert "execute_python_code" in tool_names, "Should have python executor"
-        assert "execute_javascript_code" in tool_names, "Should have javascript executor"
+        assert "execute_javascript_code" in tool_names, (
+            "Should have javascript executor"
+        )
 
         # File tools should also be present (workspace is created)
         assert "read_file" in tool_names, "Should have read_file tool"
@@ -178,12 +182,16 @@ class TestToolsAvailableAPI:
         assert login_response.status_code == 200
         token = login_response.json()["access_token"]
 
-        response = client.get("/api/tools/available", headers={"Authorization": f"Bearer {token}"})
+        response = client.get(
+            "/api/tools/available", headers={"Authorization": f"Bearer {token}"}
+        )
         assert response.status_code == 200
         data = response.json()
 
         # Check for skill tools
-        skill_tools = [tool for tool in data["tools"] if tool.get("category") == "skill"]
+        skill_tools = [
+            tool for tool in data["tools"] if tool.get("category") == "skill"
+        ]
 
         # Should have read_skill_doc and list_skill_docs
         skill_tool_names = {tool["name"] for tool in skill_tools}
@@ -205,7 +213,9 @@ class TestToolsAvailableAPI:
         assert login_response.status_code == 200
         token = login_response.json()["access_token"]
 
-        response = client.get("/api/tools/available", headers={"Authorization": f"Bearer {token}"})
+        response = client.get(
+            "/api/tools/available", headers={"Authorization": f"Bearer {token}"}
+        )
 
         assert response.status_code == 200
 
@@ -232,7 +242,9 @@ class TestToolsAvailableAPI:
         assert login_response.status_code == 200
         token = login_response.json()["access_token"]
 
-        response = client.get("/api/tools/available", headers={"Authorization": f"Bearer {token}"})
+        response = client.get(
+            "/api/tools/available", headers={"Authorization": f"Bearer {token}"}
+        )
 
         assert response.status_code == 200
 
@@ -261,7 +273,9 @@ class TestToolsAvailableAPI:
         # Unauthenticated requests return 403
         assert response.status_code == 403
 
-    def test_get_available_tools_falls_back_to_other_when_metadata_missing(self, monkeypatch):
+    def test_get_available_tools_falls_back_to_other_when_metadata_missing(
+        self, monkeypatch
+    ):
         login_response = client.post(
             "/api/auth/login", json={"username": "admin", "password": "admin123"}
         )
@@ -292,7 +306,9 @@ class TestToolsAvailableAPI:
             mock_create_all_tools,
         )
 
-        response = client.get("/api/tools/available", headers={"Authorization": f"Bearer {token}"})
+        response = client.get(
+            "/api/tools/available", headers={"Authorization": f"Bearer {token}"}
+        )
 
         assert response.status_code == 200
         payload = response.json()
@@ -304,7 +320,9 @@ class TestToolsAvailableAPI:
         """Test that user tool override hook marks disabled tools in /available."""
         from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
 
-        set_user_tool_overrides_hook(lambda db, user: {"browser_navigate": {"enabled": False}})
+        set_user_tool_overrides_hook(
+            lambda db, user: {"browser_navigate": {"enabled": False}}
+        )
         try:
             login_response = client.post(
                 "/api/auth/login",
@@ -328,7 +346,9 @@ class TestToolsAvailableAPI:
         finally:
             set_user_tool_overrides_hook(None)
 
-    def test_get_available_tools_override_does_not_mask_missing_model(self, monkeypatch):
+    def test_get_available_tools_override_does_not_mask_missing_model(
+        self, monkeypatch
+    ):
         """Test that enabled=True override cannot mask resource-missing states."""
         from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
 
@@ -355,7 +375,9 @@ class TestToolsAvailableAPI:
             lambda self: None,
         )
 
-        set_user_tool_overrides_hook(lambda db, user: {"vision_test_tool": {"enabled": True}})
+        set_user_tool_overrides_hook(
+            lambda db, user: {"vision_test_tool": {"enabled": True}}
+        )
         try:
             login_response = client.post(
                 "/api/auth/login",
@@ -392,7 +414,9 @@ class TestToolsAvailableAPI:
         assert put_resp.status_code == 200
 
         # Step 2: set hook to re-enable it
-        set_user_tool_overrides_hook(lambda db, user: {"browser_navigate": {"enabled": True}})
+        set_user_tool_overrides_hook(
+            lambda db, user: {"browser_navigate": {"enabled": True}}
+        )
         try:
             response = client.get(
                 "/api/tools/available",
@@ -493,7 +517,9 @@ class TestToolsGovernanceAPI:
         assert payload["fields"]["api_key"]["source"] == "user"
         assert payload["fields"]["api_key"]["is_configured"] is True
         assert "1234" in payload["fields"]["api_key"]["masked"]
-        assert "test-secret-zhipu-key-1234" not in payload["fields"]["api_key"]["masked"]
+        assert (
+            "test-secret-zhipu-key-1234" not in payload["fields"]["api_key"]["masked"]
+        )
 
     def test_instance_scoped_credentials_require_admin(self):
         headers = self._admin_headers()
@@ -619,7 +645,9 @@ class TestToolsGovernanceAPI:
             headers=headers,
             json={
                 "credentials": {
-                    "analytics": {"value": "postgresql://db_user:db_pass@localhost:5432/db_db"}
+                    "analytics": {
+                        "value": "postgresql://db_user:db_pass@localhost:5432/db_db"
+                    }
                 }
             },
         )
@@ -659,7 +687,11 @@ class TestToolsGovernanceAPI:
         upsert = client.put(
             "/api/tool-credentials/sql_query?scope=user",
             headers=headers,
-            json={"credentials": {"local_warehouse": {"value": "duckdb:///tmp/warehouse.duckdb"}}},
+            json={
+                "credentials": {
+                    "local_warehouse": {"value": "duckdb:///tmp/warehouse.duckdb"}
+                }
+            },
         )
 
         assert upsert.status_code == 200
@@ -676,7 +708,9 @@ class TestToolsGovernanceAPI:
             headers=user1_headers,
             json={
                 "credentials": {
-                    "analytics": {"value": "postgresql://user1:pass1@localhost:5432/user1_db"}
+                    "analytics": {
+                        "value": "postgresql://user1:pass1@localhost:5432/user1_db"
+                    }
                 }
             },
         )
@@ -694,7 +728,9 @@ class TestToolsGovernanceAPI:
             headers=user2_headers,
             json={
                 "credentials": {
-                    "analytics": {"value": "postgresql://user2:pass2@localhost:5432/user2_db"}
+                    "analytics": {
+                        "value": "postgresql://user2:pass2@localhost:5432/user2_db"
+                    }
                 }
             },
         )
@@ -893,7 +929,9 @@ class TestWebToolConfigUserOverride:
         db = SessionLocal()
         set_credential_fallback_scopes_hook(
             lambda _db, user: [
-                CredentialScopeRef("shared", getattr(user, "shared_scope_id", None), "Shared")
+                CredentialScopeRef(
+                    "shared", getattr(user, "shared_scope_id", None), "Shared"
+                )
             ]
         )
         try:
@@ -939,7 +977,9 @@ class TestWebToolConfigUserOverride:
         db = SessionLocal()
         set_credential_fallback_scopes_hook(
             lambda _db, user: [
-                CredentialScopeRef("shared", getattr(user, "shared_scope_id", None), "Shared")
+                CredentialScopeRef(
+                    "shared", getattr(user, "shared_scope_id", None), "Shared"
+                )
             ]
         )
         try:
@@ -967,7 +1007,9 @@ class TestWebToolConfigUserOverride:
             Base.metadata.drop_all(bind=engine)
             shutil.rmtree(temp_dir)
 
-    def test_sql_connection_map_preserves_instance_entries_with_registered_fallback_scope(self):
+    def test_sql_connection_map_preserves_instance_entries_with_registered_fallback_scope(
+        self,
+    ):
         """Instance SQL connections remain visible when shared scopes have no matching row."""
         from unittest.mock import MagicMock
 
@@ -987,7 +1029,9 @@ class TestWebToolConfigUserOverride:
         db = SessionLocal()
         set_credential_fallback_scopes_hook(
             lambda _db, user: [
-                CredentialScopeRef("shared", getattr(user, "shared_scope_id", None), "Shared")
+                CredentialScopeRef(
+                    "shared", getattr(user, "shared_scope_id", None), "Shared"
+                )
             ]
         )
         try:
@@ -1035,7 +1079,9 @@ class TestWebToolConfigUserOverride:
                 user=MagicMock(id=42),  # explicit user
                 workspace_config={"base_dir": "/tmp", "task_id": "test"},
             )
-            assert cfg.get_user_tool_overrides() == {"browser_navigate": {"enabled": False}}
+            assert cfg.get_user_tool_overrides() == {
+                "browser_navigate": {"enabled": False}
+            }
         finally:
             set_user_tool_overrides_hook(None)
 
@@ -1060,7 +1106,9 @@ class TestWebToolConfigUserOverride:
                 user_id=42,
                 workspace_config={"base_dir": "/tmp", "task_id": "test"},
             )
-            assert cfg.get_user_tool_overrides() == {"browser_navigate": {"enabled": False}}
+            assert cfg.get_user_tool_overrides() == {
+                "browser_navigate": {"enabled": False}
+            }
         finally:
             set_user_tool_overrides_hook(None)
 
@@ -1176,7 +1224,9 @@ class TestWebToolConfigUserOverride:
 
             tool_names = [t.name for t in result]
             # Without explicit user, overrides are {} and filtering is skipped
-            assert "browser_navigate" in tool_names, "No filtering when no user (existing behavior)"
+            assert "browser_navigate" in tool_names, (
+                "No filtering when no user (existing behavior)"
+            )
             assert "calculator" in tool_names
         finally:
             set_user_tool_overrides_hook(None)
@@ -1219,7 +1269,9 @@ class TestWebToolConfigUserOverride:
                 "xagent.core.tools.adapters.vibe.factory.ToolRegistry.create_registered_tools",
                 AsyncMock(return_value=[tool_browser, tool_calc]),
             ):
-                result = await ToolFactory.create_all_tools(cfg, apply_user_override_filter=False)
+                result = await ToolFactory.create_all_tools(
+                    cfg, apply_user_override_filter=False
+                )
 
             tool_names = [t.name for t in result]
             assert "browser_navigate" in tool_names, (
@@ -1339,7 +1391,9 @@ class TestWebToolConfigMCPAuth:
         }
 
         db = MagicMock()
-        db.query.return_value.join.return_value.filter.return_value.all.return_value = [server]
+        db.query.return_value.join.return_value.filter.return_value.all.return_value = [
+            server
+        ]
 
         cfg = WebToolConfig(
             db=db,
@@ -1353,4 +1407,6 @@ class TestWebToolConfigMCPAuth:
         assert configs[0]["name"] == "local"
         assert configs[0]["config"]["url"] == "http://127.0.0.1:18000/mcp"
         assert configs[0]["config"]["headers"]["X-Test"] == "true"
-        assert configs[0]["config"]["headers"]["Authorization"] == "Bearer test-token-123"
+        assert (
+            configs[0]["config"]["headers"]["Authorization"] == "Bearer test-token-123"
+        )

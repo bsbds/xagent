@@ -36,9 +36,9 @@ class CredentialScopeRef:
 # Hook signature: (db: Session, user: Any) -> Iterable[CredentialScopeRef].
 # Embedding apps install this so core xagent can resolve shared credentials
 # without importing application-specific tenancy concepts.
-_credential_fallback_scopes_hook: Callable[[Session, Any], Iterable[CredentialScopeRef]] | None = (
-    None
-)
+_credential_fallback_scopes_hook: (
+    Callable[[Session, Any], Iterable[CredentialScopeRef]] | None
+) = None
 
 
 def set_user_tool_overrides_hook(hook: Callable[[Session, Any], dict] | None) -> None:
@@ -145,7 +145,11 @@ def list_configurable_tool_names() -> list[str]:
 
 
 def _build_fernet_key() -> bytes:
-    raw = os.getenv("XAGENT_SECRET_ENCRYPTION_KEY") or os.getenv("SECRET_KEY") or "xagent-dev-key"
+    raw = (
+        os.getenv("XAGENT_SECRET_ENCRYPTION_KEY")
+        or os.getenv("SECRET_KEY")
+        or "xagent-dev-key"
+    )
     digest = hashlib.sha256(raw.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
 
@@ -410,7 +414,9 @@ def clear_scoped_tool_credential(
 ) -> None:
     normalized_scope = _validate_scope(scope_type, scope_id)
     normalized_field = (
-        _sanitize_sql_connection_name(field_name) if tool_name == SQL_TOOL_NAME else field_name
+        _sanitize_sql_connection_name(field_name)
+        if tool_name == SQL_TOOL_NAME
+        else field_name
     )
     row = _query_scoped_credential(
         db,
@@ -496,7 +502,11 @@ def get_tool_credential_view(
     all_required_ok = True
     for field_name, spec in specs.items():
         scoped_row = scoped_rows.get(field_name)
-        env_value = _read_env(spec.get("env", [])) if isinstance(spec.get("env"), list) else None
+        env_value = (
+            _read_env(spec.get("env", []))
+            if isinstance(spec.get("env"), list)
+            else None
+        )
         resolved, source = _resolve_plain_field(
             db,
             tool_name=tool_name,

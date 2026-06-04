@@ -20,14 +20,20 @@ def get_migration_module():
         / "src/xagent/migrations/versions/20260602_add_scoped_tool_credentials.py"
     )
 
-    spec = importlib.util.spec_from_file_location("scoped_credentials_migration", migration_file)
+    spec = importlib.util.spec_from_file_location(
+        "scoped_credentials_migration", migration_file
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
 def _test_fernet() -> Fernet:
-    raw = os.getenv("XAGENT_SECRET_ENCRYPTION_KEY") or os.getenv("SECRET_KEY") or "xagent-dev-key"
+    raw = (
+        os.getenv("XAGENT_SECRET_ENCRYPTION_KEY")
+        or os.getenv("SECRET_KEY")
+        or "xagent-dev-key"
+    )
     digest = hashlib.sha256(raw.encode("utf-8")).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
 
@@ -203,7 +209,10 @@ def test_upgrade_backfills_legacy_tool_config_credentials_only(
         ("instance", None, "zhipu_web_search", "api_key"),
         ("instance", None, "zhipu_web_search", "base_url"),
     ]
-    assert {(row["tool_name"], row["field_name"]): row["masked_value"] for row in credentials} == {
+    assert {
+        (row["tool_name"], row["field_name"]): row["masked_value"]
+        for row in credentials
+    } == {
         ("web_search", "api_key"): "*************-key",
         ("web_search", "cse_id"): "*************-cse",
         ("zhipu_web_search", "api_key"): "************-key",

@@ -59,7 +59,9 @@ def _setup_admin() -> None:
 
 
 def _login(username: str, password: str) -> dict[str, str]:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
+    response = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -139,7 +141,9 @@ def test_unpublish_moves_agent_back_to_non_callable_state() -> None:
 
         tools_after_publish = client.get("/api/tools/available", headers=admin_headers)
         assert tools_after_publish.status_code == 200
-        names_after_publish = {tool["name"] for tool in tools_after_publish.json()["tools"]}
+        names_after_publish = {
+            tool["name"] for tool in tools_after_publish.json()["tools"]
+        }
         assert f"agent_{agent_id}" in names_after_publish
 
         unpublish_response = client.post(
@@ -148,9 +152,13 @@ def test_unpublish_moves_agent_back_to_non_callable_state() -> None:
         )
         assert unpublish_response.status_code == 200
 
-        tools_after_unpublish = client.get("/api/tools/available", headers=admin_headers)
+        tools_after_unpublish = client.get(
+            "/api/tools/available", headers=admin_headers
+        )
         assert tools_after_unpublish.status_code == 200
-        names_after_unpublish = {tool["name"] for tool in tools_after_unpublish.json()["tools"]}
+        names_after_unpublish = {
+            tool["name"] for tool in tools_after_unpublish.json()["tools"]
+        }
         assert f"agent_{agent_id}" not in names_after_unpublish
     finally:
         Base.metadata.drop_all(bind=get_engine())

@@ -58,7 +58,9 @@ class ToolUsage(Base):  # type: ignore
 
 class UserToolConfig(Base):  # type: ignore
     __tablename__ = "user_tool_configs"
-    __table_args__ = (UniqueConstraint("user_id", "tool_name", name="uq_user_tool_config"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "tool_name", name="uq_user_tool_config"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(

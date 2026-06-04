@@ -187,11 +187,15 @@ def init_tool_configs(db: Session) -> None:
     for config_data in default_configs:
         # Check if tool config already exists
         existing = (
-            db.query(ToolConfig).filter(ToolConfig.tool_name == config_data["tool_name"]).first()
+            db.query(ToolConfig)
+            .filter(ToolConfig.tool_name == config_data["tool_name"])
+            .first()
         )
 
         if existing:
-            logger.info(f"Tool config '{config_data['tool_name']}' already exists, skipping...")
+            logger.info(
+                f"Tool config '{config_data['tool_name']}' already exists, skipping..."
+            )
             continue
 
         # Create new tool config
