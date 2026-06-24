@@ -71,7 +71,7 @@ dependencies = [
   # Data science libraries (core for RAG and analysis)
   "pandas>=1.3.0",
   # Special handling - AI-enhanced document processing
-  "deepdoc-lib==0.2.0",
+  "deepdoc-lib==0.2.1",
   "aiogram>=3.4.1",
   "aiohttp-socks>=0.8.4",
   "lark-oapi>=1.5.3",
@@ -87,6 +87,9 @@ dependencies = [
 router = [
   "xrouter-llm>=0.1.2",
   "sentence-transformers>=3.0.0",
+  # xrouter-llm's embedding model is a Qwen3-architecture checkpoint; transformers
+  # only registered the `qwen3` model type in 4.51.
+  "transformers>=4.51",
   "torch>=2.0.0",
 ]
 # document processing libraries(Non-AI)
