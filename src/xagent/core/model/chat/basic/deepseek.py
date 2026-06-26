@@ -215,12 +215,6 @@ class DeepSeekLLM(OpenAICompatibleLLM):
             }
         return raw_payload
 
-    @staticmethod
-    def _is_thinking_enabled(thinking: Optional[Dict[str, Any]]) -> bool:
-        if not isinstance(thinking, dict):
-            return False
-        return thinking.get("type") == "enabled" or thinking.get("enable") is True
-
     def _normalize_response_format(
         self,
         response_format: Optional[Dict[str, Any]],
