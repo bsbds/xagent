@@ -1,7 +1,12 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .....config import get_openrouter_official_providers_only
 from ..timeout_config import TimeoutConfig
+from .base import StreamChunk
+from .deepseek_dsml import (
+    normalize_deepseek_dsml_response,
+    stream_chunks_from_chat_result,
+)
 from .openai import OpenAILLM
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -53,6 +58,9 @@ class OpenRouterLLM(OpenAILLM):
 
     def _is_official_openrouter_client(self) -> bool:
         return self.base_url.rstrip("/") == OPENROUTER_BASE_URL
+
+    def _is_deepseek_model(self) -> bool:
+        return _openrouter_model_author(self._model_name) == "deepseek"
 
     def _prepare_extra_body(self, extra_body: Dict[str, Any]) -> Dict[str, Any]:
         if (
@@ -112,3 +120,77 @@ class OpenRouterLLM(OpenAILLM):
 
         updated_extra_body.pop("enable_thinking", None)
         return updated_extra_body
+
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str | Dict[str, Any]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        thinking: Optional[Dict[str, Any]] = None,
+        output_config: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        result = await super().chat(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            thinking=thinking,
+            output_config=output_config,
+            **kwargs,
+        )
+        if not self._is_deepseek_model():
+            return result
+
+        normalized_result, _ = normalize_deepseek_dsml_response(
+            result,
+            tools=tools,
+            model_name=self._model_name,
+        )
+        return normalized_result
+
+    async def stream_chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str | Dict[str, Any]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        thinking: Optional[Dict[str, Any]] = None,
+        output_config: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamChunk]:
+        if self._is_deepseek_model() and tools:
+            result = await self.chat(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                tool_choice=tool_choice,
+                response_format=response_format,
+                thinking=thinking,
+                output_config=output_config,
+                **kwargs,
+            )
+            for chunk in stream_chunks_from_chat_result(result):
+                yield chunk
+            return
+
+        async for chunk in super().stream_chat(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            thinking=thinking,
+            output_config=output_config,
+            **kwargs,
+        ):
+            yield chunk

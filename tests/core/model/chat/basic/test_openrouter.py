@@ -1,10 +1,37 @@
 """Test cases for OpenRouter LLM provider behavior."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from xagent.core.model.chat.basic.openrouter import OpenRouterLLM
+from xagent.core.model.chat.types import ChunkType
+
+
+def _browser_extract_text_tool() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser_extract_text",
+            "description": "Extract text from a browser session",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_id": {"type": "string"}},
+                "required": ["session_id"],
+            },
+        },
+    }
+
+
+def _browser_extract_text_dsml() -> str:
+    return """
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="browser_extract_text">
+<｜｜DSML｜｜parameter name="session_id" string="true">821:react_468b98b2</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>
+""".strip()
 
 
 @pytest.mark.asyncio
@@ -284,3 +311,122 @@ async def test_structured_output_retry_disables_openrouter_reasoning(
     second_call = mock_client.chat.completions.create.call_args_list[1].kwargs
     assert second_call["extra_body"]["reasoning"] == {"enabled": False}
     assert second_call["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_deepseek_parses_raw_dsml_content(mocker, monkeypatch):
+    monkeypatch.setenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", "false")
+    message = SimpleNamespace(
+        content=_browser_extract_text_dsml(),
+        tool_calls=None,
+        reasoning_content=None,
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message)],
+        usage=None,
+        model_dump=lambda: {"id": "openrouter-dsml"},
+    )
+
+    mock_client = mocker.AsyncMock()
+    mock_client.chat.completions.create.return_value = response
+    mocker.patch(
+        "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+        return_value=mock_client,
+    )
+
+    llm = OpenRouterLLM(
+        model_name="deepseek/deepseek-v4-flash",
+        api_key="test-key",
+    )
+
+    result = await llm.chat(
+        [{"role": "user", "content": "Read the page"}],
+        tools=[_browser_extract_text_tool()],
+    )
+
+    assert result["type"] == "tool_call"
+    assert result["content"] is None
+    assert result["tool_calls"][0]["function"]["name"] == "browser_extract_text"
+    assert json.loads(result["tool_calls"][0]["function"]["arguments"]) == {
+        "session_id": "821:react_468b98b2"
+    }
+
+
+@pytest.mark.asyncio
+async def test_openrouter_non_deepseek_does_not_parse_raw_dsml_content(
+    mocker, monkeypatch
+):
+    monkeypatch.setenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", "false")
+    message = SimpleNamespace(
+        content=_browser_extract_text_dsml(),
+        tool_calls=None,
+        reasoning_content=None,
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message)],
+        usage=None,
+        model_dump=lambda: {"id": "openrouter-text"},
+    )
+
+    mock_client = mocker.AsyncMock()
+    mock_client.chat.completions.create.return_value = response
+    mocker.patch(
+        "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+        return_value=mock_client,
+    )
+
+    llm = OpenRouterLLM(
+        model_name="openai/gpt-5.5",
+        api_key="test-key",
+    )
+
+    result = await llm.chat(
+        [{"role": "user", "content": "Read the page"}],
+        tools=[_browser_extract_text_tool()],
+    )
+
+    assert result["type"] == "text"
+    assert "DSML" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_deepseek_stream_with_tools_uses_non_streaming_dsml_parser(
+    mocker, monkeypatch
+):
+    monkeypatch.setenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", "false")
+    message = SimpleNamespace(
+        content=_browser_extract_text_dsml(),
+        tool_calls=None,
+        reasoning_content=None,
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message)],
+        usage=None,
+        model_dump=lambda: {"id": "openrouter-dsml"},
+    )
+
+    mock_client = mocker.AsyncMock()
+    mock_client.chat.completions.create.return_value = response
+    mocker.patch(
+        "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+        return_value=mock_client,
+    )
+
+    llm = OpenRouterLLM(
+        model_name="deepseek/deepseek-v4-flash",
+        api_key="test-key",
+    )
+
+    chunks = [
+        chunk
+        async for chunk in llm.stream_chat(
+            [{"role": "user", "content": "Read the page"}],
+            tools=[_browser_extract_text_tool()],
+        )
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0].type == ChunkType.TOOL_CALL
+    assert chunks[0].tool_calls[0]["function"]["name"] == "browser_extract_text"
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert "stream" not in call_kwargs

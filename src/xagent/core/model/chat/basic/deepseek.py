@@ -4,6 +4,10 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from ...providers import is_placeholder_api_key
 from .base import StreamChunk
+from .deepseek_dsml import (
+    normalize_deepseek_dsml_response,
+    stream_chunks_from_chat_result,
+)
 from .openai import PROVIDER_STATE_METADATA_KEY, OpenAICompatibleLLM
 
 logger = logging.getLogger(__name__)
@@ -219,6 +223,23 @@ class DeepSeekLLM(OpenAICompatibleLLM):
 
         return response_format, output_config
 
+    def _normalize_deepseek_response(
+        self,
+        response: Any,
+        *,
+        tools: Optional[List[Dict[str, Any]]],
+    ) -> Any:
+        normalized_response, parsed_dsml = normalize_deepseek_dsml_response(
+            response,
+            tools=tools,
+            model_name=self._model_name,
+        )
+        if parsed_dsml and isinstance(normalized_response, dict):
+            provider_state = self._response_provider_state(normalized_response)
+            if provider_state:
+                normalized_response[PROVIDER_STATE_METADATA_KEY] = provider_state
+        return normalized_response
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
@@ -236,7 +257,7 @@ class DeepSeekLLM(OpenAICompatibleLLM):
             output_config=output_config,
         )
         kwargs = self._prepare_deepseek_kwargs(kwargs=kwargs)
-        return await super().chat(
+        result = await super().chat(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -247,6 +268,7 @@ class DeepSeekLLM(OpenAICompatibleLLM):
             output_config=output_config,
             **kwargs,
         )
+        return self._normalize_deepseek_response(result, tools=tools)
 
     async def stream_chat(
         self,
@@ -260,6 +282,22 @@ class DeepSeekLLM(OpenAICompatibleLLM):
         output_config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
+        if tools:
+            result = await self.chat(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                tool_choice=tool_choice,
+                response_format=response_format,
+                thinking=thinking,
+                output_config=output_config,
+                **kwargs,
+            )
+            for chunk in stream_chunks_from_chat_result(result):
+                yield chunk
+            return
+
         response_format, output_config = self._normalize_response_format(
             response_format=response_format,
             output_config=output_config,
