@@ -13,6 +13,7 @@ class DeepSeekDSMLParseError(RuntimeError):
     """Raised when DeepSeek emits DSML text that cannot safely become tool calls."""
 
 
+DEEPSEEK_DSML_PARSE_TOOLS_KWARG = "_xagent_deepseek_dsml_parse_tools"
 _DSML_TOKEN_RE = r"(?:｜｜DSML｜｜|｜DSML｜|\|\|DSML\|\||\|DSML\|)"
 _DSML_TOOL_CALLS_BLOCK_RE = re.compile(
     rf"<\s*{_DSML_TOKEN_RE}\s*tool_calls\s*>"

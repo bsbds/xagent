@@ -5,6 +5,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from ...providers import is_placeholder_api_key
 from .base import StreamChunk
 from .deepseek_dsml import (
+    DEEPSEEK_DSML_PARSE_TOOLS_KWARG,
+    DeepSeekDSMLParseError,
     normalize_deepseek_dsml_response,
     stream_chunks_from_chat_result,
 )
@@ -135,6 +137,33 @@ class DeepSeekLLM(OpenAICompatibleLLM):
 
         return updated_kwargs
 
+    def deepseek_dsml_parse_kwargs(
+        self,
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Return parser-only DSML schema metadata for forced-final recovery.
+
+        ReAct forced-final turns intentionally send ``tools=None`` to DeepSeek.
+        If DeepSeek still emits DSML tool markup, this hidden kwarg lets this
+        adapter validate and convert it locally without leaking the schema into
+        provider request parameters.
+        """
+
+        return {DEEPSEEK_DSML_PARSE_TOOLS_KWARG: tools} if tools else {}
+
+    def _pop_deepseek_dsml_parse_tools(
+        self,
+        kwargs: dict[str, Any],
+    ) -> list[dict[str, Any]] | None:
+        raw_tools = kwargs.pop(DEEPSEEK_DSML_PARSE_TOOLS_KWARG, None)
+        if raw_tools is None:
+            return None
+        if not isinstance(raw_tools, list):
+            raise DeepSeekDSMLParseError(
+                f"{DEEPSEEK_DSML_PARSE_TOOLS_KWARG} must be a list of tool schemas."
+            )
+        return raw_tools
+
     def _prepare_messages_for_request(
         self,
         messages: List[Dict[str, Any]],
@@ -252,6 +281,7 @@ class DeepSeekLLM(OpenAICompatibleLLM):
         output_config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Any:
+        dsml_parse_tools = self._pop_deepseek_dsml_parse_tools(kwargs)
         response_format, output_config = self._normalize_response_format(
             response_format=response_format,
             output_config=output_config,
@@ -268,7 +298,10 @@ class DeepSeekLLM(OpenAICompatibleLLM):
             output_config=output_config,
             **kwargs,
         )
-        return self._normalize_deepseek_response(result, tools=tools)
+        return self._normalize_deepseek_response(
+            result,
+            tools=tools or dsml_parse_tools,
+        )
 
     async def stream_chat(
         self,
@@ -282,7 +315,11 @@ class DeepSeekLLM(OpenAICompatibleLLM):
         output_config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
-        if tools:
+        dsml_parse_tools = self._pop_deepseek_dsml_parse_tools(kwargs)
+        if tools or dsml_parse_tools:
+            chat_kwargs = dict(kwargs)
+            if dsml_parse_tools:
+                chat_kwargs[DEEPSEEK_DSML_PARSE_TOOLS_KWARG] = dsml_parse_tools
             result = await self.chat(
                 messages=messages,
                 temperature=temperature,
@@ -292,7 +329,7 @@ class DeepSeekLLM(OpenAICompatibleLLM):
                 response_format=response_format,
                 thinking=thinking,
                 output_config=output_config,
-                **kwargs,
+                **chat_kwargs,
             )
             for chunk in stream_chunks_from_chat_result(result):
                 yield chunk

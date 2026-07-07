@@ -185,7 +185,7 @@ def test_parse_deepseek_dsml_tool_calls_rejects_unknown_tools():
 
 
 def test_parse_deepseek_dsml_tool_calls_rejects_incomplete_blocks():
-    text = "<｜DSML｜tool_calls><｜DSML｜invoke name=\"get_weather\">"
+    text = '<｜DSML｜tool_calls><｜DSML｜invoke name="get_weather">'
 
     with pytest.raises(DeepSeekDSMLParseError, match="incomplete"):
         parse_deepseek_dsml_tool_calls(

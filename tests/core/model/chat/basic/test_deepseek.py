@@ -8,7 +8,10 @@ from xagent.core.model.chat.basic.deepseek import (
     DEEPSEEK_REASONING_CONTENT_STATE_KEY,
     DeepSeekLLM,
 )
-from xagent.core.model.chat.basic.deepseek_dsml import DeepSeekDSMLParseError
+from xagent.core.model.chat.basic.deepseek_dsml import (
+    DEEPSEEK_DSML_PARSE_TOOLS_KWARG,
+    DeepSeekDSMLParseError,
+)
 from xagent.core.model.chat.basic.openai import PROVIDER_STATE_METADATA_KEY, OpenAILLM
 from xagent.core.model.chat.types import ChunkType
 
@@ -480,6 +483,39 @@ class TestDeepSeekLLM:
         }
 
     @pytest.mark.asyncio
+    async def test_hidden_dsml_parse_tools_convert_without_provider_tools(
+        self, llm, mocker
+    ):
+        message = SimpleNamespace(
+            content=_browser_extract_text_dsml(),
+            tool_calls=None,
+            reasoning_content=None,
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=None,
+            model_dump=lambda: {"id": "deepseek-dsml"},
+        )
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        result = await llm.chat(
+            [{"role": "user", "content": "Read the page"}],
+            **{DEEPSEEK_DSML_PARSE_TOOLS_KWARG: [_browser_extract_text_tool()]},
+        )
+
+        assert result["type"] == "tool_call"
+        assert result["tool_calls"][0]["function"]["name"] == "browser_extract_text"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "tools" not in call_kwargs
+        assert DEEPSEEK_DSML_PARSE_TOOLS_KWARG not in call_kwargs
+
+    @pytest.mark.asyncio
     async def test_raw_dsml_content_without_tools_is_rejected(self, llm, mocker):
         message = SimpleNamespace(
             content=_browser_extract_text_dsml(),
@@ -930,6 +966,44 @@ class TestDeepSeekLLM:
         assert chunks[0].tool_calls[0]["function"]["name"] == "browser_extract_text"
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
         assert "stream" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_hidden_dsml_parse_tools_uses_non_streaming_parser(
+        self, llm, mocker
+    ):
+        message = SimpleNamespace(
+            content=_browser_extract_text_dsml(),
+            tool_calls=None,
+            reasoning_content=None,
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=None,
+            model_dump=lambda: {"id": "deepseek-dsml"},
+        )
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in llm.stream_chat(
+                [{"role": "user", "content": "Read the page"}],
+                **{DEEPSEEK_DSML_PARSE_TOOLS_KWARG: [_browser_extract_text_tool()]},
+            )
+        ]
+
+        assert len(chunks) == 1
+        assert chunks[0].type == ChunkType.TOOL_CALL
+        assert chunks[0].tool_calls[0]["function"]["name"] == "browser_extract_text"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "stream" not in call_kwargs
+        assert "tools" not in call_kwargs
+        assert DEEPSEEK_DSML_PARSE_TOOLS_KWARG not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_list_available_models_returns_curated_v4_models(self):

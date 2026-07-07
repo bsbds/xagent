@@ -17,6 +17,7 @@ from xagent.core.agent import (
     ReActReasoningMode,
     ToolCallRecord,
 )
+from xagent.core.model.chat.basic.deepseek_dsml import DEEPSEEK_DSML_PARSE_TOOLS_KWARG
 from xagent.core.model.chat.types import ChunkType, StreamChunk
 
 react_module = importlib.import_module("xagent.core.agent.pattern.react.react")
@@ -267,6 +268,63 @@ class StreamingFinalAnswerLLM:
             return
         yield StreamChunk(type=ChunkType.TOKEN, delta="The result")
         yield StreamChunk(type=ChunkType.TOKEN, delta=" is 4.")
+        yield StreamChunk(type=ChunkType.END)
+
+
+class StreamingDeepSeekForcedFinalToolLLM:
+    """DeepSeek-like fake that can recover a tool call during a forced-final turn."""
+
+    def __init__(self) -> None:
+        self.stream_calls: list[dict[str, Any]] = []
+        self.parser_tool_batches: list[list[dict[str, Any]]] = []
+
+    def deepseek_dsml_parse_kwargs(
+        self,
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.parser_tool_batches.append(tools)
+        return {DEEPSEEK_DSML_PARSE_TOOLS_KWARG: tools}
+
+    async def chat(self, **kwargs: Any) -> Any:
+        raise AssertionError("streaming DeepSeek ReAct path should not call chat()")
+
+    async def stream_chat(self, **kwargs: Any) -> Any:
+        self.stream_calls.append(kwargs)
+        call_number = len(self.stream_calls)
+
+        if call_number == 1:
+            yield StreamChunk(
+                type=ChunkType.TOOL_CALL,
+                tool_calls=[
+                    {
+                        "id": "call_initial",
+                        "function": {
+                            "name": "calculator",
+                            "arguments": '{"expression":"2+2"}',
+                        },
+                    }
+                ],
+            )
+            yield StreamChunk(type=ChunkType.END)
+            return
+
+        if call_number == 2 and kwargs.get(DEEPSEEK_DSML_PARSE_TOOLS_KWARG):
+            yield StreamChunk(
+                type=ChunkType.TOOL_CALL,
+                tool_calls=[
+                    {
+                        "id": "call_forced_final_recovered",
+                        "function": {
+                            "name": "calculator",
+                            "arguments": '{"expression":"3+3"}',
+                        },
+                    }
+                ],
+            )
+            yield StreamChunk(type=ChunkType.END)
+            return
+
+        yield StreamChunk(type=ChunkType.TOKEN, delta="The final result is 6.")
         yield StreamChunk(type=ChunkType.END)
 
 
@@ -706,6 +764,38 @@ async def test_react_pattern_streams_only_final_answer_after_tool_call() -> None
         "final_answer_delta",
         "final_answer_end",
     ]
+
+
+@pytest.mark.asyncio
+async def test_react_pattern_converts_deepseek_forced_final_dsml_tool_call() -> None:
+    llm = StreamingDeepSeekForcedFinalToolLLM()
+    pattern = ReActPattern(max_iterations=4, finalize_after_tool_result=True)
+    tool = FakeTool()
+    context = ExecutionContext(system_prompt="You are helpful.", execution_id="task-1")
+    context.add_user_message("Calculate 2+2 and then 3+3")
+    outbound = OutboundCollector()
+    runtime = PatternRuntime(execution_id="task-1", outbound_message_handler=outbound)
+
+    result = await pattern.run(context=context, tools=[tool], llm=llm, runtime=runtime)
+
+    assert result["success"] is True
+    assert result["response"] == "The final result is 6."
+    assert tool.calls == [{"expression": "2+2"}, {"expression": "3+3"}]
+    assert len(llm.stream_calls) == 3
+    assert llm.stream_calls[1]["tools"] is None
+    assert DEEPSEEK_DSML_PARSE_TOOLS_KWARG in llm.stream_calls[1]
+    assert [schema["function"]["name"] for schema in llm.parser_tool_batches[0]] == [
+        "calculator",
+        "final_answer",
+        "send_message",
+        "ask_user_question",
+    ]
+    assert [event["type"] for event in outbound.events] == [
+        "final_answer_start",
+        "final_answer_delta",
+        "final_answer_end",
+    ]
+    assert outbound.events[1]["delta"] == "The final result is 6."
 
 
 @pytest.mark.asyncio

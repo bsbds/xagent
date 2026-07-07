@@ -95,7 +95,13 @@ class PatternRuntime:
         finally:
             self._active_llm_tasks.discard(task)
 
-    async def stream_final_answer(self, llm: Any, **kwargs: Any) -> Any:
+    async def stream_final_answer(
+        self,
+        llm: Any,
+        *,
+        start_immediately: bool = True,
+        **kwargs: Any,
+    ) -> Any:
         """Stream only the final user-facing answer through the outbound boundary."""
 
         if self.outbound_message_handler is None or not self._has_native_stream_chat(
@@ -106,7 +112,7 @@ class PatternRuntime:
         from .pattern.final_answer_stream import FinalAnswerStreamSession
 
         stream = FinalAnswerStreamSession(self)
-        if await stream.start() is None:
+        if start_immediately and await stream.start() is None:
             return await self.run_llm_call(llm, **kwargs)
 
         async def emit_text_delta(chunk: Any) -> None:

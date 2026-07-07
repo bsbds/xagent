@@ -385,6 +385,15 @@ class ReActPattern(AgentPattern):
                     "tools": tool_schemas or None,
                     "tool_choice": self.tool_choice if tool_schemas else None,
                 }
+                start_final_answer_stream_immediately = True
+                if force_final_answer_now:
+                    parser_kwargs = self._forced_final_parser_kwargs(
+                        llm=llm,
+                        tool_schemas=base_tool_schemas,
+                    )
+                    if parser_kwargs:
+                        llm_kwargs.update(parser_kwargs)
+                        start_final_answer_stream_immediately = False
                 if tool_schemas:
                     answer_streamer = ReActFinalAnswerStreamer(runtime)
                     response = await runtime.run_streaming_llm_call(
@@ -393,7 +402,11 @@ class ReActPattern(AgentPattern):
                         **llm_kwargs,
                     )
                 else:
-                    response = await runtime.stream_final_answer(llm, **llm_kwargs)
+                    response = await runtime.stream_final_answer(
+                        llm,
+                        start_immediately=start_final_answer_stream_immediately,
+                        **llm_kwargs,
+                    )
             except LLMCallInterrupted:
                 if answer_streamer is not None:
                     await answer_streamer.fail("interrupted during LLM stream")
@@ -445,6 +458,8 @@ class ReActPattern(AgentPattern):
                 self._remember_tool_call_content(tool_calls, assistant_content)
                 self.status = "acting"
                 self.pending_tool_calls = list(tool_calls)
+                if force_final_answer_now:
+                    self.force_final_answer_next = False
                 await runtime.checkpoint("after_llm", context=context, pattern=self)
                 pending_result = await self._execute_pending_tool_calls(
                     context=context,
@@ -583,6 +598,22 @@ class ReActPattern(AgentPattern):
             if isinstance(function, dict) and function.get("name"):
                 names.append(str(function["name"]))
         return names
+
+    def _forced_final_parser_kwargs(
+        self,
+        *,
+        llm: Any,
+        tool_schemas: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Return provider-local parser kwargs for final turns that suppress tools."""
+
+        if not tool_schemas:
+            return {}
+        parse_kwargs = getattr(llm, "deepseek_dsml_parse_kwargs", None)
+        if not callable(parse_kwargs):
+            return {}
+        result = parse_kwargs(tool_schemas)
+        return result if isinstance(result, dict) else {}
 
     def _tool_decision_groups_for_tools(self, tools: list[Any]) -> dict[str, str]:
         groups: dict[str, str] = {}
