@@ -315,11 +315,11 @@ class DeepSeekLLM(OpenAICompatibleLLM):
         output_config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
-        dsml_parse_tools = self._pop_deepseek_dsml_parse_tools(kwargs)
-        if tools or dsml_parse_tools:
-            chat_kwargs = dict(kwargs)
-            if dsml_parse_tools:
-                chat_kwargs[DEEPSEEK_DSML_PARSE_TOOLS_KWARG] = dsml_parse_tools
+        # DSML markup can only be recovered from a complete response, so any
+        # call that may need recovery (provider tools or parse-only schemas
+        # from a forced-final turn) goes through non-streaming chat(), which
+        # owns popping the sentinel kwarg.
+        if tools or kwargs.get(DEEPSEEK_DSML_PARSE_TOOLS_KWARG):
             result = await self.chat(
                 messages=messages,
                 temperature=temperature,
@@ -329,12 +329,13 @@ class DeepSeekLLM(OpenAICompatibleLLM):
                 response_format=response_format,
                 thinking=thinking,
                 output_config=output_config,
-                **chat_kwargs,
+                **kwargs,
             )
             for chunk in stream_chunks_from_chat_result(result):
                 yield chunk
             return
 
+        kwargs.pop(DEEPSEEK_DSML_PARSE_TOOLS_KWARG, None)
         response_format, output_config = self._normalize_response_format(
             response_format=response_format,
             output_config=output_config,

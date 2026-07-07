@@ -61,21 +61,6 @@ def normalize_deepseek_dsml_response(
     current request.
     """
 
-    if isinstance(response, str):
-        if not contains_deepseek_dsml_tool_markup(response):
-            return response, False
-        parsed = parse_deepseek_dsml_tool_calls(
-            response,
-            tools=tools,
-            model_name=model_name,
-        )
-        return {
-            "type": "tool_call",
-            "content": parsed["content"] or None,
-            "tool_calls": parsed["tool_calls"],
-            "raw": response,
-        }, True
-
     if not isinstance(response, dict):
         return response, False
 
@@ -152,27 +137,15 @@ def parse_deepseek_dsml_tool_calls(
     return {"content": clean_content, "tool_calls": tool_calls}
 
 
-def stream_chunks_from_chat_result(response: Any) -> Iterable[StreamChunk]:
-    """Represent a non-streaming DeepSeek chat result as stream chunks."""
+def stream_chunks_from_chat_result(response: dict[str, Any]) -> Iterable[StreamChunk]:
+    """Represent a non-streaming DeepSeek chat result as stream chunks.
 
-    if isinstance(response, dict):
-        content = _response_content(response)
-        if response.get("tool_calls"):
-            if content:
-                yield StreamChunk(
-                    type=ChunkType.TOKEN,
-                    content=content,
-                    delta=content,
-                    raw=response,
-                )
-            yield StreamChunk(
-                type=ChunkType.TOOL_CALL,
-                tool_calls=list(response.get("tool_calls") or []),
-                finish_reason="tool_calls",
-                raw=response,
-            )
-            return
+    ``chat()`` results are always dicts produced by the OpenAI-compatible
+    response processing, so only the dict shape is handled here.
+    """
 
+    content = response.get("content")
+    if response.get("tool_calls"):
         if content:
             yield StreamChunk(
                 type=ChunkType.TOKEN,
@@ -180,10 +153,14 @@ def stream_chunks_from_chat_result(response: Any) -> Iterable[StreamChunk]:
                 delta=content,
                 raw=response,
             )
-        yield StreamChunk(type=ChunkType.END, finish_reason="stop", raw=response)
+        yield StreamChunk(
+            type=ChunkType.TOOL_CALL,
+            tool_calls=list(response.get("tool_calls") or []),
+            finish_reason="tool_calls",
+            raw=response,
+        )
         return
 
-    content = str(response)
     if content:
         yield StreamChunk(
             type=ChunkType.TOKEN,
@@ -298,11 +275,3 @@ def _available_tool_names(tools: list[dict[str, Any]]) -> set[str]:
         if isinstance(name, str) and name.strip():
             names.add(name.strip())
     return names
-
-
-def _response_content(response: dict[str, Any]) -> str:
-    for key in ("content", "answer", "output", "message"):
-        value = response.get(key)
-        if isinstance(value, str):
-            return value
-    return ""
