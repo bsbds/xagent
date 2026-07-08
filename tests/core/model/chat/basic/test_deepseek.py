@@ -932,25 +932,49 @@ class TestDeepSeekLLM:
         assert end_chunk.raw["reasoning_content"] == "Think first."
 
     @pytest.mark.asyncio
-    async def test_stream_chat_with_tools_uses_non_streaming_dsml_parser(
+    async def test_stream_chat_with_regular_tools_keeps_native_streaming(
         self, llm, mocker
     ):
-        message = SimpleNamespace(
-            content=_browser_extract_text_dsml(),
-            tool_calls=None,
-            reasoning_content=None,
-        )
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=message)],
-            usage=None,
-            model_dump=lambda: {"id": "deepseek-dsml"},
-        )
+        async def stream():
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            reasoning_content=None,
+                            content="Streaming with tools.",
+                            tool_calls=None,
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+                model_dump=lambda: {"id": "content"},
+            )
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            reasoning_content=None,
+                            content=None,
+                            tool_calls=None,
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+                model_dump=lambda: {"id": "end"},
+            )
 
         mock_client = mocker.AsyncMock()
-        mock_client.chat.completions.create.return_value = response
+        mock_client.chat.completions.create.return_value = stream()
         mocker.patch(
             "xagent.core.model.chat.basic.openai.AsyncOpenAI",
             return_value=mock_client,
+        )
+        mocker.patch.object(
+            llm,
+            "chat",
+            side_effect=AssertionError("regular tool streams must not buffer"),
         )
 
         chunks = [
@@ -961,11 +985,12 @@ class TestDeepSeekLLM:
             )
         ]
 
-        assert len(chunks) == 1
-        assert chunks[0].type == ChunkType.TOOL_CALL
-        assert chunks[0].tool_calls[0]["function"]["name"] == "browser_extract_text"
+        assert [chunk.delta for chunk in chunks if chunk.type == ChunkType.TOKEN] == [
+            "Streaming with tools."
+        ]
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
-        assert "stream" not in call_kwargs
+        assert call_kwargs["stream"] is True
+        assert call_kwargs["tools"][0]["function"]["name"] == "browser_extract_text"
 
     @pytest.mark.asyncio
     async def test_stream_chat_hidden_dsml_parse_tools_uses_non_streaming_parser(
