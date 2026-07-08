@@ -114,10 +114,11 @@ class PatternRuntime:
         stream = FinalAnswerStreamSession(self)
         if start_immediately and await stream.start() is None:
             return await self.run_llm_call(llm, **kwargs)
+        defer_text_delta = not start_immediately
 
         async def emit_text_delta(chunk: Any) -> None:
             delta = self._chunk_text_delta(chunk)
-            if delta:
+            if delta and not defer_text_delta:
                 await stream.emit_delta(delta)
 
         try:
@@ -128,6 +129,13 @@ class PatternRuntime:
             await stream.fail(str(exc))
             raise
         content = self._response_content(response)
+
+        if self._response_tool_calls(response):
+            if stream.started:
+                await stream.fail(
+                    "Final-answer stream stopped because the response contained tool calls."
+                )
+            return response
 
         await stream.finish(content)
         return response
@@ -378,6 +386,12 @@ class PatternRuntime:
             )
             return str(value)
         return str(response)
+
+    def _response_tool_calls(self, response: Any) -> list[Any]:
+        if not isinstance(response, dict):
+            return []
+        tool_calls = response.get("tool_calls")
+        return list(tool_calls) if tool_calls else []
 
     async def _emit_outbound(self, payload: dict[str, Any]) -> None:
         if self.outbound_message_handler is not None:

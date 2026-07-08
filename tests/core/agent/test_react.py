@@ -274,7 +274,8 @@ class StreamingFinalAnswerLLM:
 class StreamingDeepSeekForcedFinalToolLLM:
     """DeepSeek-like fake that can recover a tool call during a forced-final turn."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, forced_final_preamble: str | None = None) -> None:
+        self.forced_final_preamble = forced_final_preamble
         self.stream_calls: list[dict[str, Any]] = []
         self.parser_tool_batches: list[list[dict[str, Any]]] = []
 
@@ -309,6 +310,11 @@ class StreamingDeepSeekForcedFinalToolLLM:
             return
 
         if call_number == 2 and kwargs.get(DEEPSEEK_DSML_PARSE_TOOLS_KWARG):
+            if self.forced_final_preamble:
+                yield StreamChunk(
+                    type=ChunkType.TOKEN,
+                    delta=self.forced_final_preamble,
+                )
             yield StreamChunk(
                 type=ChunkType.TOOL_CALL,
                 tool_calls=[
@@ -796,6 +802,37 @@ async def test_react_pattern_converts_deepseek_forced_final_dsml_tool_call() -> 
         "final_answer_end",
     ]
     assert outbound.events[1]["delta"] == "The final result is 6."
+
+
+@pytest.mark.asyncio
+async def test_react_pattern_does_not_finish_forced_final_preamble_before_tool_call() -> (
+    None
+):
+    llm = StreamingDeepSeekForcedFinalToolLLM(
+        forced_final_preamble="I need one more calculation."
+    )
+    pattern = ReActPattern(max_iterations=4, finalize_after_tool_result=True)
+    tool = FakeTool()
+    context = ExecutionContext(system_prompt="You are helpful.", execution_id="task-1")
+    context.add_user_message("Calculate 2+2 and then 3+3")
+    outbound = OutboundCollector()
+    runtime = PatternRuntime(execution_id="task-1", outbound_message_handler=outbound)
+
+    result = await pattern.run(context=context, tools=[tool], llm=llm, runtime=runtime)
+
+    assert result["success"] is True
+    assert result["response"] == "The final result is 6."
+    assert tool.calls == [{"expression": "2+2"}, {"expression": "3+3"}]
+    assert [event["type"] for event in outbound.events] == [
+        "final_answer_start",
+        "final_answer_delta",
+        "final_answer_end",
+    ]
+    assert [event.get("delta") for event in outbound.events] == [
+        None,
+        "The final result is 6.",
+        None,
+    ]
 
 
 @pytest.mark.asyncio
