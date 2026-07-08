@@ -69,14 +69,11 @@ def normalize_deepseek_dsml_response(
         return response, False
 
     if response.get("tool_calls"):
+        clean_content, stripped = _strip_complete_dsml_tool_call_blocks(content)
+        if not stripped:
+            return response, False
         normalized = dict(response)
-        normalized["content"] = (
-            _strip_dsml_tool_call_blocks(
-                content,
-                model_name=model_name,
-            )
-            or None
-        )
+        normalized["content"] = clean_content or None
         return normalized, True
 
     parsed = parse_deepseek_dsml_tool_calls(
@@ -183,6 +180,12 @@ def _extract_dsml_tool_call_blocks(
 def _strip_dsml_tool_call_blocks(text: str, *, model_name: str) -> str:
     _, clean_content = _extract_dsml_tool_call_blocks(text, model_name=model_name)
     return clean_content
+
+
+def _strip_complete_dsml_tool_call_blocks(text: str) -> tuple[str, bool]:
+    if _DSML_TOOL_CALLS_BLOCK_RE.search(text) is None:
+        return text, False
+    return _DSML_TOOL_CALLS_BLOCK_RE.sub("", text).strip(), True
 
 
 def _parse_dsml_invokes(
