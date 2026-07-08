@@ -113,6 +113,46 @@ def test_normalize_deepseek_dsml_response_strips_markup_from_visible_content():
     assert normalized["raw"] == {"id": "deepseek-text"}
 
 
+def test_parse_deepseek_dsml_tool_calls_preserves_surrounding_prose():
+    parsed = parse_deepseek_dsml_tool_calls(
+        f"I will inspect the page first.{_dsml_block('｜｜DSML｜｜')}Then summarize it.",
+        tools=_tools("get_weather"),
+        model_name="deepseek-v4-flash",
+    )
+
+    assert parsed["content"] == "I will inspect the page first.Then summarize it."
+    assert parsed["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def test_normalize_deepseek_dsml_response_strips_markup_when_tool_calls_exist():
+    official_tool_calls = [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "arguments": '{"location":"Boston"}',
+            },
+        }
+    ]
+    response = {
+        "type": "tool_call",
+        "content": f"Let me check.\n\n{_dsml_block('｜｜DSML｜｜')}",
+        "tool_calls": official_tool_calls,
+    }
+
+    normalized, changed = normalize_deepseek_dsml_response(
+        response,
+        tools=_tools("get_weather"),
+        model_name="deepseek-v4-flash",
+    )
+
+    assert changed is True
+    assert normalized["tool_calls"] is official_tool_calls
+    assert normalized["content"] == "Let me check."
+    assert "DSML" not in normalized["content"]
+
+
 def test_parse_deepseek_dsml_tool_calls_falls_back_to_string_for_invalid_json_value():
     token = "｜DSML｜"
     text = f"""

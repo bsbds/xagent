@@ -64,12 +64,20 @@ def normalize_deepseek_dsml_response(
     if not isinstance(response, dict):
         return response, False
 
-    if response.get("tool_calls"):
-        return response, False
-
     content = response.get("content")
     if not isinstance(content, str) or not contains_deepseek_dsml_tool_markup(content):
         return response, False
+
+    if response.get("tool_calls"):
+        normalized = dict(response)
+        normalized["content"] = (
+            _strip_dsml_tool_call_blocks(
+                content,
+                model_name=model_name,
+            )
+            or None
+        )
+        return normalized, True
 
     parsed = parse_deepseek_dsml_tool_calls(
         content,
@@ -102,18 +110,13 @@ def parse_deepseek_dsml_tool_calls(
             f"{model_name} returned DSML tool markup, but no callable tool schemas were supplied."
         )
 
-    matches = list(_DSML_TOOL_CALLS_BLOCK_RE.finditer(text))
-    if not matches:
-        raise DeepSeekDSMLParseError(
-            f"{model_name} returned incomplete DeepSeek DSML tool markup."
-        )
+    matches, clean_content = _extract_dsml_tool_call_blocks(
+        text,
+        model_name=model_name,
+    )
 
-    clean_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
-    last_index = 0
-
     for match in matches:
-        clean_parts.append(text[last_index : match.start()])
         tool_calls.extend(
             _parse_dsml_invokes(
                 match.group(1),
@@ -121,14 +124,7 @@ def parse_deepseek_dsml_tool_calls(
                 model_name=model_name,
             )
         )
-        last_index = match.end()
 
-    clean_parts.append(text[last_index:])
-    clean_content = "".join(clean_parts).strip()
-    if contains_deepseek_dsml_tool_markup(clean_content):
-        raise DeepSeekDSMLParseError(
-            f"{model_name} returned unparsed DeepSeek DSML tool markup."
-        )
     if not tool_calls:
         raise DeepSeekDSMLParseError(
             f"{model_name} returned DSML tool markup without any valid invoke blocks."
@@ -145,14 +141,15 @@ def stream_chunks_from_chat_result(response: dict[str, Any]) -> Iterable[StreamC
     """
 
     content = response.get("content")
+    if content:
+        yield StreamChunk(
+            type=ChunkType.TOKEN,
+            content=content,
+            delta=content,
+            raw=response,
+        )
+
     if response.get("tool_calls"):
-        if content:
-            yield StreamChunk(
-                type=ChunkType.TOKEN,
-                content=content,
-                delta=content,
-                raw=response,
-            )
         yield StreamChunk(
             type=ChunkType.TOOL_CALL,
             tool_calls=list(response.get("tool_calls") or []),
@@ -161,14 +158,31 @@ def stream_chunks_from_chat_result(response: dict[str, Any]) -> Iterable[StreamC
         )
         return
 
-    if content:
-        yield StreamChunk(
-            type=ChunkType.TOKEN,
-            content=content,
-            delta=content,
-            raw=response,
-        )
     yield StreamChunk(type=ChunkType.END, finish_reason="stop", raw=response)
+
+
+def _extract_dsml_tool_call_blocks(
+    text: str,
+    *,
+    model_name: str,
+) -> tuple[list[re.Match[str]], str]:
+    matches = list(_DSML_TOOL_CALLS_BLOCK_RE.finditer(text))
+    if not matches:
+        raise DeepSeekDSMLParseError(
+            f"{model_name} returned incomplete DeepSeek DSML tool markup."
+        )
+
+    clean_content = _DSML_TOOL_CALLS_BLOCK_RE.sub("", text).strip()
+    if contains_deepseek_dsml_tool_markup(clean_content):
+        raise DeepSeekDSMLParseError(
+            f"{model_name} returned unparsed DeepSeek DSML tool markup."
+        )
+    return matches, clean_content
+
+
+def _strip_dsml_tool_call_blocks(text: str, *, model_name: str) -> str:
+    _, clean_content = _extract_dsml_tool_call_blocks(text, model_name=model_name)
+    return clean_content
 
 
 def _parse_dsml_invokes(
