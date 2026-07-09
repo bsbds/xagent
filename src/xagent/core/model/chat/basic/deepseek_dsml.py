@@ -69,7 +69,7 @@ def normalize_deepseek_dsml_response(
         return response, False
 
     if response.get("tool_calls"):
-        clean_content, stripped = _strip_complete_dsml_tool_call_blocks(content)
+        clean_content, stripped = _strip_dsml_markup_for_official_tool_calls(content)
         if not stripped:
             return response, False
         normalized = dict(response)
@@ -177,15 +177,15 @@ def _extract_dsml_tool_call_blocks(
     return matches, clean_content
 
 
-def _strip_dsml_tool_call_blocks(text: str, *, model_name: str) -> str:
-    _, clean_content = _extract_dsml_tool_call_blocks(text, model_name=model_name)
-    return clean_content
+def _strip_dsml_markup_for_official_tool_calls(text: str) -> tuple[str, bool]:
+    """Best-effort content cleanup when provider tool_calls are authoritative."""
 
-
-def _strip_complete_dsml_tool_call_blocks(text: str) -> tuple[str, bool]:
-    if _DSML_TOOL_CALLS_BLOCK_RE.search(text) is None:
-        return text, False
-    return _DSML_TOOL_CALLS_BLOCK_RE.sub("", text).strip(), True
+    stripped = _DSML_TOOL_CALLS_BLOCK_RE.search(text) is not None
+    clean_content = _DSML_TOOL_CALLS_BLOCK_RE.sub("", text).strip()
+    residual_marker = _DSML_MARKER_RE.search(clean_content)
+    if residual_marker is None:
+        return clean_content, stripped
+    return clean_content[: residual_marker.start()].strip(), True
 
 
 def _parse_dsml_invokes(
