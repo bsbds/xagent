@@ -213,6 +213,50 @@ def test_normalize_deepseek_dsml_response_strips_mixed_complete_and_partial_mark
     assert "DSML" not in normalized["content"]
 
 
+def test_normalize_deepseek_dsml_response_strips_partial_markup_without_tool_calls():
+    response = {
+        "type": "text",
+        "content": "Let me check.\n<｜｜DSML｜｜tool_calls>",
+    }
+
+    normalized, changed = normalize_deepseek_dsml_response(
+        response,
+        tools=_tools("get_weather"),
+        model_name="deepseek-v4-flash",
+    )
+
+    assert changed is True
+    assert normalized["type"] == "text"
+    assert normalized["content"] == "Let me check."
+    assert "DSML" not in normalized["content"]
+    assert "tool_calls" not in normalized
+
+
+def test_normalize_deepseek_dsml_response_recovers_complete_block_before_partial_markup():
+    response = {
+        "type": "text",
+        "content": (
+            f"Let me check.\n\n{_dsml_block('｜｜DSML｜｜')}\n<｜｜DSML｜｜tool_calls>"
+        ),
+    }
+
+    normalized, changed = normalize_deepseek_dsml_response(
+        response,
+        tools=_tools("get_weather"),
+        model_name="deepseek-v4-flash",
+    )
+
+    assert changed is True
+    assert normalized["type"] == "tool_call"
+    assert normalized["content"] == "Let me check."
+    assert "DSML" not in normalized["content"]
+    assert json.loads(normalized["tool_calls"][0]["function"]["arguments"]) == {
+        "location": "Boston",
+        "limit": 5,
+        "options": {"fresh": True},
+    }
+
+
 def test_parse_deepseek_dsml_tool_calls_falls_back_to_string_for_invalid_json_value():
     token = "｜DSML｜"
     text = f"""
