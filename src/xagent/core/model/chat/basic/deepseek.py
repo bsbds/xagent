@@ -315,8 +315,10 @@ class DeepSeekLLM(OpenAICompatibleLLM):
         output_config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
-        # DSML recovery needs a complete response, but that only applies to the
-        # parse-only forced-final path that opts in with the private sentinel.
+        # DSML recovery needs a complete response. Keep ordinary tool-enabled
+        # streams native; only forced-final turns opt into buffering with the
+        # private sentinel because those calls intentionally suppress provider
+        # tools while still needing local DSML validation.
         if DEEPSEEK_DSML_PARSE_TOOLS_KWARG in kwargs:
             result = await self.chat(
                 messages=messages,
