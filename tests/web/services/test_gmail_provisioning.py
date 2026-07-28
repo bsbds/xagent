@@ -6,10 +6,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from xagent.web.models.agent import Agent, AgentStatus
-from xagent.web.models.database import Base, get_db, get_engine, init_db
+from xagent.web.models.database import (
+    Base,
+    get_db,
+    get_engine,
+    get_session_local,
+    init_db,
+)
 from xagent.web.models.gmail_watch import GmailWatchState
 from xagent.web.models.trigger import (
     AgentTrigger,
@@ -22,6 +29,7 @@ from xagent.web.services.gmail_provisioning import (
     ensure_gmail_mailbox_provisioned,
     gmail_subscription_path,
     gmail_topic_path,
+    reconcile_gmail_push_endpoints,
     reconcile_gmail_trigger_provisioning,
     release_gmail_mailbox_if_unused,
     sweep_gmail_provisioning,
@@ -135,7 +143,7 @@ def gmail_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XAGENT_GMAIL_PUBSUB_TOPIC_PREFIX", "xagent-gmail")
     monkeypatch.setenv("XAGENT_GMAIL_PUBSUB_SUBSCRIPTION_PREFIX", "xagent-gmail-push")
     monkeypatch.setenv("XAGENT_PUBLIC_API_BASE_URL", "https://api.example.com/")
-    monkeypatch.delenv("XAGENT_TRIGGER_CALLBACK_BASE_URL", raising=False)
+    monkeypatch.delenv("XAGENT_S2S_API_BASE_URL", raising=False)
     monkeypatch.setenv(
         "XAGENT_GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT",
         "pubsub-push@demo-project.iam.gserviceaccount.com",
@@ -252,12 +260,10 @@ def test_provisioning_creates_deterministic_resources_and_active_state(
     ]
 
 
-def test_dedicated_trigger_callback_base_url_overrides_public_api_base(
+def test_s2s_base_url_overrides_public_api_base(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(
-        "XAGENT_TRIGGER_CALLBACK_BASE_URL", "https://callbacks.example.com/"
-    )
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://callbacks.example.com/")
     user = _create_user(db_session)
     account = _create_oauth(db_session, user)
     subscriber = FakeSubscriber()
@@ -297,7 +303,7 @@ def test_missing_callback_base_urls_record_failed_state_without_app_base_fallbac
     )
 
     assert state.status == TriggerProvisioningStatus.FAILED.value
-    assert "XAGENT_TRIGGER_CALLBACK_BASE_URL" in str(state.last_error)
+    assert "XAGENT_S2S_API_BASE_URL" in str(state.last_error)
     assert "XAGENT_PUBLIC_API_BASE_URL" in str(state.last_error)
     assert state.push_audience is None
 
@@ -736,6 +742,377 @@ def test_existing_subscription_endpoint_resyncs_after_base_url_change(
     assert stored["push_config"]["oidc_token"]["audience"] == new_audience
 
 
+def test_existing_subscription_resyncs_a_stale_oidc_audience(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    subscriber = ResyncFakeSubscriber()
+
+    first = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    subscription = subscriber.subscriptions[str(first.subscription_name)]
+    subscription["push_config"]["oidc_token"]["audience"] = (
+        "https://stale.example.com/callback"
+    )
+
+    second = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert second.status == TriggerProvisioningStatus.ACTIVE.value
+    assert len(subscriber.modify_calls) == 1
+    assert subscription["push_config"]["oidc_token"]["audience"] == second.push_audience
+
+
+def test_existing_subscription_inspection_failure_reapplies_push_config(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    subscriber = ResyncFakeSubscriber()
+    first = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    old_audience = str(first.push_audience)
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    def fail_inspection(*, request: dict[str, str]) -> Any:
+        raise RuntimeError(f"cannot inspect {request['subscription']}")
+
+    monkeypatch.setattr(subscriber, "get_subscription", fail_inspection)
+
+    second = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+
+    expected_audience = (
+        "https://sg-origin.cloud.xagent.co/api/triggers/callback/gmail/"
+        f"{second.callback_id}"
+    )
+    assert second.status == TriggerProvisioningStatus.ACTIVE.value
+    assert second.push_audience == expected_audience
+    assert second.push_audience != old_audience
+    assert second.last_error is None
+    assert len(subscriber.modify_calls) == 1
+
+
+def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Endpoint migration must preserve Gmail's existing history cursor."""
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    publisher = FakePublisher()
+    subscriber = ResyncFakeSubscriber()
+    gmail = FakeGmailService(history_id="cursor-before-migration")
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: gmail,
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    preserved = {
+        "callback_id": state.callback_id,
+        "history_id": state.history_id,
+        "watch_expiration": state.watch_expiration,
+        "status": state.status,
+    }
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co/")
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    db_session.refresh(state)
+    expected_audience = (
+        "https://sg-origin.cloud.xagent.co/api/triggers/callback/gmail/"
+        f"{state.callback_id}"
+    )
+    assert result.scanned == 1
+    assert result.changed == 1
+    assert result.unchanged == 0
+    assert result.failed == 0
+    assert state.push_audience == expected_audience
+    assert {
+        "callback_id": state.callback_id,
+        "history_id": state.history_id,
+        "watch_expiration": state.watch_expiration,
+        "status": state.status,
+    } == preserved
+    assert gmail.watch_calls == [
+        {
+            "userId": "me",
+            "body": {
+                "topicName": str(state.topic_name),
+                "labelIds": ["INBOX"],
+            },
+        }
+    ]
+    assert subscriber.modify_calls == [
+        {
+            "subscription": str(state.subscription_name),
+            "push_config": {
+                "push_endpoint": expected_audience,
+                "oidc_token": {
+                    "service_account_email": (
+                        "pubsub-push@demo-project.iam.gserviceaccount.com"
+                    ),
+                    "audience": expected_audience,
+                },
+            },
+        }
+    ]
+
+    second = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+    assert second.scanned == 1
+    assert second.changed == 0
+    assert second.unchanged == 1
+    assert second.failed == 0
+    assert len(subscriber.modify_calls) == 1
+
+
+def test_reconcile_audit_detects_cloud_drift_when_database_is_current(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    expected_audience = (
+        "https://sg-origin.cloud.xagent.co/api/triggers/callback/gmail/"
+        f"{state.callback_id}"
+    )
+    setattr(state, "push_audience", expected_audience)
+    db_session.commit()
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.scanned == 1
+    assert result.changed == 1
+    assert result.unchanged == 0
+    assert result.failed == 0
+    assert subscriber.modify_calls == []
+
+
+def test_reconcile_execute_repairs_cloud_drift_when_database_is_current(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    expected_audience = (
+        "https://sg-origin.cloud.xagent.co/api/triggers/callback/gmail/"
+        f"{state.callback_id}"
+    )
+    setattr(state, "push_audience", expected_audience)
+    db_session.commit()
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    stored = subscriber.subscriptions[str(state.subscription_name)]
+    assert result.scanned == 1
+    assert result.changed == 1
+    assert result.unchanged == 0
+    assert result.failed == 0
+    assert stored["push_config"]["push_endpoint"] == expected_audience
+    assert stored["push_config"]["oidc_token"]["audience"] == expected_audience
+
+
+def test_reconcile_push_endpoint_dry_run_does_not_change_cloud_or_database(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    old_audience = str(state.push_audience)
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=False,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    db_session.refresh(state)
+    assert result.scanned == 1
+    assert result.changed == 1
+    assert result.failed == 0
+    assert state.push_audience == old_audience
+    assert subscriber.modify_calls == []
+
+
+def test_reconcile_queries_enabled_gmail_triggers_once(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reconciliation must not issue one trigger lookup per active mailbox."""
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    subscriber = ResyncFakeSubscriber()
+    for email in ("first@gmail.example", "second@gmail.example"):
+        account = _create_oauth(db_session, user, email=email)
+        _create_gmail_trigger(db_session, user, agent, account)
+        ensure_gmail_mailbox_provisioned(
+            db_session,
+            account,
+            service_factory=lambda _db, _account: FakeGmailService(),
+            publisher_factory=lambda: FakePublisher(),
+            subscriber_factory=lambda: subscriber,
+        )
+
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    trigger_selects: list[str] = []
+    watch_selects: list[str] = []
+    engine = get_engine()
+
+    def capture_trigger_select(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if "FROM agent_triggers" in statement:
+            trigger_selects.append(statement)
+        if "FROM gmail_watch_states" in statement and "SELECT" in statement:
+            watch_selects.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_trigger_select)
+    try:
+        result = reconcile_gmail_push_endpoints(
+            db_session,
+            subscriber_factory=lambda: subscriber,
+            batch_size=1,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_trigger_select)
+
+    assert result.scanned == 2
+    assert result.changed == 2
+    assert len(trigger_selects) == 1
+    assert len(watch_selects) == 3
+    assert all("LIMIT" in statement for statement in watch_selects)
+
+
+def test_reconcile_continues_when_a_snapshotted_watch_is_deleted(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+
+    class ConcurrentDeleteSubscriber(ResyncFakeSubscriber):
+        delete_watch_id: int | None = None
+        deleted = False
+
+        def modify_push_config(self, *, request: dict[str, Any]) -> None:
+            super().modify_push_config(request=request)
+            if self.deleted or self.delete_watch_id is None:
+                return
+            self.deleted = True
+            with get_session_local()() as concurrent_db:
+                concurrent_db.query(GmailWatchState).filter(
+                    GmailWatchState.id == self.delete_watch_id
+                ).delete(synchronize_session=False)
+                concurrent_db.commit()
+
+    subscriber = ConcurrentDeleteSubscriber()
+    states: list[GmailWatchState] = []
+    for email in ("first@gmail.example", "second@gmail.example"):
+        account = _create_oauth(db_session, user, email=email)
+        _create_gmail_trigger(db_session, user, agent, account)
+        states.append(
+            ensure_gmail_mailbox_provisioned(
+                db_session,
+                account,
+                service_factory=lambda _db, _account: FakeGmailService(),
+                publisher_factory=lambda: FakePublisher(),
+                subscriber_factory=lambda: subscriber,
+            )
+        )
+
+    second_watch_id = int(states[1].id)
+    subscriber.delete_watch_id = second_watch_id
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.scanned == 2
+    assert result.changed == 1
+    assert result.failed == 0
+    assert (
+        db_session.query(GmailWatchState)
+        .filter(GmailWatchState.id == second_watch_id)
+        .first()
+        is None
+    )
+
+
 def test_existing_subscription_resyncs_after_service_account_change(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -833,7 +1210,7 @@ def test_inspect_failure_falls_through_to_unconditional_resync(
     # subscription fails. Inspection is only an optimization, so provisioning
     # degrades to an unconditional (idempotent) modify_push_config rather than
     # aborting: the watch still converges to ACTIVE with the new audience.
-    monkeypatch.setenv("XAGENT_PUBLIC_API_BASE_URL", "https://api-v2.example.com")
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://api-v2.example.com")
     second = ensure_gmail_mailbox_provisioned(
         db_session,
         account,
@@ -875,7 +1252,7 @@ def test_patch_failure_marks_failed_not_active(
     # inspection failure, this must propagate so the watch lands FAILED rather
     # than recording the new audience as ACTIVE against a subscription that was
     # never updated.
-    monkeypatch.setenv("XAGENT_PUBLIC_API_BASE_URL", "https://api-v2.example.com")
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://api-v2.example.com")
     second = ensure_gmail_mailbox_provisioned(
         db_session,
         account,

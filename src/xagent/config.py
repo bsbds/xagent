@@ -125,7 +125,7 @@ GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT = "XAGENT_GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT"
 GMAIL_PUBSUB_TRANSPORT = "XAGENT_GMAIL_PUBSUB_TRANSPORT"
 GMAIL_REGISTRATION_TIMEOUT_SECONDS = "XAGENT_GMAIL_REGISTRATION_TIMEOUT_SECONDS"
 PUBLIC_API_BASE_URL = "XAGENT_PUBLIC_API_BASE_URL"
-TRIGGER_CALLBACK_BASE_URL = "XAGENT_TRIGGER_CALLBACK_BASE_URL"
+S2S_API_BASE_URL = "XAGENT_S2S_API_BASE_URL"
 GMAIL_WATCH_ENABLED = "XAGENT_GMAIL_WATCH_ENABLED"
 GMAIL_WATCH_RENEWAL_INTERVAL_SECONDS = "XAGENT_GMAIL_WATCH_RENEWAL_INTERVAL_SECONDS"
 GMAIL_WATCH_RENEWAL_LEAD_SECONDS = "XAGENT_GMAIL_WATCH_RENEWAL_LEAD_SECONDS"
@@ -893,31 +893,30 @@ def get_public_api_base_url() -> str | None:
         2. None (consumers apply their own compatibility or validation policy)
 
     Deliberately separate from XAGENT_APP_BASE_URL (the frontend URL used in
-    e.g. password-reset emails): externally advertised API and provider callback
-    URLs should normally use the public backend origin. Inbound trigger
-    callbacks can override this via XAGENT_TRIGGER_CALLBACK_BASE_URL
-    (see get_trigger_callback_base_url).
+    e.g. password-reset emails): externally advertised browser and MCP API URLs
+    should normally use the public backend origin. Server-to-server consumers
+    can override this via XAGENT_S2S_API_BASE_URL (see
+    get_s2s_api_base_url).
     """
     value = (os.getenv(PUBLIC_API_BASE_URL) or "").strip()
     return value.rstrip("/") or None
 
 
-def get_trigger_callback_base_url() -> str | None:
-    """Base URL for inbound trigger callbacks (Gmail Pub/Sub push, webhooks).
+def get_s2s_api_base_url() -> str | None:
+    """Backend base URL advertised to server-to-server integrations.
 
     Priority:
-        1. XAGENT_TRIGGER_CALLBACK_BASE_URL environment variable
-        2. get_public_api_base_url() (backward compatible fallback)
+        1. XAGENT_S2S_API_BASE_URL environment variable
+        2. XAGENT_PUBLIC_API_BASE_URL for backward-compatible deployments
+        3. None
 
-    Only used when building inbound trigger callback endpoints; MCP and A2A
-    keep using XAGENT_PUBLIC_API_BASE_URL. Set this when server-to-server
-    callbacks must reach a different host than the advertised public API
-    origin (e.g. a dedicated ingress).
+    The separate value lets deployments send provider callbacks and A2A
+    traffic directly to a regional backend while browser and MCP traffic keep
+    using the canonical public API. Trailing slashes are removed so consumers
+    can append absolute API paths without producing duplicate separators.
     """
-    cleaned = (os.getenv(TRIGGER_CALLBACK_BASE_URL) or "").strip().rstrip("/")
-    if cleaned:
-        return cleaned
-    return get_public_api_base_url()
+    value = (os.getenv(S2S_API_BASE_URL) or "").strip()
+    return value.rstrip("/") or get_public_api_base_url()
 
 
 def get_gmail_watch_enabled() -> bool:

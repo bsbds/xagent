@@ -45,14 +45,14 @@ POSTGRES_PASSWORD="xagent_password"
 Optional Gmail incoming-email trigger provisioning:
 
 ```bash
-# Backend public API base URL. Pub/Sub push endpoints and OIDC audience use
-# XAGENT_TRIGGER_CALLBACK_BASE_URL when set, and fall back to this value
-# otherwise. Do not use the frontend APP_BASE_URL here.
+# Canonical public backend URL used by browser-facing API and MCP OAuth flows.
+# This is not the frontend XAGENT_APP_BASE_URL.
 XAGENT_PUBLIC_API_BASE_URL="https://api.example.com"
 
-# Optional: dedicated host for inbound trigger callbacks (Gmail Pub/Sub push).
-# Falls back to XAGENT_PUBLIC_API_BASE_URL when unset. MCP and A2A are unaffected.
-XAGENT_TRIGGER_CALLBACK_BASE_URL="https://callbacks.example.com"
+# Optional server-to-server backend URL advertised to Gmail Pub/Sub and A2A
+# clients. Regional deployments should use their direct regional origin.
+# When unset, this falls back to XAGENT_PUBLIC_API_BASE_URL.
+XAGENT_S2S_API_BASE_URL="https://region-origin.example.com"
 
 # Google Cloud project and deterministic per-mailbox resource prefixes.
 XAGENT_GMAIL_PUBSUB_PROJECT_ID="your-gcp-project"
@@ -74,6 +74,36 @@ degrades to re-applying it when that read is unavailable. Allow
 `gmail-api-push@system.gserviceaccount.com` to publish to each per-mailbox
 topic. Xagent grants the Gmail publisher IAM binding during provisioning when
 the credentials have permission to update topic IAM policy.
+
+When introducing or changing `XAGENT_S2S_API_BASE_URL`, deploy and verify its
+direct-origin ingress before changing the backend environment. Existing Gmail
+subscriptions persist their push endpoint and OIDC audience in Pub/Sub, so
+reconcile them after the backend deployment:
+
+```bash
+# Read-only audit: inspects the existing database and Pub/Sub configuration
+# without running database initialization or changing either system.
+python -m xagent.web.reconcile_gmail_push_endpoints
+
+# Apply each reported Pub/Sub and stored-audience change independently.
+# Execute mode performs the normal database initialization before reconciling.
+python -m xagent.web.reconcile_gmail_push_endpoints --execute
+
+# Verify convergence. A successful rerun reports changed=0 and failed=0.
+python -m xagent.web.reconcile_gmail_push_endpoints
+```
+
+Run these commands in the backend container or an equivalent environment with
+the production database configuration, Google credentials, and Gmail
+environment variables. The command emits a JSON summary and exits nonzero when
+any watch fails. It preserves each Gmail callback identifier, history cursor,
+watch expiration, and existing `users.watch` registration.
+
+To roll back the callback URL, restore the previous
+`XAGENT_S2S_API_BASE_URL` (or unset it to use
+`XAGENT_PUBLIC_API_BASE_URL`), redeploy the backend, and run the same audit and
+`--execute` sequence. Keep both origins routable until the final audit reports
+no failed or changed watches.
 
 ### 2. Start Services
 
