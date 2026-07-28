@@ -338,6 +338,16 @@ def _get_bool_env(env_var: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _normalized_env_url(env_var: str) -> str | None:
+    """Return the env var's value normalized as a base URL.
+
+    Strips surrounding whitespace and trailing slashes; unset or blank
+    values normalize to None.
+    """
+    value = (os.getenv(env_var) or "").strip()
+    return value.rstrip("/") or None
+
+
 def get_password_reset_expire_minutes() -> int:
     """Return the password reset token expiry window in minutes."""
     return _get_positive_int_env(PASSWORD_RESET_EXPIRE_MINUTES, 30)
@@ -345,11 +355,7 @@ def get_password_reset_expire_minutes() -> int:
 
 def get_app_base_url() -> str | None:
     """Return the trusted frontend base URL used in email links."""
-    value = os.getenv(APP_BASE_URL)
-    if value is None:
-        return None
-    value = value.strip()
-    return value.rstrip("/") or None
+    return _normalized_env_url(APP_BASE_URL)
 
 
 def get_smtp_host() -> str:
@@ -898,8 +904,7 @@ def get_public_api_base_url() -> str | None:
     can override this via XAGENT_S2S_API_BASE_URL (see
     get_s2s_api_base_url).
     """
-    value = (os.getenv(PUBLIC_API_BASE_URL) or "").strip()
-    return value.rstrip("/") or None
+    return _normalized_env_url(PUBLIC_API_BASE_URL)
 
 
 def get_s2s_api_base_url() -> str | None:
@@ -915,8 +920,10 @@ def get_s2s_api_base_url() -> str | None:
     using the canonical public API. Trailing slashes are removed so consumers
     can append absolute API paths without producing duplicate separators.
     """
-    value = (os.getenv(S2S_API_BASE_URL) or "").strip()
-    return value.rstrip("/") or get_public_api_base_url()
+    cleaned = _normalized_env_url(S2S_API_BASE_URL)
+    if cleaned is not None:
+        return cleaned
+    return get_public_api_base_url()
 
 
 def get_gmail_watch_enabled() -> bool:
