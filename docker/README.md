@@ -54,6 +54,10 @@ XAGENT_PUBLIC_API_BASE_URL="https://api.example.com"
 # When unset, this falls back to XAGENT_PUBLIC_API_BASE_URL.
 XAGENT_S2S_API_BASE_URL="https://region-origin.example.com"
 
+# Deprecated Gmail-only fallback used only when XAGENT_S2S_API_BASE_URL is
+# unset. A2A never advertises this legacy URL.
+XAGENT_TRIGGER_CALLBACK_BASE_URL="https://legacy-callback.example.com"
+
 # Google Cloud project and deterministic per-mailbox resource prefixes.
 XAGENT_GMAIL_PUBSUB_PROJECT_ID="your-gcp-project"
 XAGENT_GMAIL_PUBSUB_TOPIC_PREFIX="xagent-gmail"
@@ -101,9 +105,10 @@ watch expiration, and existing `users.watch` registration.
 
 To roll back the callback URL, restore the previous
 `XAGENT_S2S_API_BASE_URL` (or unset it to use
-`XAGENT_PUBLIC_API_BASE_URL`), redeploy the backend, and run the same audit and
-`--execute` sequence. Keep both origins routable until the final audit reports
-no failed or changed watches.
+the deprecated `XAGENT_TRIGGER_CALLBACK_BASE_URL`, then
+`XAGENT_PUBLIC_API_BASE_URL`), redeploy the backend, and run the same audit
+and `--execute` sequence. Keep both origins routable until the final audit
+reports no failed or changed watches.
 
 ### 2. Start Services
 

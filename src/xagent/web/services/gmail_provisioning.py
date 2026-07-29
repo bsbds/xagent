@@ -26,13 +26,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...config import (
+    get_gmail_callback_base_url,
     get_gmail_pubsub_project_id,
     get_gmail_pubsub_push_service_account,
     get_gmail_pubsub_subscription_prefix,
     get_gmail_pubsub_topic_prefix,
     get_gmail_pubsub_transport,
     get_gmail_registration_timeout_seconds,
-    get_s2s_api_base_url,
 )
 from ..models.gmail_watch import GmailWatchState
 from ..models.trigger import (
@@ -145,11 +145,11 @@ def _validate_provisioning_config() -> tuple[str, str, str]:
         raise GmailProvisioningError(
             "XAGENT_GMAIL_PUBSUB_PROJECT_ID is required for Gmail provisioning"
         )
-    base_url = get_s2s_api_base_url()
+    base_url = get_gmail_callback_base_url()
     if not base_url:
         raise GmailProvisioningError(
-            "XAGENT_S2S_API_BASE_URL or XAGENT_PUBLIC_API_BASE_URL is required "
-            "for Gmail push registration"
+            "XAGENT_S2S_API_BASE_URL, XAGENT_TRIGGER_CALLBACK_BASE_URL, or "
+            "XAGENT_PUBLIC_API_BASE_URL is required for Gmail push registration"
         )
     push_service_account = get_gmail_pubsub_push_service_account()
     if not push_service_account:

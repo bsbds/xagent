@@ -126,6 +126,7 @@ GMAIL_PUBSUB_TRANSPORT = "XAGENT_GMAIL_PUBSUB_TRANSPORT"
 GMAIL_REGISTRATION_TIMEOUT_SECONDS = "XAGENT_GMAIL_REGISTRATION_TIMEOUT_SECONDS"
 PUBLIC_API_BASE_URL = "XAGENT_PUBLIC_API_BASE_URL"
 S2S_API_BASE_URL = "XAGENT_S2S_API_BASE_URL"
+TRIGGER_CALLBACK_BASE_URL = "XAGENT_TRIGGER_CALLBACK_BASE_URL"
 GMAIL_WATCH_ENABLED = "XAGENT_GMAIL_WATCH_ENABLED"
 GMAIL_WATCH_RENEWAL_INTERVAL_SECONDS = "XAGENT_GMAIL_WATCH_RENEWAL_INTERVAL_SECONDS"
 GMAIL_WATCH_RENEWAL_LEAD_SECONDS = "XAGENT_GMAIL_WATCH_RENEWAL_LEAD_SECONDS"
@@ -923,6 +924,31 @@ def get_s2s_api_base_url() -> str | None:
     cleaned = _normalized_env_url(S2S_API_BASE_URL)
     if cleaned is not None:
         return cleaned
+    return get_public_api_base_url()
+
+
+def get_gmail_callback_base_url() -> str | None:
+    """Return the base URL used for Gmail Pub/Sub callbacks.
+
+    ``XAGENT_TRIGGER_CALLBACK_BASE_URL`` was the Gmail-specific override
+    before the broader S2S URL was introduced. Keep it as a deprecated
+    fallback so upgrading does not silently move existing subscriptions back
+    to a browser-facing public edge. A2A deliberately uses
+    :func:`get_s2s_api_base_url` directly and never advertises this legacy
+    Gmail-only endpoint.
+
+    Priority:
+        1. XAGENT_S2S_API_BASE_URL
+        2. XAGENT_TRIGGER_CALLBACK_BASE_URL (deprecated)
+        3. XAGENT_PUBLIC_API_BASE_URL
+        4. None
+    """
+    s2s_url = _normalized_env_url(S2S_API_BASE_URL)
+    if s2s_url is not None:
+        return s2s_url
+    legacy_url = _normalized_env_url(TRIGGER_CALLBACK_BASE_URL)
+    if legacy_url is not None:
+        return legacy_url
     return get_public_api_base_url()
 
 

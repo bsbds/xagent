@@ -287,6 +287,30 @@ def test_s2s_base_url_overrides_public_api_base(
     assert stored["push_config"]["oidc_token"]["audience"] == expected_audience
 
 
+def test_legacy_callback_base_url_remains_a_gmail_fallback(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "XAGENT_TRIGGER_CALLBACK_BASE_URL",
+        "https://legacy-callback.example.com/",
+    )
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: FakeSubscriber(),
+    )
+
+    assert state.push_audience == (
+        "https://legacy-callback.example.com/api/triggers/callback/gmail/"
+        f"{state.callback_id}"
+    )
+
+
 def test_missing_callback_base_urls_record_failed_state_without_app_base_fallback(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

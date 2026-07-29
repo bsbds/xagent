@@ -6,6 +6,7 @@ from tempfile import gettempdir
 
 import pytest
 
+import xagent.config as config
 from xagent.config import (
     AGENT_RUNTIME,
     APP_BASE_URL,
@@ -1727,6 +1728,22 @@ class TestGmailPubSubProvisioningConfig:
         )
 
         assert get_s2s_api_base_url() == "https://api.example.com/base"
+
+    def test_gmail_callback_preserves_legacy_base_url_fallback(self, monkeypatch):
+        monkeypatch.delenv("XAGENT_S2S_API_BASE_URL", raising=False)
+        monkeypatch.setenv(
+            "XAGENT_TRIGGER_CALLBACK_BASE_URL",
+            " https://legacy-callback.example.com/ ",
+        )
+        monkeypatch.setenv("XAGENT_PUBLIC_API_BASE_URL", "https://api.example.com")
+
+        assert (
+            getattr(config, "TRIGGER_CALLBACK_BASE_URL", None)
+            == "XAGENT_TRIGGER_CALLBACK_BASE_URL"
+        )
+        resolver = getattr(config, "get_gmail_callback_base_url", lambda: None)
+        assert resolver() == "https://legacy-callback.example.com"
+        assert get_s2s_api_base_url() == "https://api.example.com"
 
     def test_invalid_timeout_uses_default(self, monkeypatch):
         monkeypatch.setenv("XAGENT_GMAIL_REGISTRATION_TIMEOUT_SECONDS", "0")
