@@ -446,10 +446,22 @@ def reconcile_gmail_push_endpoints(
                 )
                 if subscriber is None:
                     subscriber = subscriber_factory()
-                existing = subscriber.get_subscription(
-                    request={"subscription": subscription_path}
-                )
-                cloud_is_current = _push_config_matches(existing, expected_push_config)
+                try:
+                    existing = subscriber.get_subscription(
+                        request={"subscription": subscription_path}
+                    )
+                except Exception:
+                    # Audit mode cannot claim convergence without observing
+                    # cloud state. Execute mode can still honor a deliberately
+                    # update-only service identity because modify_push_config
+                    # is idempotent and remains the authoritative write.
+                    if not execute:
+                        raise
+                    cloud_is_current = False
+                else:
+                    cloud_is_current = _push_config_matches(
+                        existing, expected_push_config
+                    )
                 database_is_current = str(raw_push_audience or "") == expected_audience
                 if cloud_is_current and database_is_current:
                     unchanged += 1

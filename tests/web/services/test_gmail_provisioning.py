@@ -996,6 +996,47 @@ def test_reconcile_execute_repairs_cloud_drift_when_database_is_current(
     assert stored["push_config"]["oidc_token"]["audience"] == expected_audience
 
 
+def test_reconcile_execute_supports_update_only_pubsub_permissions(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    def deny_inspection(*, request: dict[str, str]) -> Any:
+        raise PermissionError(f"cannot inspect {request['subscription']}")
+
+    monkeypatch.setattr(subscriber, "get_subscription", deny_inspection)
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    db_session.refresh(state)
+    expected_audience = (
+        "https://sg-origin.cloud.xagent.co/api/triggers/callback/gmail/"
+        f"{state.callback_id}"
+    )
+    assert result.changed == 1
+    assert result.failed == 0
+    assert state.push_audience == expected_audience
+    assert subscriber.modify_calls[-1]["push_config"]["push_endpoint"] == (
+        expected_audience
+    )
+
+
 def test_reconcile_push_endpoint_dry_run_does_not_change_cloud_or_database(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
