@@ -1,6 +1,8 @@
 import json
 
+import pytest
 from sqlalchemy import inspect
+from sqlalchemy.exc import OperationalError
 
 from xagent.web import reconcile_gmail_push_endpoints as cli
 from xagent.web.models import database
@@ -94,10 +96,15 @@ def test_cli_execute_returns_failure_when_any_subscription_fails(
     assert session.closed is True
 
 
-def test_configure_db_does_not_create_or_seed_schema(tmp_path) -> None:
+def test_configure_db_read_only_does_not_create_a_missing_sqlite_file(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "missing-audit.db"
     database.configure_db(
-        f"sqlite:///{tmp_path / 'audit.db'}",
+        f"sqlite:///{database_path}",
         read_only=True,
     )
 
-    assert inspect(database.get_engine()).get_table_names() == []
+    with pytest.raises(OperationalError):
+        inspect(database.get_engine()).get_table_names()
+    assert not database_path.exists()

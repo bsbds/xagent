@@ -1,8 +1,9 @@
 import logging
+from pathlib import Path
 from typing import Any, Generator
 
 from sqlalchemy import Engine, create_engine, event
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool, QueuePool
@@ -21,6 +22,28 @@ logger = logging.getLogger(__name__)
 # Create base model class
 # Mypy workaround: explicitly type Base as Any to avoid "variable not valid as type" error
 Base: Any = declarative_base()
+
+
+def _sqlite_read_only_url(database_url: str) -> str:
+    """Return a SQLite URI that refuses to create or modify its database.
+
+    SQLite's default file connection creates a missing database before the
+    first query. Audit commands need URI ``mode=ro`` semantics so a typo or
+    stale path fails without leaving an empty artifact. In-memory databases
+    have no filesystem state and therefore retain their original URL.
+    """
+    url = make_url(database_url)
+    database = url.database
+    if not database or database == ":memory:":
+        return database_url
+    uri_database = (
+        database
+        if database.startswith("file:")
+        else f"file:{Path(database).expanduser().resolve().as_posix()}"
+    )
+    return str(
+        url.set(database=uri_database).update_query_dict({"mode": "ro", "uri": "true"})
+    )
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -146,8 +169,10 @@ def configure_db(
     global _engine
 
     database_url = db_url if db_url is not None else get_database_url()
-    if "sqlite" in database_url:
-        if not read_only:
+    if make_url(database_url).get_backend_name() == "sqlite":
+        if read_only:
+            database_url = _sqlite_read_only_url(database_url)
+        else:
             database_url = ensure_sqlite_parent_directory(database_url)
         _engine = create_engine(
             database_url,
