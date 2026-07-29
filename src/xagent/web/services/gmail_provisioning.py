@@ -379,18 +379,15 @@ def reconcile_gmail_push_endpoints(
     failed = 0
     errors: list[str] = []
 
-    referenced_keys = {
-        (int(user_id), str(resource_id).lower())
-        for user_id, resource_id in db.query(
-            AgentTrigger.user_id,
-            AgentTrigger.resource_id,
-        )
+    referenced_account_ids = {
+        int(config["oauth_account_id"])
+        for (config,) in db.query(AgentTrigger.config)
         .filter(
             AgentTrigger.type == TriggerType.GMAIL.value,
             AgentTrigger.enabled.is_(True),
-            AgentTrigger.resource_id.isnot(None),
         )
         .all()
+        if isinstance(config, dict) and config.get("oauth_account_id") is not None
     }
 
     page_size = max(1, batch_size)
@@ -401,7 +398,7 @@ def reconcile_gmail_push_endpoints(
         state_rows = (
             db.query(
                 GmailWatchState.id,
-                GmailWatchState.user_id,
+                GmailWatchState.oauth_account_id,
                 GmailWatchState.email,
                 GmailWatchState.callback_id,
                 GmailWatchState.subscription_name,
@@ -421,14 +418,14 @@ def reconcile_gmail_push_endpoints(
 
         for (
             state_id,
-            user_id,
+            oauth_account_id,
             raw_email,
             raw_callback_id,
             raw_subscription_name,
             raw_push_audience,
         ) in state_rows:
             email = str(raw_email or "").strip().lower()
-            if (int(user_id), email) not in referenced_keys:
+            if int(oauth_account_id) not in referenced_account_ids:
                 continue
 
             scanned += 1

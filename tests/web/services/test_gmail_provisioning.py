@@ -1028,6 +1028,34 @@ def test_reconcile_push_endpoint_dry_run_does_not_change_cloud_or_database(
     assert subscriber.modify_calls == []
 
 
+def test_reconcile_matches_enabled_triggers_by_oauth_account_id(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account_a = _create_oauth(db_session, user, email="shared@gmail.example")
+    account_b = _create_oauth(db_session, user, email="shared@gmail.example")
+    _create_gmail_trigger(db_session, user, agent, account_a)
+    subscriber = ResyncFakeSubscriber()
+
+    for account in (account_a, account_b):
+        ensure_gmail_mailbox_provisioned(
+            db_session,
+            account,
+            service_factory=lambda _db, _account: FakeGmailService(),
+            publisher_factory=lambda: FakePublisher(),
+            subscriber_factory=lambda: subscriber,
+        )
+
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.scanned == 1
+
+
 def test_reconcile_queries_enabled_gmail_triggers_once(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
