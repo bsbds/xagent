@@ -1199,7 +1199,8 @@ def test_reconcile_continues_when_a_snapshotted_watch_is_deleted(
 
     assert result.scanned == 2
     assert result.changed == 1
-    assert result.failed == 0
+    assert result.failed == 1
+    assert str(second_watch_id) in result.errors[0]
     assert (
         db_session.query(GmailWatchState)
         .filter(GmailWatchState.id == second_watch_id)

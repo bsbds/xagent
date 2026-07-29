@@ -418,6 +418,76 @@ def test_gmail_provider_verifies_oidc_with_stored_audience_and_service_account(
         db.close()
 
 
+def test_gmail_provider_accepts_configured_audience_during_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "XAGENT_GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT",
+        "push-sa@example.iam.gserviceaccount.com",
+    )
+    monkeypatch.setenv(
+        "XAGENT_S2S_API_BASE_URL",
+        "https://new-origin.example.test",
+    )
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-oidc-transition-user")
+        oauth = _create_gmail_oauth(db, user)
+        trigger = _mark_unified_gmail_trigger(db, _create_gmail_trigger(db, user))
+        state = _create_gmail_watch_state(db, user, oauth, callback_id="cb-transition")
+        configured_audience = (
+            "https://new-origin.example.test/api/triggers/callback/gmail/cb-transition"
+        )
+        seen_audiences: list[str] = []
+
+        def fake_verify(_token: str, audience: str) -> dict[str, object]:
+            seen_audiences.append(audience)
+            if audience == state.push_audience:
+                raise ValueError("token uses the newly configured audience")
+            return {
+                "iss": "https://accounts.google.com",
+                "aud": configured_audience,
+                "email": "push-sa@example.iam.gserviceaccount.com",
+                "email_verified": True,
+            }
+
+        async def run_verifier_inline(function, *args):
+            """Keep this unit test independent of the default executor lifecycle."""
+
+            return function(*args)
+
+        monkeypatch.setattr(
+            "xagent.web.services.trigger_providers.gmail.asyncio.to_thread",
+            run_verifier_inline,
+        )
+        provider = GmailProvider(oidc_verifier=fake_verify)
+        result = asyncio.run(
+            provider.verify(
+                type(
+                    "Context",
+                    (),
+                    {
+                        "callback_id": "cb-transition",
+                        "url_path": "/api/triggers/callback/gmail/cb-transition",
+                        "header": lambda _self, name: (
+                            "Bearer oidc-token"
+                            if name.lower() == "authorization"
+                            else None
+                        ),
+                    },
+                )(),
+                db=db,
+                trigger=trigger,
+                raw_body=b"{}",
+            )
+        )
+
+        assert result.verified is True
+        assert seen_audiences == [state.push_audience, configured_audience]
+    finally:
+        db.close()
+
+
 def test_gmail_provider_rejects_unverified_push_service_account_email(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

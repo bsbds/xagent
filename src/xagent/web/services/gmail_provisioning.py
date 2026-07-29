@@ -487,8 +487,10 @@ def reconcile_gmail_push_endpoints(
                         )
                     )
                     if updated == 0:
-                        db.rollback()
-                        continue
+                        raise GmailProvisioningError(
+                            f"Active Gmail watch {state_id} disappeared before "
+                            "the callback audience could be persisted"
+                        )
                     db.commit()
                 changed += 1
             except Exception as exc:
