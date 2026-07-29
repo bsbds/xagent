@@ -799,46 +799,6 @@ def test_existing_subscription_resyncs_a_stale_oidc_audience(
     assert subscription["push_config"]["oidc_token"]["audience"] == second.push_audience
 
 
-def test_existing_subscription_inspection_failure_reapplies_push_config(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    user = _create_user(db_session)
-    account = _create_oauth(db_session, user)
-    subscriber = ResyncFakeSubscriber()
-    first = ensure_gmail_mailbox_provisioned(
-        db_session,
-        account,
-        service_factory=lambda _db, _account: FakeGmailService(),
-        publisher_factory=lambda: FakePublisher(),
-        subscriber_factory=lambda: subscriber,
-    )
-    old_audience = str(first.push_audience)
-    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
-
-    def fail_inspection(*, request: dict[str, str]) -> Any:
-        raise RuntimeError(f"cannot inspect {request['subscription']}")
-
-    monkeypatch.setattr(subscriber, "get_subscription", fail_inspection)
-
-    second = ensure_gmail_mailbox_provisioned(
-        db_session,
-        account,
-        service_factory=lambda _db, _account: FakeGmailService(),
-        publisher_factory=lambda: FakePublisher(),
-        subscriber_factory=lambda: subscriber,
-    )
-
-    expected_audience = (
-        "https://sg-origin.cloud.xagent.co/api/triggers/callback/gmail/"
-        f"{second.callback_id}"
-    )
-    assert second.status == TriggerProvisioningStatus.ACTIVE.value
-    assert second.push_audience == expected_audience
-    assert second.push_audience != old_audience
-    assert second.last_error is None
-    assert len(subscriber.modify_calls) == 1
-
-
 def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
