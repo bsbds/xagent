@@ -7,7 +7,8 @@ import base64
 import json
 import logging
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, cast
 
 from google.auth.exceptions import TransportError as GoogleTransportError
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -110,11 +111,32 @@ def _accepted_callback_audiences(
         if callback_base_url
         else ""
     )
+    previous_audience = str(state.previous_push_audience or "").strip()
+    previous_audience_expires_at = cast(
+        datetime | None, state.previous_push_audience_expires_at
+    )
+    if previous_audience_expires_at is None or _as_utc(
+        previous_audience_expires_at
+    ) <= datetime.now(timezone.utc):
+        previous_audience = ""
     return tuple(
         dict.fromkeys(
-            audience for audience in (stored_audience, configured_audience) if audience
+            audience
+            for audience in (
+                stored_audience,
+                configured_audience,
+                previous_audience,
+            )
+            if audience
         )
     )
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize SQLite's timezone-naive datetime round trips to UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _watch_state_for_callback(db: Session, callback_id: str) -> GmailWatchState | None:

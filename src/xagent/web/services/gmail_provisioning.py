@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 GMAIL_PUSH_PUBLISHER = "gmail-api-push@system.gserviceaccount.com"
 GMAIL_WATCH_LABEL_IDS = ["INBOX"]
+GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD = timedelta(minutes=10)
 
 PublisherFactory = Callable[[], Any]
 SubscriberFactory = Callable[[], Any]
@@ -475,6 +476,21 @@ def reconcile_gmail_push_endpoints(
                                 "push_config": expected_push_config,
                             }
                         )
+                    audience_values: dict[Any, Any] = {
+                        GmailWatchState.push_audience: expected_audience
+                    }
+                    if not database_is_current:
+                        audience_values.update(
+                            {
+                                GmailWatchState.previous_push_audience: (
+                                    str(raw_push_audience or "").strip() or None
+                                ),
+                                GmailWatchState.previous_push_audience_expires_at: (
+                                    datetime.now(timezone.utc)
+                                    + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+                                ),
+                            }
+                        )
                     updated = (
                         db.query(GmailWatchState)
                         .filter(
@@ -482,10 +498,7 @@ def reconcile_gmail_push_endpoints(
                             GmailWatchState.status
                             == TriggerProvisioningStatus.ACTIVE.value,
                         )
-                        .update(
-                            {GmailWatchState.push_audience: expected_audience},
-                            synchronize_session=False,
-                        )
+                        .update(audience_values, synchronize_session=False)
                     )
                     if updated == 0:
                         raise GmailProvisioningError(
@@ -584,6 +597,14 @@ def ensure_gmail_mailbox_provisioned(
 
     setattr(state, "topic_name", topic_path)
     setattr(state, "subscription_name", subscription_path)
+    previous_audience = str(state.push_audience or "").strip()
+    if previous_audience and previous_audience != push_audience:
+        setattr(state, "previous_push_audience", previous_audience)
+        setattr(
+            state,
+            "previous_push_audience_expires_at",
+            datetime.now(timezone.utc) + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
+        )
     setattr(state, "push_audience", push_audience)
     setattr(state, "history_id", history_id)
     setattr(state, "watch_expiration", watch_expiration)

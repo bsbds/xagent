@@ -817,6 +817,7 @@ def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
         publisher_factory=lambda: publisher,
         subscriber_factory=lambda: subscriber,
     )
+    previous_audience = str(state.push_audience)
     preserved = {
         "callback_id": state.callback_id,
         "history_id": state.history_id,
@@ -841,6 +842,12 @@ def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
     assert result.unchanged == 0
     assert result.failed == 0
     assert state.push_audience == expected_audience
+    assert getattr(state, "previous_push_audience", None) == previous_audience
+    grace_expires_at = getattr(state, "previous_push_audience_expires_at", None)
+    assert grace_expires_at is not None
+    if grace_expires_at.tzinfo is None:
+        grace_expires_at = grace_expires_at.replace(tzinfo=timezone.utc)
+    assert grace_expires_at > datetime.now(timezone.utc)
     assert {
         "callback_id": state.callback_id,
         "history_id": state.history_id,
