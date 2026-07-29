@@ -34,7 +34,7 @@ def _sqlite_read_only_url(database_url: str) -> str:
     """
     url = make_url(database_url)
     database = url.database
-    if not database or database == ":memory:":
+    if not database or database == ":memory:" or url.query.get("mode") == "memory":
         return database_url
     uri_database = (
         database

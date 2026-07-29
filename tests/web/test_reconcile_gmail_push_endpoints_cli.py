@@ -108,3 +108,15 @@ def test_configure_db_read_only_does_not_create_a_missing_sqlite_file(
     with pytest.raises(OperationalError):
         inspect(database.get_engine()).get_table_names()
     assert not database_path.exists()
+
+
+def test_configure_db_read_only_preserves_named_memory_sqlite_mode() -> None:
+    database.configure_db(
+        "sqlite:///file:gmail-audit-memory?mode=memory&cache=shared&uri=true",
+        read_only=True,
+    )
+
+    engine = database.get_engine()
+    assert engine.url.query["mode"] == "memory"
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("SELECT 1").scalar_one() == 1
