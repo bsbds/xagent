@@ -1167,14 +1167,163 @@ def test_reconcile_continues_when_a_snapshotted_watch_is_deleted(
 
     assert result.scanned == 2
     assert result.changed == 1
-    assert result.failed == 1
-    assert str(second_watch_id) in result.errors[0]
+    assert result.failed == 0
+    assert result.errors == ()
+    assert len(subscriber.modify_calls) == 1
     assert (
         db_session.query(GmailWatchState)
         .filter(GmailWatchState.id == second_watch_id)
         .first()
         is None
     )
+
+
+def test_reconcile_reports_watch_deleted_after_its_cloud_update(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+
+    class DeleteAfterModifySubscriber(ResyncFakeSubscriber):
+        delete_watch_id: int | None = None
+
+        def modify_push_config(self, *, request: dict[str, Any]) -> None:
+            super().modify_push_config(request=request)
+            assert self.delete_watch_id is not None
+            with get_session_local()() as concurrent_db:
+                concurrent_db.query(GmailWatchState).filter(
+                    GmailWatchState.id == self.delete_watch_id
+                ).delete(synchronize_session=False)
+                concurrent_db.commit()
+
+    subscriber = DeleteAfterModifySubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    state_id = int(state.id)
+    subscriber.delete_watch_id = state_id
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.scanned == 1
+    assert result.changed == 0
+    assert result.failed == 1
+    assert str(state_id) in result.errors[0]
+
+
+def test_reconciliation_serializes_with_concurrent_provisioning(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cloud and database audience changes must form one mailbox transition."""
+    from xagent.web.models.database import get_session_local
+    from xagent.web.services import gmail_provisioning
+
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    publisher = FakePublisher()
+    reconcile_modified_cloud = threading.Event()
+    allow_reconcile_to_persist = threading.Event()
+    provisioning_finished = threading.Event()
+
+    class PausingSubscriber(ResyncFakeSubscriber):
+        def modify_push_config(self, *, request: dict[str, Any]) -> None:
+            super().modify_push_config(request=request)
+            if threading.current_thread().name != "gmail-reconcile":
+                return
+            reconcile_modified_cloud.set()
+            assert allow_reconcile_to_persist.wait(timeout=30)
+
+    subscriber = PausingSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    account_id = int(account.id)
+    state_id = int(state.id)
+    previous_base_url = "https://api.example.com"
+    next_base_url = "https://sg-origin.cloud.xagent.co"
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "get_gmail_callback_base_url",
+        lambda: (
+            previous_base_url
+            if threading.current_thread().name == "gmail-provision"
+            else next_base_url
+        ),
+    )
+    errors: dict[str, BaseException] = {}
+
+    def reconcile() -> None:
+        session = get_session_local()()
+        try:
+            reconcile_gmail_push_endpoints(
+                session,
+                execute=True,
+                subscriber_factory=lambda: subscriber,
+            )
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            errors["reconcile"] = exc
+        finally:
+            session.close()
+
+    def provision() -> None:
+        session = get_session_local()()
+        try:
+            current_account = (
+                session.query(UserOAuth).filter(UserOAuth.id == account_id).one()
+            )
+            ensure_gmail_mailbox_provisioned(
+                session,
+                current_account,
+                service_factory=lambda _db, _account: FakeGmailService(),
+                publisher_factory=lambda: publisher,
+                subscriber_factory=lambda: subscriber,
+            )
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            errors["provision"] = exc
+        finally:
+            session.close()
+            provisioning_finished.set()
+
+    reconciler = threading.Thread(target=reconcile, name="gmail-reconcile")
+    reconciler.start()
+    assert reconcile_modified_cloud.wait(timeout=30)
+
+    provisioner = threading.Thread(target=provision, name="gmail-provision")
+    provisioner.start()
+    provisioner_finished_while_reconcile_paused = provisioning_finished.wait(timeout=1)
+    allow_reconcile_to_persist.set()
+
+    reconciler.join(timeout=30)
+    provisioner.join(timeout=30)
+    assert not reconciler.is_alive() and not provisioner.is_alive()
+    assert errors == {}
+    assert provisioner_finished_while_reconcile_paused is False
+
+    db_session.expire_all()
+    persisted = (
+        db_session.query(GmailWatchState).filter(GmailWatchState.id == state_id).one()
+    )
+    cloud_audience = subscriber.subscriptions[str(persisted.subscription_name)][
+        "push_config"
+    ]["oidc_token"]["audience"]
+    assert persisted.push_audience == cloud_audience
 
 
 def test_existing_subscription_resyncs_after_service_account_change(

@@ -17,11 +17,12 @@ import logging
 import secrets
 import threading
 from collections.abc import Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterator, cast
 
-from sqlalchemy import func
+from sqlalchemy import Engine, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,8 @@ logger = logging.getLogger(__name__)
 GMAIL_PUSH_PUBLISHER = "gmail-api-push@system.gserviceaccount.com"
 GMAIL_WATCH_LABEL_IDS = ["INBOX"]
 GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD = timedelta(minutes=10)
+GMAIL_WATCH_TRANSITION_LOCK_NAMESPACE = 0x58414754
+_LOCAL_GMAIL_WATCH_TRANSITION_LOCK = threading.RLock()
 
 PublisherFactory = Callable[[], Any]
 SubscriberFactory = Callable[[], Any]
@@ -54,6 +57,41 @@ SubscriberFactory = Callable[[], Any]
 
 class GmailProvisioningError(RuntimeError):
     """Raised when per-mailbox Gmail provisioning cannot proceed."""
+
+
+@contextmanager
+def _gmail_watch_transition_lock(db: Session, oauth_account_id: int) -> Iterator[None]:
+    """Serialize one mailbox's cloud-plus-database provisioning transition.
+
+    PostgreSQL deployments use a session advisory lock keyed by OAuth account,
+    so workers and processes share the same mutex even though provisioning
+    intentionally commits its observable PENDING state mid-transition. SQLite
+    deployments use an in-process lock; SQLite already serializes database
+    writers, and XAgent's background provisioning and reconciliation workers
+    share one process.
+    """
+    bind = cast(Engine, db.get_bind())
+    if bind.dialect.name != "postgresql":
+        with _LOCAL_GMAIL_WATCH_TRANSITION_LOCK:
+            yield
+        return
+
+    parameters = {
+        "namespace": GMAIL_WATCH_TRANSITION_LOCK_NAMESPACE,
+        "oauth_account_id": int(oauth_account_id),
+    }
+    with bind.connect() as lock_connection:
+        lock_connection.execute(
+            text("SELECT pg_advisory_lock(:namespace, :oauth_account_id)"),
+            parameters,
+        )
+        try:
+            yield
+        finally:
+            lock_connection.execute(
+                text("SELECT pg_advisory_unlock(:namespace, :oauth_account_id)"),
+                parameters,
+            )
 
 
 @dataclass(frozen=True)
@@ -352,6 +390,134 @@ def _push_config_matches(subscription: Any, expected: dict[str, Any]) -> bool:
     )
 
 
+def _reconcile_gmail_push_endpoint(
+    db: Session,
+    *,
+    state_row: Any,
+    base_url: str,
+    push_service_account: str,
+    subscriber: Any,
+    execute: bool,
+) -> str:
+    """Reconcile one snapshotted watch and return changed/unchanged/skipped.
+
+    Execute mode takes the same mailbox transition lock as provisioning, then
+    re-reads and row-locks the state. The snapshot may have become stale while
+    waiting for another worker; using the refreshed metadata prevents a cloud
+    update based on an earlier provisioning generation.
+    """
+    (
+        state_id,
+        oauth_account_id,
+        _raw_email,
+        raw_callback_id,
+        raw_subscription_name,
+        raw_push_audience,
+    ) = state_row
+    transition = (
+        _gmail_watch_transition_lock(db, int(oauth_account_id))
+        if execute
+        else nullcontext()
+    )
+    with transition:
+        if execute:
+            current_row = (
+                db.query(
+                    GmailWatchState.id,
+                    GmailWatchState.oauth_account_id,
+                    GmailWatchState.email,
+                    GmailWatchState.callback_id,
+                    GmailWatchState.subscription_name,
+                    GmailWatchState.push_audience,
+                )
+                .filter(
+                    GmailWatchState.id == int(state_id),
+                    GmailWatchState.oauth_account_id == int(oauth_account_id),
+                    GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
+                )
+                .with_for_update()
+                .one_or_none()
+            )
+            if current_row is None:
+                return "skipped"
+            (
+                state_id,
+                oauth_account_id,
+                _raw_email,
+                raw_callback_id,
+                raw_subscription_name,
+                raw_push_audience,
+            ) = current_row
+
+        callback_id = str(raw_callback_id or "").strip()
+        subscription_path = str(raw_subscription_name or "").strip()
+        if not callback_id or not subscription_path:
+            raise GmailProvisioningError(
+                f"Active Gmail watch {state_id} has incomplete push metadata"
+            )
+        expected_audience = f"{base_url}/api/triggers/callback/gmail/{callback_id}"
+        expected_push_config = _build_push_config(
+            push_audience=expected_audience,
+            push_service_account=push_service_account,
+        )
+        try:
+            existing = subscriber.get_subscription(
+                request={"subscription": subscription_path}
+            )
+        except Exception:
+            # Audit mode cannot claim convergence without observing cloud
+            # state. Execute mode can still honor a deliberately update-only
+            # service identity because modify_push_config is idempotent.
+            if not execute:
+                raise
+            cloud_is_current = False
+        else:
+            cloud_is_current = _push_config_matches(existing, expected_push_config)
+        database_is_current = str(raw_push_audience or "") == expected_audience
+        if cloud_is_current and database_is_current:
+            return "unchanged"
+
+        if execute:
+            if not cloud_is_current:
+                subscriber.modify_push_config(
+                    request={
+                        "subscription": subscription_path,
+                        "push_config": expected_push_config,
+                    }
+                )
+            audience_values: dict[Any, Any] = {
+                GmailWatchState.push_audience: expected_audience
+            }
+            if not database_is_current:
+                audience_values.update(
+                    {
+                        GmailWatchState.previous_push_audience: (
+                            str(raw_push_audience or "").strip() or None
+                        ),
+                        GmailWatchState.previous_push_audience_expires_at: (
+                            datetime.now(timezone.utc)
+                            + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+                        ),
+                    }
+                )
+            updated = (
+                db.query(GmailWatchState)
+                .filter(
+                    GmailWatchState.id == int(state_id),
+                    GmailWatchState.oauth_account_id == int(oauth_account_id),
+                    GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
+                )
+                .update(audience_values, synchronize_session=False)
+            )
+            if updated == 0:
+                raise GmailProvisioningError(
+                    f"Active Gmail watch {state_id} disappeared before "
+                    "the callback audience could be persisted"
+                )
+            db.commit()
+        return "changed"
+
+
 def reconcile_gmail_push_endpoints(
     db: Session,
     *,
@@ -433,79 +599,28 @@ def reconcile_gmail_push_endpoints(
 
             scanned += 1
             try:
-                callback_id = str(raw_callback_id or "").strip()
-                subscription_path = str(raw_subscription_name or "").strip()
-                if not callback_id or not subscription_path:
-                    raise GmailProvisioningError(
-                        f"Active Gmail watch {state_id} has incomplete push metadata"
-                    )
-                expected_audience = (
-                    f"{base_url}/api/triggers/callback/gmail/{callback_id}"
-                )
-                expected_push_config = _build_push_config(
-                    push_audience=expected_audience,
-                    push_service_account=push_service_account,
-                )
                 if subscriber is None:
                     subscriber = subscriber_factory()
-                try:
-                    existing = subscriber.get_subscription(
-                        request={"subscription": subscription_path}
-                    )
-                except Exception:
-                    # Audit mode cannot claim convergence without observing
-                    # cloud state. Execute mode can still honor a deliberately
-                    # update-only service identity because modify_push_config
-                    # is idempotent and remains the authoritative write.
-                    if not execute:
-                        raise
-                    cloud_is_current = False
-                else:
-                    cloud_is_current = _push_config_matches(
-                        existing, expected_push_config
-                    )
-                database_is_current = str(raw_push_audience or "") == expected_audience
-                if cloud_is_current and database_is_current:
+                outcome = _reconcile_gmail_push_endpoint(
+                    db,
+                    state_row=(
+                        state_id,
+                        oauth_account_id,
+                        raw_email,
+                        raw_callback_id,
+                        raw_subscription_name,
+                        raw_push_audience,
+                    ),
+                    base_url=base_url,
+                    push_service_account=push_service_account,
+                    subscriber=subscriber,
+                    execute=execute,
+                )
+                if outcome == "unchanged":
                     unchanged += 1
                     continue
-                if execute:
-                    if not cloud_is_current:
-                        subscriber.modify_push_config(
-                            request={
-                                "subscription": subscription_path,
-                                "push_config": expected_push_config,
-                            }
-                        )
-                    audience_values: dict[Any, Any] = {
-                        GmailWatchState.push_audience: expected_audience
-                    }
-                    if not database_is_current:
-                        audience_values.update(
-                            {
-                                GmailWatchState.previous_push_audience: (
-                                    str(raw_push_audience or "").strip() or None
-                                ),
-                                GmailWatchState.previous_push_audience_expires_at: (
-                                    datetime.now(timezone.utc)
-                                    + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
-                                ),
-                            }
-                        )
-                    updated = (
-                        db.query(GmailWatchState)
-                        .filter(
-                            GmailWatchState.id == int(state_id),
-                            GmailWatchState.status
-                            == TriggerProvisioningStatus.ACTIVE.value,
-                        )
-                        .update(audience_values, synchronize_session=False)
-                    )
-                    if updated == 0:
-                        raise GmailProvisioningError(
-                            f"Active Gmail watch {state_id} disappeared before "
-                            "the callback audience could be persisted"
-                        )
-                    db.commit()
+                if outcome == "skipped":
+                    continue
                 changed += 1
             except Exception as exc:
                 db.rollback()
@@ -558,6 +673,25 @@ def ensure_gmail_mailbox_provisioned(
     Never raises for provisioning failures: the watch state converges to
     failed with a clear last_error, and later reconcile attempts retry.
     """
+    with _gmail_watch_transition_lock(db, int(oauth_account.id)):
+        return _ensure_gmail_mailbox_provisioned_locked(
+            db,
+            oauth_account,
+            service_factory=service_factory,
+            publisher_factory=publisher_factory,
+            subscriber_factory=subscriber_factory,
+        )
+
+
+def _ensure_gmail_mailbox_provisioned_locked(
+    db: Session,
+    oauth_account: UserOAuth,
+    *,
+    service_factory: Callable[[Session, UserOAuth], Any] | None = None,
+    publisher_factory: PublisherFactory | None = None,
+    subscriber_factory: SubscriberFactory | None = None,
+) -> GmailWatchState:
+    """Provision one mailbox while its cross-worker transition lock is held."""
     service_factory = service_factory or _default_gmail_service
     publisher_factory = publisher_factory or _default_publisher
     subscriber_factory = subscriber_factory or _default_subscriber
