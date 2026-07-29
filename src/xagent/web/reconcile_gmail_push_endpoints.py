@@ -48,7 +48,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         configure_db(read_only=True)
     db = get_session_local()()
     try:
-        result = reconcile_gmail_push_endpoints(db, execute=bool(args.execute))
+        result = reconcile_gmail_push_endpoints(db, execute=args.execute)
     finally:
         db.close()
 
