@@ -414,6 +414,7 @@ def reconcile_gmail_push_endpoints(
                 AgentTrigger.enabled.is_(True),
                 binding_account_id.in_(page_account_ids),
             )
+            .distinct()
             .all()
         }
 

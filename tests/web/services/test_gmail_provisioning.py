@@ -1147,6 +1147,7 @@ def test_reconcile_bounds_gmail_trigger_lookup_to_each_watch_page(
     assert result.changed == 2
     assert len(trigger_selects) == 2
     assert all(" IN (" in statement for statement in trigger_selects)
+    assert all("SELECT DISTINCT" in statement for statement in trigger_selects)
     assert len(watch_selects) == 3
     assert all("LIMIT" in statement for statement in watch_selects)
 
