@@ -379,17 +379,6 @@ def reconcile_gmail_push_endpoints(
     failed = 0
     errors: list[str] = []
 
-    referenced_account_ids = {
-        int(config["oauth_account_id"])
-        for (config,) in db.query(AgentTrigger.config)
-        .filter(
-            AgentTrigger.type == TriggerType.GMAIL.value,
-            AgentTrigger.enabled.is_(True),
-        )
-        .all()
-        if isinstance(config, dict) and config.get("oauth_account_id") is not None
-    }
-
     page_size = max(1, batch_size)
     last_state_id = 0
     while True:
@@ -415,6 +404,18 @@ def reconcile_gmail_push_endpoints(
         if not state_rows:
             break
         last_state_id = int(state_rows[-1].id)
+        page_account_ids = {int(row.oauth_account_id) for row in state_rows}
+        binding_account_id = AgentTrigger.config["oauth_account_id"].as_integer()
+        referenced_account_ids = {
+            int(oauth_account_id)
+            for (oauth_account_id,) in db.query(binding_account_id)
+            .filter(
+                AgentTrigger.type == TriggerType.GMAIL.value,
+                AgentTrigger.enabled.is_(True),
+                binding_account_id.in_(page_account_ids),
+            )
+            .all()
+        }
 
         for (
             state_id,

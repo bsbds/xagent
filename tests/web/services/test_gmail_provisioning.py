@@ -1056,10 +1056,10 @@ def test_reconcile_matches_enabled_triggers_by_oauth_account_id(
     assert result.scanned == 1
 
 
-def test_reconcile_queries_enabled_gmail_triggers_once(
+def test_reconcile_bounds_gmail_trigger_lookup_to_each_watch_page(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reconciliation must not issue one trigger lookup per active mailbox."""
+    """Each trigger query is bounded by one keyset-paged watch batch."""
     user = _create_user(db_session)
     agent = _create_agent(db_session, user)
     subscriber = ResyncFakeSubscriber()
@@ -1104,7 +1104,8 @@ def test_reconcile_queries_enabled_gmail_triggers_once(
 
     assert result.scanned == 2
     assert result.changed == 2
-    assert len(trigger_selects) == 1
+    assert len(trigger_selects) == 2
+    assert all(" IN (" in statement for statement in trigger_selects)
     assert len(watch_selects) == 3
     assert all("LIMIT" in statement for statement in watch_selects)
 
