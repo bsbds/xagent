@@ -303,12 +303,15 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
     }
   }
 
-  const handleCopyShareLink = () => {
+  const handleCopyShareLink = async () => {
     if (!shareUrl) return
-    navigator.clipboard.writeText(shareUrl)
-    setCopiedShareLink(true)
-    toast.success(t("deploy_agent.messages.link_copied") || "Link copied to clipboard")
-    setTimeout(() => setCopiedShareLink(false), 2000)
+    if (await copyToClipboard(shareUrl)) {
+      setCopiedShareLink(true)
+      toast.success(t("deploy_agent.messages.link_copied") || "Link copied to clipboard")
+      setTimeout(() => setCopiedShareLink(false), 2000)
+    } else {
+      toast.error(t("deploy_agent.messages.copy_failed") || "Failed to copy to clipboard")
+    }
   }
 
   const handleEnableShare = async () => {
@@ -660,7 +663,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
                     <Label className="text-sm">{t("deploy_agent.share_link.public_url") || "Public URL"}</Label>
                     <div className="flex gap-2">
                       <Input readOnly value={shareUrl} className="flex-1" />
-                      <Button variant="secondary" onClick={handleCopyShareLink} disabled={isUpdatingShare}>
+                      <Button variant="secondary" onClick={() => void handleCopyShareLink()} disabled={isUpdatingShare}>
                         {copiedShareLink ? <Check className="h-4 w-4 mr-1 text-green-500" /> : <Copy className="h-4 w-4 mr-1" />}
                         {t("common.copy") || "Copy"}
                       </Button>

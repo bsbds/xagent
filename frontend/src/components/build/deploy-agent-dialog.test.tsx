@@ -167,4 +167,26 @@ describe("DeployAgentDialog regional targets", () => {
       ),
     ).toBeInTheDocument()
   })
+
+  it("copies share links through the checked clipboard helper", async () => {
+    render(
+      <DeployAgentDialog
+        deployAgent={AGENT}
+        onClose={vi.fn()}
+        onUpdate={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("deploy_agent.options.shareable_link.title"))
+    await screen.findByDisplayValue(
+      "https://cloud.example.test/change-region?region=sg&next=%2Fshare%2Fregional-share",
+    )
+    fireEvent.click(screen.getByText("common.copy"))
+
+    await waitFor(() => {
+      expect(copyToClipboardMock).toHaveBeenCalledWith(
+        "https://cloud.example.test/change-region?region=sg&next=%2Fshare%2Fregional-share",
+      )
+    })
+  })
 })
