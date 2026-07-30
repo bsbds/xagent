@@ -147,3 +147,29 @@ def test_configure_db_read_only_preserves_named_memory_sqlite_mode() -> None:
     assert engine.url.query["mode"] == "memory"
     with engine.connect() as connection:
         assert connection.exec_driver_sql("SELECT 1").scalar_one() == 1
+
+
+def test_configure_db_enforces_read_only_postgresql_transactions(
+    monkeypatch,
+) -> None:
+    created: dict[str, object] = {}
+    engine = object()
+
+    def fake_create_engine(url: str, **kwargs):
+        created["url"] = url
+        created["kwargs"] = kwargs
+        return engine
+
+    monkeypatch.setattr(database, "create_engine", fake_create_engine)
+    monkeypatch.setattr(database, "sessionmaker", lambda **_kwargs: object())
+
+    database.configure_db(
+        "postgresql://xagent:secret@db.example.com/xagent",
+        read_only=True,
+    )
+
+    assert created["kwargs"] == {
+        "poolclass": database.QueuePool,
+        **database.get_db_pool_kwargs(),
+        "execution_options": {"postgresql_readonly": True},
+    }

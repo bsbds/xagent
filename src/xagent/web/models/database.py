@@ -189,10 +189,18 @@ def configure_db(
             # of failing with "database is locked".
             apply_sqlite_concurrency_pragmas(_engine)
     else:
+        engine_kwargs: dict[str, Any] = {
+            "poolclass": QueuePool,
+            **get_db_pool_kwargs(),
+        }
+        if read_only:
+            # SQLAlchemy applies PostgreSQL's READ ONLY transaction mode when
+            # each connection begins a transaction. This makes audit safety a
+            # database-enforced property rather than a reconciler convention.
+            engine_kwargs["execution_options"] = {"postgresql_readonly": True}
         _engine = create_engine(
             database_url,
-            poolclass=QueuePool,
-            **get_db_pool_kwargs(),
+            **engine_kwargs,
         )
 
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
