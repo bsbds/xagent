@@ -155,6 +155,17 @@ def _new_callback_id() -> str:
     return secrets.token_urlsafe(24)
 
 
+def gmail_callback_url(base_url: str, callback_id: str) -> str:
+    """Build the canonical Gmail push endpoint and OIDC audience.
+
+    Pub/Sub's push endpoint, its signed OIDC audience, the persisted watch
+    audience, and callback verification must use this exact value. Keeping the
+    path construction here prevents those independently configured surfaces
+    from drifting apart.
+    """
+    return f"{base_url}/api/triggers/callback/gmail/{callback_id}"
+
+
 def _is_already_exists(exc: Exception) -> bool:
     try:
         # gRPC raises AlreadyExists; the REST transport maps HTTP 409 to its
@@ -455,7 +466,7 @@ def _reconcile_gmail_push_endpoint(
             raise GmailProvisioningError(
                 f"Active Gmail watch {state_id} has incomplete push metadata"
             )
-        expected_audience = f"{base_url}/api/triggers/callback/gmail/{callback_id}"
+        expected_audience = gmail_callback_url(base_url, callback_id)
         expected_push_config = _build_push_config(
             push_audience=expected_audience,
             push_service_account=push_service_account,
@@ -705,7 +716,7 @@ def _ensure_gmail_mailbox_provisioned_locked(
         project_id, base_url, push_service_account = _validate_provisioning_config()
         topic_path = gmail_topic_path(project_id, email)
         subscription_path = gmail_subscription_path(project_id, email)
-        push_audience = f"{base_url}/api/triggers/callback/gmail/{state.callback_id}"
+        push_audience = gmail_callback_url(base_url, str(state.callback_id))
 
         publisher = publisher_factory()
         _ensure_topic(publisher, topic_path)

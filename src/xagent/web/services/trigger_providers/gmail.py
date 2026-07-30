@@ -25,6 +25,7 @@ from ....config import (
 from ...models.gmail_watch import GmailWatchState
 from ...models.trigger import AgentTrigger, TriggerProvisioningStatus, TriggerType
 from ..gmail_provisioning import (
+    gmail_callback_url,
     provision_gmail_trigger,
     release_gmail_mailbox_if_unused,
 )
@@ -107,9 +108,7 @@ def _accepted_callback_audiences(
     stored_audience = str(state.push_audience or "").strip()
     callback_base_url = get_gmail_callback_base_url()
     configured_audience = (
-        f"{callback_base_url}/api/triggers/callback/gmail/{callback_id}"
-        if callback_base_url
-        else ""
+        gmail_callback_url(callback_base_url, callback_id) if callback_base_url else ""
     )
     previous_audience = str(state.previous_push_audience or "").strip()
     previous_audience_expires_at = cast(

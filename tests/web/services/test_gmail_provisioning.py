@@ -25,6 +25,7 @@ from xagent.web.models.trigger import (
 )
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
+from xagent.web.services import gmail_provisioning
 from xagent.web.services.gmail_provisioning import (
     GMAIL_PUSH_PUBLISHER,
     ensure_gmail_mailbox_provisioned,
@@ -35,6 +36,15 @@ from xagent.web.services.gmail_provisioning import (
     release_gmail_mailbox_if_unused,
     sweep_gmail_provisioning,
 )
+
+
+def test_gmail_callback_url_builds_the_canonical_callback_contract() -> None:
+    helper = getattr(gmail_provisioning, "gmail_callback_url", None)
+
+    assert callable(helper)
+    assert helper("https://api.example.com", "callback-id") == (
+        "https://api.example.com/api/triggers/callback/gmail/callback-id"
+    )
 
 
 class FakeExecutable:
