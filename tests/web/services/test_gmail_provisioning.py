@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import create_engine, event
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import QueuePool
 
 from xagent.web.models.agent import Agent, AgentStatus
 from xagent.web.models.database import (
@@ -45,6 +47,53 @@ def test_gmail_callback_url_builds_the_canonical_callback_contract() -> None:
     assert helper("https://api.example.com", "callback-id") == (
         "https://api.example.com/api/triggers/callback/gmail/callback-id"
     )
+
+
+def test_transition_lock_yields_the_database_session(
+    db_session: Session,
+) -> None:
+    with gmail_provisioning._gmail_watch_transition_lock(
+        db_session,
+        oauth_account_id=7,
+    ) as transition_db:
+        assert transition_db is db_session
+
+
+def test_session_engine_supports_connection_bound_sessions() -> None:
+    helper = getattr(gmail_provisioning, "_session_engine", None)
+    assert callable(helper)
+    engine = get_engine()
+
+    with engine.connect() as connection, Session(bind=connection) as db:
+        assert helper(db) is engine
+
+
+def test_postgresql_transition_uses_only_the_lock_owning_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine("sqlite://", poolclass=QueuePool)
+    engine.dialect.name = "postgresql"
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "text",
+        lambda _statement: sql_text("SELECT 1"),
+    )
+
+    with Session(bind=engine) as db:
+        db.execute(sql_text("SELECT 1"))
+        assert engine.pool.checkedout() == 1
+
+        with gmail_provisioning._gmail_watch_transition_lock(
+            db,
+            oauth_account_id=7,
+        ) as transition_db:
+            assert transition_db is not db
+            assert engine.pool.checkedout() == 1
+            transition_db.execute(sql_text("SELECT 1"))
+            transition_db.commit()
+            assert engine.pool.checkedout() == 1
+
+    assert engine.pool.checkedout() == 0
 
 
 class FakeExecutable:

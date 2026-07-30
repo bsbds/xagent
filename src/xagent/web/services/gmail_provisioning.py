@@ -20,11 +20,12 @@ from collections.abc import Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterator, cast
+from typing import Any, Callable, Iterator
 
 from sqlalchemy import Engine, String
 from sqlalchemy import cast as sql_cast
 from sqlalchemy import func, or_, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -62,38 +63,74 @@ class GmailProvisioningError(RuntimeError):
 
 
 @contextmanager
-def _gmail_watch_transition_lock(db: Session, oauth_account_id: int) -> Iterator[None]:
+def _gmail_watch_transition_lock(
+    db: Session,
+    oauth_account_id: int,
+) -> Iterator[Session]:
     """Serialize one mailbox's cloud-plus-database provisioning transition.
 
     PostgreSQL deployments use a session advisory lock keyed by OAuth account,
-    so workers and processes share the same mutex even though provisioning
-    intentionally commits its observable PENDING state mid-transition. SQLite
-    deployments use an in-process lock; SQLite already serializes database
-    writers, and XAgent's background provisioning and reconciliation workers
-    share one process.
+    and bind the transition Session to that same physical connection. Commits
+    can therefore expose intermediate state without releasing the advisory
+    lock or checking out a second pooled connection during remote API calls.
+    SQLite deployments use the caller Session under an in-process lock; SQLite
+    already serializes database writers, and XAgent's background provisioning
+    and reconciliation workers share one process.
     """
-    bind = cast(Engine, db.get_bind())
-    if bind.dialect.name != "postgresql":
+    bind = db.get_bind()
+    engine = _session_engine(db)
+    if engine.dialect.name != "postgresql":
         with _LOCAL_GMAIL_WATCH_TRANSITION_LOCK:
-            yield
+            yield db
         return
 
     parameters = {
         "namespace": GMAIL_WATCH_TRANSITION_LOCK_NAMESPACE,
         "oauth_account_id": int(oauth_account_id),
     }
-    with bind.connect() as lock_connection:
+    if isinstance(bind, Connection):
+        db.execute(
+            text("SELECT pg_advisory_lock(:namespace, :oauth_account_id)"),
+            parameters,
+        )
+        db.commit()
+        try:
+            yield db
+        finally:
+            db.rollback()
+            db.execute(
+                text("SELECT pg_advisory_unlock(:namespace, :oauth_account_id)"),
+                parameters,
+            )
+            db.commit()
+        return
+
+    # The caller's read transaction may already own a pooled connection.
+    # Commit it before acquiring the lock connection; the transition Session
+    # below performs all database work on that one lock-owning connection.
+    db.commit()
+    with engine.connect() as lock_connection:
         lock_connection.execute(
             text("SELECT pg_advisory_lock(:namespace, :oauth_account_id)"),
             parameters,
         )
+        lock_connection.commit()
         try:
-            yield
+            with Session(bind=lock_connection, expire_on_commit=False) as transition_db:
+                yield transition_db
         finally:
+            if lock_connection.in_transaction():
+                lock_connection.rollback()
             lock_connection.execute(
                 text("SELECT pg_advisory_unlock(:namespace, :oauth_account_id)"),
                 parameters,
             )
+            lock_connection.commit()
+
+
+def _session_engine(db: Session) -> Engine:
+    """Return a Session's engine for both Engine- and Connection-bound forms."""
+    return db.get_bind().engine
 
 
 @dataclass(frozen=True)
@@ -489,12 +526,12 @@ def _reconcile_gmail_push_endpoint(
     transition = (
         _gmail_watch_transition_lock(db, int(oauth_account_id))
         if execute
-        else nullcontext()
+        else nullcontext(db)
     )
-    with transition:
+    with transition as transition_db:
         if execute:
             current_row = (
-                db.query(
+                transition_db.query(
                     GmailWatchState.id,
                     GmailWatchState.oauth_account_id,
                     GmailWatchState.email,
@@ -511,7 +548,7 @@ def _reconcile_gmail_push_endpoint(
                 .one_or_none()
             )
             if current_row is None:
-                db.rollback()
+                transition_db.rollback()
                 return "skipped"
             (
                 state_id,
@@ -549,7 +586,7 @@ def _reconcile_gmail_push_endpoint(
         database_is_current = str(raw_push_audience or "") == expected_audience
         if cloud_is_current and database_is_current:
             if execute:
-                db.rollback()
+                transition_db.rollback()
             return "unchanged"
 
         if execute:
@@ -576,7 +613,7 @@ def _reconcile_gmail_push_endpoint(
                     }
                 )
             updated = (
-                db.query(GmailWatchState)
+                transition_db.query(GmailWatchState)
                 .filter(
                     GmailWatchState.id == int(state_id),
                     GmailWatchState.oauth_account_id == int(oauth_account_id),
@@ -589,7 +626,7 @@ def _reconcile_gmail_push_endpoint(
                     f"Active Gmail watch {state_id} disappeared before "
                     "the callback audience could be persisted"
                 )
-            db.commit()
+            transition_db.commit()
         return "changed"
 
 
@@ -742,14 +779,25 @@ def ensure_gmail_mailbox_provisioned(
     Never raises for provisioning failures: the watch state converges to
     failed with a clear last_error, and later reconcile attempts retry.
     """
-    with _gmail_watch_transition_lock(db, int(oauth_account.id)):
-        return _ensure_gmail_mailbox_provisioned_locked(
-            db,
-            oauth_account,
+    oauth_account_id = int(oauth_account.id)
+    with _gmail_watch_transition_lock(db, oauth_account_id) as transition_db:
+        transition_account = (
+            oauth_account
+            if transition_db is db
+            else transition_db.query(UserOAuth)
+            .filter(UserOAuth.id == oauth_account_id)
+            .one()
+        )
+        state = _ensure_gmail_mailbox_provisioned_locked(
+            transition_db,
+            transition_account,
             service_factory=service_factory,
             publisher_factory=publisher_factory,
             subscriber_factory=subscriber_factory,
         )
+    if transition_db is not db:
+        db.expire_all()
+    return state
 
 
 def _ensure_gmail_mailbox_provisioned_locked(
