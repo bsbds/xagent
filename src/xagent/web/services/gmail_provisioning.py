@@ -590,6 +590,61 @@ def _reconcile_gmail_push_endpoint(
             return "unchanged"
 
         if execute:
+            if not database_is_current:
+                # Persist both sides of the accepted-audience transition before
+                # changing Pub/Sub. If the cloud call succeeds but this process
+                # dies afterwards, callback workers can still authenticate the
+                # new target from durable state without relying on matching
+                # live environment variables.
+                updated = (
+                    transition_db.query(GmailWatchState)
+                    .filter(
+                        GmailWatchState.id == int(state_id),
+                        GmailWatchState.oauth_account_id == int(oauth_account_id),
+                        GmailWatchState.status
+                        == TriggerProvisioningStatus.ACTIVE.value,
+                    )
+                    .update(
+                        {
+                            GmailWatchState.push_audience: expected_audience,
+                            GmailWatchState.previous_push_audience: (
+                                str(raw_push_audience or "").strip() or None
+                            ),
+                            GmailWatchState.previous_push_audience_expires_at: (
+                                datetime.now(timezone.utc)
+                                + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+                            ),
+                        },
+                        synchronize_session=False,
+                    )
+                )
+                if updated == 0:
+                    raise GmailProvisioningError(
+                        f"Active Gmail watch {state_id} disappeared before "
+                        "the callback audience transition could be persisted"
+                    )
+                transition_db.commit()
+
+                # Reacquire the row lock after the durability boundary. A
+                # concurrent teardown may have removed or deactivated the watch
+                # while the lock was released; in that case Pub/Sub must remain
+                # untouched.
+                transitioned_row = (
+                    transition_db.query(GmailWatchState.id)
+                    .filter(
+                        GmailWatchState.id == int(state_id),
+                        GmailWatchState.oauth_account_id == int(oauth_account_id),
+                        GmailWatchState.status
+                        == TriggerProvisioningStatus.ACTIVE.value,
+                        GmailWatchState.push_audience == expected_audience,
+                    )
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if transitioned_row is None:
+                    transition_db.rollback()
+                    return "skipped"
+
             if not cloud_is_current:
                 subscriber.modify_push_config(
                     request={
@@ -597,34 +652,26 @@ def _reconcile_gmail_push_endpoint(
                         "push_config": expected_push_config,
                     }
                 )
-            audience_values: dict[Any, Any] = {
-                GmailWatchState.push_audience: expected_audience
-            }
-            if not database_is_current:
-                audience_values.update(
-                    {
-                        GmailWatchState.previous_push_audience: (
-                            str(raw_push_audience or "").strip() or None
-                        ),
-                        GmailWatchState.previous_push_audience_expires_at: (
-                            datetime.now(timezone.utc)
-                            + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
-                        ),
-                    }
-                )
+            # Besides releasing the row lock, this guarded no-op detects a
+            # concurrent SQLite teardown after the cloud call (PostgreSQL's
+            # FOR UPDATE lock prevents that race directly).
             updated = (
                 transition_db.query(GmailWatchState)
                 .filter(
                     GmailWatchState.id == int(state_id),
                     GmailWatchState.oauth_account_id == int(oauth_account_id),
                     GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
+                    GmailWatchState.push_audience == expected_audience,
                 )
-                .update(audience_values, synchronize_session=False)
+                .update(
+                    {GmailWatchState.push_audience: expected_audience},
+                    synchronize_session=False,
+                )
             )
             if updated == 0:
                 raise GmailProvisioningError(
-                    f"Active Gmail watch {state_id} disappeared before "
-                    "the callback audience could be persisted"
+                    f"Active Gmail watch {state_id} disappeared during "
+                    "the callback audience transition"
                 )
             transition_db.commit()
         return "changed"
@@ -640,10 +687,12 @@ def reconcile_gmail_push_endpoints(
     """Audit or migrate active Gmail subscriptions to the configured S2S URL.
 
     Only active watch states still referenced by an enabled Gmail trigger are
-    candidates. Applying a change modifies the Pub/Sub push endpoint and its
-    OIDC audience, then persists the same audience locally. It deliberately
-    does not call ``users.watch`` or alter the callback identifier, history
-    cursor, watch expiration, provisioning status, or error state.
+    candidates. Applying a change first persists the new and previous accepted
+    audiences, then modifies the Pub/Sub push endpoint and OIDC audience. This
+    durability boundary keeps callbacks verifiable if the process stops after
+    the cloud update. Reconciliation deliberately does not call ``users.watch``
+    or alter the callback identifier, history cursor, watch expiration,
+    provisioning status, or error state.
 
     The default is a dry run. Re-running after a partial failure is safe:
     already-converged rows are skipped and each successful cloud update is

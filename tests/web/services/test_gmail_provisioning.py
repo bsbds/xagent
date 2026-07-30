@@ -1016,6 +1016,66 @@ def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
     assert len(subscriber.modify_calls) == 1
 
 
+def test_reconcile_persists_audience_transition_before_mutating_pubsub(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    observed: dict[str, object] = {}
+
+    class TransitionInspectingSubscriber(ResyncFakeSubscriber):
+        watch_id: int | None = None
+
+        def modify_push_config(self, *, request: dict[str, Any]) -> None:
+            assert self.watch_id is not None
+            with get_session_local()() as observer:
+                persisted = (
+                    observer.query(GmailWatchState)
+                    .filter(GmailWatchState.id == self.watch_id)
+                    .one()
+                )
+                observed.update(
+                    {
+                        "push_audience": persisted.push_audience,
+                        "previous_push_audience": (persisted.previous_push_audience),
+                        "previous_push_audience_expires_at": (
+                            persisted.previous_push_audience_expires_at
+                        ),
+                    }
+                )
+            super().modify_push_config(request=request)
+
+    subscriber = TransitionInspectingSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    subscriber.watch_id = int(state.id)
+    previous_audience = str(state.push_audience)
+    expected_audience = gmail_provisioning.gmail_callback_url(
+        "https://sg-origin.cloud.xagent.co",
+        str(state.callback_id),
+    )
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.changed == 1
+    assert observed["push_audience"] == expected_audience
+    assert observed["previous_push_audience"] == previous_audience
+    assert observed["previous_push_audience_expires_at"] is not None
+
+
 def test_reconcile_unchanged_outcome_releases_the_row_lock_transaction(
     db_session: Session,
 ) -> None:
