@@ -98,16 +98,25 @@ def test_cli_execute_returns_failure_when_any_subscription_fails(
     assert session.closed is True
 
 
-def test_cli_reports_invalid_provisioning_config_as_json(monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        GmailProvisioningError("missing Gmail Pub/Sub project"),
+        ValueError("invalid XAGENT_S2S_API_BASE_URL"),
+    ],
+)
+def test_cli_reports_invalid_provisioning_config_as_json(
+    monkeypatch,
+    capsys,
+    error: Exception,
+) -> None:
     session = FakeSession()
     monkeypatch.setattr(cli, "configure_db", lambda *, read_only: None)
     monkeypatch.setattr(cli, "get_session_local", lambda: lambda: session)
     monkeypatch.setattr(
         cli,
         "reconcile_gmail_push_endpoints",
-        lambda _db, *, execute: (_ for _ in ()).throw(
-            GmailProvisioningError("missing Gmail Pub/Sub project")
-        ),
+        lambda _db, *, execute: (_ for _ in ()).throw(error),
     )
 
     assert cli.run([]) == 1
@@ -119,7 +128,7 @@ def test_cli_reports_invalid_provisioning_config_as_json(monkeypatch, capsys) ->
         "unchanged": 0,
         "skipped": 0,
         "failed": 1,
-        "errors": ["missing Gmail Pub/Sub project"],
+        "errors": [str(error)],
     }
 
 

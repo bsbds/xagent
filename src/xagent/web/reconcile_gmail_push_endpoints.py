@@ -53,7 +53,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     try:
         try:
             result = reconcile_gmail_push_endpoints(db, execute=args.execute)
-        except GmailProvisioningError as exc:
+        except (GmailProvisioningError, ValueError) as exc:
             payload = {
                 "mode": "execute" if args.execute else "audit",
                 "scanned": 0,
