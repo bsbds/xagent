@@ -48,7 +48,10 @@ def upgrade() -> None:
 
     existing_columns = _column_names()
     if not existing_columns:
-        return
+        raise RuntimeError(
+            f"Required table {TABLE!r} is missing; refusing to stamp "
+            f"migration {revision!r} without applying its schema changes"
+        )
     for column in COLUMNS:
         if column.name not in existing_columns:
             op.add_column(TABLE, column)

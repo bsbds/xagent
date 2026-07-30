@@ -4,6 +4,7 @@ import importlib.util
 from io import StringIO
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -52,10 +53,7 @@ def _offline_sql(migration, operation: str) -> str:
 def _create_watch_table(connection, extra_columns: str = "") -> None:
     connection.execute(
         sa.text(
-            "CREATE TABLE gmail_watch_states ("
-            "id INTEGER PRIMARY KEY"
-            f"{extra_columns}"
-            ")"
+            f"CREATE TABLE gmail_watch_states (id INTEGER PRIMARY KEY{extra_columns})"
         )
     )
 
@@ -107,6 +105,17 @@ def test_online_upgrade_adds_only_missing_columns() -> None:
         assert COLUMNS <= {
             column["name"] for column in sa.inspect(connection).get_columns(TABLE)
         }
+
+
+def test_online_upgrade_rejects_a_missing_watch_table() -> None:
+    migration = _load_migration_module()
+    engine = sa.create_engine("sqlite:///:memory:")
+
+    with engine.begin() as connection:
+        operations = _operations(connection)
+        with Operations.context(operations.get_context()):
+            with pytest.raises(RuntimeError, match="gmail_watch_states"):
+                migration.upgrade()
 
 
 def test_offline_upgrade_and_downgrade_emit_both_columns() -> None:
