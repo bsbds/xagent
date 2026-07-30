@@ -12,6 +12,11 @@ import { useI18n } from "@/contexts/i18n-context"
 import { toast } from "@/components/ui/sonner"
 import { copyToClipboard } from "@/lib/clipboard"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
+import {
+  fetchDeploymentConfig,
+  resolveDeploymentOrigin,
+  type DeploymentConfig,
+} from "@/lib/deployment-config"
 import { buildWidgetSnippet, isValidAllowedDomain, normalizeAllowedDomain } from "@/lib/agent-widget-config"
 import {
   getWorkforceWidgetConfig,
@@ -35,11 +40,14 @@ export function WorkforceWidgetDialog({ workforce, open, onClose }: WorkforceWid
   const [newDomain, setNewDomain] = useState("")
   const [copied, setCopied] = useState(false)
   const [appOrigin, setAppOrigin] = useState("")
+  const [deploymentConfig, setDeploymentConfig] =
+    useState<DeploymentConfig | null>(null)
 
   const isActive = workforce?.status === "active"
   const widgetEnabled = config?.widget_enabled ?? false
   const allowedDomains = config?.allowed_domains ?? []
   const widgetKey = config?.widget_key ?? null
+  const widgetOrigin = resolveDeploymentOrigin(deploymentConfig, appOrigin)
 
   useEffect(() => {
     setAppOrigin(getBrowserLocationOrigin())
@@ -53,8 +61,14 @@ export function WorkforceWidgetDialog({ workforce, open, onClose }: WorkforceWid
     const load = async () => {
       try {
         setIsLoading(true)
-        const state = await getWorkforceWidgetConfig(workforce.id)
-        if (!cancelled) setConfig(state)
+        const [state, targets] = await Promise.all([
+          getWorkforceWidgetConfig(workforce.id),
+          fetchDeploymentConfig(),
+        ])
+        if (!cancelled) {
+          setConfig(state)
+          setDeploymentConfig(targets)
+        }
       } catch (err) {
         if (!cancelled) {
           console.error(err)
@@ -148,7 +162,7 @@ export function WorkforceWidgetDialog({ workforce, open, onClose }: WorkforceWid
   }
 
   const handleCopySnippet = async () => {
-    const snippet = buildWidgetSnippet(widgetKey ?? "", appOrigin)
+    const snippet = buildWidgetSnippet(widgetKey ?? "", widgetOrigin)
     if (!snippet) return
     if (await copyToClipboard(snippet)) {
       setCopied(true)
@@ -254,7 +268,9 @@ export function WorkforceWidgetDialog({ workforce, open, onClose }: WorkforceWid
                 </div>
                 <div className="bg-muted p-4 rounded-md text-xs font-mono relative overflow-hidden group mt-4">
                   <pre className="whitespace-pre-wrap break-all text-muted-foreground">
-                    {widgetKey ? buildWidgetSnippet(widgetKey, appOrigin) : "…"}
+                    {widgetKey && widgetOrigin
+                      ? buildWidgetSnippet(widgetKey, widgetOrigin)
+                      : "…"}
                   </pre>
                   <Button
                     variant="secondary"

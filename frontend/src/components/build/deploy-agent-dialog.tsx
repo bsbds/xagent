@@ -18,6 +18,12 @@ import { getApiSnippetTarget } from "@/lib/api-snippet-base-url"
 import { formatAgentApiSnippets, type ApiSnippetTab } from "@/lib/api-snippet-format"
 import type { ApiSnippetTarget } from "@/lib/api-snippet-target"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
+import {
+  buildDeploymentShareUrl,
+  fetchDeploymentConfig,
+  resolveDeploymentOrigin,
+  type DeploymentConfig,
+} from "@/lib/deployment-config"
 import { buildWidgetSnippet, fetchAgentWidgetKey, isValidAllowedDomain, normalizeAllowedDomain, rotateAgentWidgetKey, updateAgentWidgetConfig } from "@/lib/agent-widget-config"
 
 export interface Agent {
@@ -70,9 +76,16 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
   const [widgetKey, setWidgetKey] = useState<string | null>(null)
   const [newDomain, setNewDomain] = useState("")
   const [appOrigin, setAppOrigin] = useState("")
+  const [deploymentConfig, setDeploymentConfig] =
+    useState<DeploymentConfig | null>(null)
   const isPublished = deployAgent?.status === "published"
   const shareEnabled = shareLink?.share_enabled ?? deployAgent?.share_enabled ?? false
-  const shareUrl = shareLink?.share_token ? `${appOrigin}/share/${shareLink.share_token}` : ""
+  const shareUrl = buildDeploymentShareUrl(
+    shareLink?.share_token ?? "",
+    deploymentConfig,
+    appOrigin,
+  )
+  const widgetOrigin = resolveDeploymentOrigin(deploymentConfig, appOrigin)
 
   const agentId = deployAgent?.id ?? 0
   const [apiSnippetTarget, setApiSnippetTarget] = useState<ApiSnippetTarget>({
@@ -83,8 +96,26 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
   }, [agentId, apiSnippetTarget])
 
   useEffect(() => {
-    setApiSnippetTarget(getApiSnippetTarget())
-    setAppOrigin(getBrowserLocationOrigin())
+    let cancelled = false
+    const browserOrigin = getBrowserLocationOrigin()
+    setAppOrigin(browserOrigin)
+
+    fetchDeploymentConfig()
+      .then((config) => {
+        if (cancelled) return
+        setDeploymentConfig(config)
+        setApiSnippetTarget(getApiSnippetTarget(config.deployment_origin))
+      })
+      .catch((error) => {
+        // Deployment targets are security-sensitive: leaving snippets empty is
+        // preferable to silently publishing a canonical URL that a regional
+        // router will reject with `region_required`.
+        console.error("Failed to load deployment configuration", error)
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -238,14 +269,17 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
     void handleUpdateWidgetConfig({ allowed_domains: currentDomains.filter(d => d !== domain) })
   }
 
-  const handleCopySnippet = () => {
+  const handleCopySnippet = async () => {
     if (!deployAgent) return
-    const snippet = buildWidgetSnippet(widgetKey ?? "", appOrigin)
+    const snippet = buildWidgetSnippet(widgetKey ?? "", widgetOrigin)
     if (!snippet) return
-    navigator.clipboard.writeText(snippet)
-    setCopiedSnippet(true)
-    toast.success(t("deploy_agent.messages.copied") || "Copied to clipboard")
-    setTimeout(() => setCopiedSnippet(false), 2000)
+    if (await copyToClipboard(snippet)) {
+      setCopiedSnippet(true)
+      toast.success(t("deploy_agent.messages.copied") || "Copied to clipboard")
+      setTimeout(() => setCopiedSnippet(false), 2000)
+    } else {
+      toast.error(t("deploy_agent.messages.copy_failed") || "Failed to copy to clipboard")
+    }
   }
 
   const handleRotateWidgetKey = async () => {
@@ -581,13 +615,16 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
               </div>
               <div className="bg-muted p-4 rounded-md text-xs font-mono relative overflow-hidden group mt-4">
                 <pre className="whitespace-pre-wrap break-all text-muted-foreground">
-                  {widgetKey ? buildWidgetSnippet(widgetKey, appOrigin) : "…"}
+                  {widgetKey && widgetOrigin
+                    ? buildWidgetSnippet(widgetKey, widgetOrigin)
+                    : "…"}
                 </pre>
                 <Button
                   variant="secondary"
                   size="icon"
                   className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={handleCopySnippet}
+                  onClick={() => void handleCopySnippet()}
+                  disabled={!widgetKey || !widgetOrigin}
                   title={t("deploy_agent.embed_snippet.copy_btn") || "Copy Snippet"}
                 >
                   {copiedSnippet ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}

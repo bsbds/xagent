@@ -110,6 +110,41 @@ the deprecated `XAGENT_TRIGGER_CALLBACK_BASE_URL`, then
 and `--execute` sequence. Keep both origins routable until the final audit
 reports no failed or changed watches.
 
+## 2026-07-30 — Owner deployment target discovery
+
+### Deployment impact
+
+The owner frontend now loads `GET /api/deployment-config` before generating
+Agent or Workforce API, SDK, widget, and share artifacts. Standalone XAgent
+preserves the existing API-config, browser-origin, and
+`XAGENT_APP_BASE_URL` behavior. Hosting layers may replace this route to
+advertise a shared external ingress and a region bootstrap.
+
+### Prerequisites and configuration
+
+No new standalone environment variable or data migration is required. Existing
+reverse proxies must continue forwarding `/api/*` to the backend.
+
+### Deployment and migration steps
+
+Deploy the backend containing `/api/deployment-config` before the matching
+frontend. A new frontend paired with an older backend deliberately leaves
+deployment artifacts unavailable instead of emitting an origin that may be
+incorrect.
+
+### Verification and monitoring
+
+Verify that `/api/deployment-config` returns the expected `app_origin`, with
+`deployment_origin` and `region` unset for standalone XAgent. In the owner UI,
+verify one Agent or Workforce API snippet, widget snippet, and public share
+link against the deployment's existing external origins.
+
+### Rollback
+
+No persistent state is changed. Roll back the frontend and backend together;
+the previous clients resume deriving their targets directly from runtime and
+browser configuration.
+
 ### 2. Start Services
 
 From the project root directory:

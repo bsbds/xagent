@@ -11,6 +11,11 @@ import { toast } from "@/components/ui/sonner"
 import { copyToClipboard } from "@/lib/clipboard"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
 import {
+  buildDeploymentShareUrl,
+  fetchDeploymentConfig,
+  type DeploymentConfig,
+} from "@/lib/deployment-config"
+import {
   disableWorkforceShareLink,
   enableWorkforceShareLink,
   getWorkforceShareLink,
@@ -31,10 +36,18 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
   const [isUpdating, setIsUpdating] = useState(false)
   const [copied, setCopied] = useState(false)
   const [appOrigin, setAppOrigin] = useState("")
+  const [deploymentConfig, setDeploymentConfig] =
+    useState<DeploymentConfig | null>(null)
 
   const isActive = workforce?.status === "active"
   const shareEnabled = shareLink?.share_enabled ?? false
-  const shareUrl = shareLink?.share_token ? `${appOrigin}/share/${shareLink.share_token}` : ""
+  const shareUrl = shareLink?.share_token
+    ? buildDeploymentShareUrl(
+        shareLink.share_token,
+        deploymentConfig,
+        appOrigin,
+      )
+    : ""
 
   useEffect(() => {
     setAppOrigin(getBrowserLocationOrigin())
@@ -48,8 +61,14 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
     const load = async () => {
       try {
         setIsLoading(true)
-        const state = await getWorkforceShareLink(workforce.id)
-        if (!cancelled) setShareLink(state)
+        const [state, targets] = await Promise.all([
+          getWorkforceShareLink(workforce.id),
+          fetchDeploymentConfig(),
+        ])
+        if (!cancelled) {
+          setShareLink(state)
+          setDeploymentConfig(targets)
+        }
       } catch (err) {
         if (!cancelled) {
           console.error(err)

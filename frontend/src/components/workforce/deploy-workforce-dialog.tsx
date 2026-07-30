@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { toast } from "@/components/ui/sonner"
 import { useI18n } from "@/contexts/i18n-context"
 import { copyToClipboard } from "@/lib/clipboard"
+import { fetchDeploymentConfig } from "@/lib/deployment-config"
 import { getApiSnippetTarget } from "@/lib/api-snippet-base-url"
 import {
   formatWorkforceApiSnippets,
@@ -62,8 +63,27 @@ export function DeployWorkforceDialog({
   const [copiedKey, setCopiedKey] = useState(false)
 
   useEffect(() => {
-    if (open) setApiTarget(getApiSnippetTarget())
-  }, [open])
+    if (!open) {
+      setApiTarget({ baseUrl: "" })
+      return
+    }
+
+    let cancelled = false
+    fetchDeploymentConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setApiTarget(getApiSnippetTarget(config.deployment_origin))
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          toast.error(t("apiKeysPage.messages.loadFailed"))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, t])
 
   useEffect(() => {
     if (!open) {

@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const createWorkforceApiKeyMock = vi.hoisted(() => vi.fn())
+const fetchDeploymentConfigMock = vi.hoisted(() => vi.fn())
+const getApiSnippetTargetMock = vi.hoisted(() => vi.fn())
 const listAgentApiKeysMock = vi.hoisted(() => vi.fn())
 const toastErrorMock = vi.hoisted(() => vi.fn())
 const translateMock = vi.hoisted(() => (key: string) => key)
@@ -10,6 +12,14 @@ const translateMock = vi.hoisted(() => (key: string) => key)
 vi.mock("@/lib/agent-api-keys-api", () => ({
   createWorkforceApiKey: createWorkforceApiKeyMock,
   listAgentApiKeys: listAgentApiKeysMock,
+}))
+
+vi.mock("@/lib/deployment-config", () => ({
+  fetchDeploymentConfig: fetchDeploymentConfigMock,
+}))
+
+vi.mock("@/lib/api-snippet-base-url", () => ({
+  getApiSnippetTarget: getApiSnippetTargetMock,
 }))
 
 vi.mock("@/components/ui/sonner", () => ({
@@ -27,8 +37,44 @@ import { DeployWorkforceDialog } from "./deploy-workforce-dialog"
 describe("DeployWorkforceDialog", () => {
   beforeEach(() => {
     createWorkforceApiKeyMock.mockReset()
+    fetchDeploymentConfigMock.mockReset()
+    fetchDeploymentConfigMock.mockResolvedValue({
+      deployment_origin: "https://sg-origin.cloud.example.test",
+      app_origin: "https://cloud.example.test",
+      region: "sg",
+    })
+    getApiSnippetTargetMock.mockReset()
+    getApiSnippetTargetMock.mockReturnValue({
+      baseUrl: "https://sg-origin.cloud.example.test",
+    })
     listAgentApiKeysMock.mockReset()
     toastErrorMock.mockReset()
+  })
+
+  it("builds API and SDK snippets from the advertised deployment origin", async () => {
+    listAgentApiKeysMock.mockResolvedValue([])
+
+    render(
+      <DeployWorkforceDialog
+        open
+        workforceId={42}
+        workforceName="Regional Workforce"
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(getApiSnippetTargetMock).toHaveBeenCalledWith(
+        "https://sg-origin.cloud.example.test",
+      )
+    })
+    expect(
+      screen.getByText((content) =>
+        content.includes(
+          "https://sg-origin.cloud.example.test/v1/workforces/42/runs",
+        ),
+      ),
+    ).toBeInTheDocument()
   })
 
   afterEach(() => {
