@@ -1774,6 +1774,20 @@ class TestGmailPubSubProvisioningConfig:
 
         assert get_s2s_api_base_url() == "https://api.example.com/base"
 
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "api.example.com",
+            "ftp://api.example.com",
+            "https:///missing-host",
+        ],
+    )
+    def test_s2s_base_rejects_invalid_http_urls(self, monkeypatch, value) -> None:
+        monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", value)
+
+        with pytest.raises(ValueError, match="XAGENT_S2S_API_BASE_URL"):
+            get_s2s_api_base_url()
+
     def test_gmail_callback_preserves_legacy_base_url_fallback(self, monkeypatch):
         monkeypatch.delenv("XAGENT_S2S_API_BASE_URL", raising=False)
         monkeypatch.setenv(

@@ -353,6 +353,26 @@ def _normalized_env_url(env_var: str) -> str | None:
     return value.rstrip("/") or None
 
 
+def _normalized_http_env_url(env_var: str) -> str | None:
+    """Return a normalized HTTP(S) base URL or reject invalid configuration.
+
+    Server-to-server URLs are copied into externally consumed callback,
+    audience, and Agent Card fields. Validating them at the configuration
+    boundary produces an actionable error before those integrations receive a
+    malformed endpoint.
+    """
+    value = _normalized_env_url(env_var)
+    if value is None:
+        return None
+    parts = urlsplit(value)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError(
+            f"Invalid {env_var} value: {value!r}. "
+            "Expected an absolute http:// or https:// URL."
+        )
+    return value
+
+
 def get_password_reset_expire_minutes() -> int:
     """Return the password reset token expiry window in minutes."""
     return _get_positive_int_env(PASSWORD_RESET_EXPIRE_MINUTES, 30)
@@ -976,7 +996,7 @@ def get_s2s_api_base_url() -> str | None:
     using the canonical public API. Trailing slashes are removed so consumers
     can append absolute API paths without producing duplicate separators.
     """
-    cleaned = _normalized_env_url(S2S_API_BASE_URL)
+    cleaned = _normalized_http_env_url(S2S_API_BASE_URL)
     if cleaned is not None:
         return cleaned
     return get_public_api_base_url()
@@ -998,7 +1018,7 @@ def get_gmail_callback_base_url() -> str | None:
         3. XAGENT_PUBLIC_API_BASE_URL
         4. None
     """
-    s2s_url = _normalized_env_url(S2S_API_BASE_URL)
+    s2s_url = _normalized_http_env_url(S2S_API_BASE_URL)
     if s2s_url is not None:
         return s2s_url
     legacy_url = _normalized_env_url(TRIGGER_CALLBACK_BASE_URL)
