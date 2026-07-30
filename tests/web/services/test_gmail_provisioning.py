@@ -382,6 +382,73 @@ def test_sweep_retries_stale_failed_referenced_mailbox(db_session: Session) -> N
     assert refreshed.last_error is None
 
 
+def test_sweep_matches_duplicate_mailboxes_by_oauth_account_id(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    first = _create_oauth(db_session, user, email="shared@gmail.example")
+    second = _create_oauth(db_session, user, email="shared@gmail.example")
+    _create_gmail_trigger(db_session, user, agent, first)
+    for account in (first, second):
+        db_session.add(
+            GmailWatchState(
+                user_id=int(user.id),
+                oauth_account_id=int(account.id),
+                email="shared@gmail.example",
+                history_id="",
+                topic_name="",
+                status=TriggerProvisioningStatus.FAILED.value,
+                last_error="old failure",
+                updated_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+            )
+        )
+    db_session.commit()
+
+    attempts = sweep_gmail_provisioning(
+        db_session,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: FakeSubscriber(),
+    )
+
+    assert attempts == 1
+    states = {
+        int(state.oauth_account_id): state.status
+        for state in db_session.query(GmailWatchState).all()
+    }
+    assert states == {
+        int(first.id): TriggerProvisioningStatus.ACTIVE.value,
+        int(second.id): TriggerProvisioningStatus.FAILED.value,
+    }
+
+
+def test_best_effort_provision_matches_duplicate_mailboxes_by_account_id(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    first = _create_oauth(db_session, user, email="shared@gmail.example")
+    _create_oauth(db_session, user, email="shared@gmail.example")
+    _create_gmail_trigger(db_session, user, agent, first)
+    provisioned: list[int] = []
+
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "ensure_gmail_mailbox_provisioned",
+        lambda _db, account: provisioned.append(int(account.id)),
+    )
+
+    gmail_provisioning.best_effort_provision_gmail_watches_for_user(
+        db_session,
+        user_id=int(user.id),
+        context="test",
+    )
+
+    assert provisioned == [int(first.id)]
+
+
 def test_unregister_releases_mailbox_only_after_last_enabled_trigger_is_deleted(
     db_session: Session,
 ) -> None:
@@ -1066,6 +1133,43 @@ def test_reconcile_matches_enabled_triggers_by_oauth_account_id(
         )
 
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.scanned == 1
+
+
+@pytest.mark.parametrize("oauth_account_id", [None, "malformed"])
+def test_reconcile_legacy_binding_falls_back_to_mailbox_email(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    oauth_account_id: object,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    trigger.config = {
+        "watch_label": "INBOX",
+        **(
+            {"oauth_account_id": oauth_account_id}
+            if oauth_account_id is not None
+            else {}
+        ),
+    }
+    db_session.commit()
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
     result = reconcile_gmail_push_endpoints(
         db_session,
         subscriber_factory=lambda: subscriber,

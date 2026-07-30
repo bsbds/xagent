@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, cast
 
-from sqlalchemy import Engine, func, text
+from sqlalchemy import Engine, String
+from sqlalchemy import cast as sql_cast
+from sqlalchemy import func, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -209,6 +211,64 @@ def _validate_provisioning_config() -> tuple[str, str, str]:
             "OIDC-verified Gmail push delivery"
         )
     return project_id, base_url, push_service_account
+
+
+def _referenced_gmail_oauth_account_ids(
+    db: Session,
+    accounts: Sequence[tuple[int, str]],
+) -> set[int]:
+    """Resolve enabled Gmail trigger bindings for a bounded account batch.
+
+    Modern triggers bind to ``config.oauth_account_id``. Legacy or malformed
+    configs fall back to their mailbox resource ID, but only when no valid
+    account binding exists; this preserves the explicit choice when multiple
+    OAuth accounts share one email address.
+    """
+    account_ids = {int(account_id) for account_id, _email in accounts}
+    account_ids_by_email: dict[str, set[int]] = {}
+    for account_id, raw_email in accounts:
+        email = str(raw_email or "").strip().lower()
+        if email:
+            account_ids_by_email.setdefault(email, set()).add(int(account_id))
+    if not account_ids:
+        return set()
+
+    binding_text = sql_cast(
+        AgentTrigger.config["oauth_account_id"].as_string(),
+        String,
+    )
+    candidate_rows = (
+        db.query(AgentTrigger.config, AgentTrigger.resource_id)
+        .filter(
+            AgentTrigger.type == TriggerType.GMAIL.value,
+            AgentTrigger.enabled.is_(True),
+            or_(
+                binding_text.in_({str(account_id) for account_id in account_ids}),
+                func.lower(AgentTrigger.resource_id).in_(account_ids_by_email),
+            ),
+        )
+        .distinct()
+        .all()
+    )
+
+    referenced: set[int] = set()
+    for raw_config, raw_resource_id in candidate_rows:
+        config = raw_config if isinstance(raw_config, dict) else {}
+        raw_account_id = config.get("oauth_account_id")
+        try:
+            bound_account_id = (
+                int(raw_account_id) if raw_account_id is not None else None
+            )
+        except (TypeError, ValueError):
+            bound_account_id = None
+        if bound_account_id in account_ids:
+            referenced.add(bound_account_id)
+            continue
+        if bound_account_id is not None:
+            continue
+        resource_id = str(raw_resource_id or "").strip().lower()
+        referenced.update(account_ids_by_email.get(resource_id, ()))
+    return referenced
 
 
 def _get_or_create_watch_state(
@@ -584,19 +644,10 @@ def reconcile_gmail_push_endpoints(
         if not state_rows:
             break
         last_state_id = int(state_rows[-1].id)
-        page_account_ids = {int(row.oauth_account_id) for row in state_rows}
-        binding_account_id = AgentTrigger.config["oauth_account_id"].as_integer()
-        referenced_account_ids = {
-            int(oauth_account_id)
-            for (oauth_account_id,) in db.query(binding_account_id)
-            .filter(
-                AgentTrigger.type == TriggerType.GMAIL.value,
-                AgentTrigger.enabled.is_(True),
-                binding_account_id.in_(page_account_ids),
-            )
-            .distinct()
-            .all()
-        }
+        referenced_account_ids = _referenced_gmail_oauth_account_ids(
+            db,
+            [(int(row.oauth_account_id), str(row.email or "")) for row in state_rows],
+        )
 
         for (
             state_id,
@@ -1057,21 +1108,14 @@ def sweep_gmail_provisioning(
         .limit(max(1, min(limit, 500)))
         .all()
     )
+    referenced_account_ids = _referenced_gmail_oauth_account_ids(
+        db,
+        [(int(state.oauth_account_id), str(state.email or "")) for state in candidates],
+    )
 
     attempts = 0
     for state in candidates:
-        email = str(state.email or "").strip().lower()
-        referenced = (
-            db.query(AgentTrigger.id)
-            .filter(
-                AgentTrigger.type == TriggerType.GMAIL.value,
-                AgentTrigger.enabled.is_(True),
-                func.lower(AgentTrigger.resource_id) == email,
-            )
-            .first()
-            is not None
-        )
-        if not referenced:
+        if int(state.oauth_account_id) not in referenced_account_ids:
             continue
         oauth_account = (
             db.query(UserOAuth)
@@ -1112,21 +1156,15 @@ def best_effort_provision_gmail_watches_for_user(
         .filter(UserOAuth.user_id == int(user_id), UserOAuth.provider == "gmail")
         .all()
     )
+    referenced_account_ids = _referenced_gmail_oauth_account_ids(
+        db,
+        [(int(account.id), str(account.email or "")) for account in accounts],
+    )
     for account in accounts:
         email = str(account.email or "").strip().lower()
         if not email:
             continue
-        referenced = (
-            db.query(AgentTrigger.id)
-            .filter(
-                AgentTrigger.type == TriggerType.GMAIL.value,
-                AgentTrigger.enabled.is_(True),
-                func.lower(AgentTrigger.resource_id) == email,
-            )
-            .first()
-            is not None
-        )
-        if not referenced:
+        if int(account.id) not in referenced_account_ids:
             continue
         try:
             ensure_gmail_mailbox_provisioned(db, account)
