@@ -873,6 +873,25 @@ def _ensure_gmail_mailbox_provisioned_locked(
         subscription_path = gmail_subscription_path(project_id, email)
         push_audience = gmail_callback_url(base_url, str(state.callback_id))
 
+        previous_audience = str(state.push_audience or "").strip()
+        if previous_audience != push_audience:
+            # Make the verifier's accepted-audience transition durable before
+            # any Pub/Sub create/update can begin delivering tokens for the new
+            # audience. A failed cloud operation leaves the watch retryable
+            # while callbacks from either side of an in-flight transition stay
+            # authenticatable during the grace window.
+            if previous_audience:
+                setattr(state, "previous_push_audience", previous_audience)
+                setattr(
+                    state,
+                    "previous_push_audience_expires_at",
+                    datetime.now(timezone.utc) + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
+                )
+            setattr(state, "push_audience", push_audience)
+            db.add(state)
+            db.commit()
+            db.refresh(state)
+
         publisher = publisher_factory()
         _ensure_topic(publisher, topic_path)
         _ensure_push_subscription(
@@ -897,15 +916,6 @@ def _ensure_gmail_mailbox_provisioned_locked(
 
     setattr(state, "topic_name", topic_path)
     setattr(state, "subscription_name", subscription_path)
-    previous_audience = str(state.push_audience or "").strip()
-    if previous_audience and previous_audience != push_audience:
-        setattr(state, "previous_push_audience", previous_audience)
-        setattr(
-            state,
-            "previous_push_audience_expires_at",
-            datetime.now(timezone.utc) + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
-        )
-    setattr(state, "push_audience", push_audience)
     setattr(state, "history_id", history_id)
     setattr(state, "watch_expiration", watch_expiration)
     setattr(state, "status", TriggerProvisioningStatus.ACTIVE.value)

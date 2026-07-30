@@ -893,6 +893,66 @@ def test_existing_subscription_endpoint_resyncs_after_base_url_change(
     assert stored["push_config"]["oidc_token"]["audience"] == new_audience
 
 
+def test_provisioning_persists_audience_transition_before_mutating_pubsub(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class TransitionInspectingSubscriber(ResyncFakeSubscriber):
+        watch_id: int | None = None
+
+        def modify_push_config(self, *, request: dict[str, Any]) -> None:
+            assert self.watch_id is not None
+            with get_session_local()() as observer:
+                persisted = (
+                    observer.query(GmailWatchState)
+                    .filter(GmailWatchState.id == self.watch_id)
+                    .one()
+                )
+                observed.update(
+                    {
+                        "push_audience": persisted.push_audience,
+                        "previous_push_audience": persisted.previous_push_audience,
+                        "previous_push_audience_expires_at": (
+                            persisted.previous_push_audience_expires_at
+                        ),
+                    }
+                )
+            super().modify_push_config(request=request)
+
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = TransitionInspectingSubscriber()
+    first = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    subscriber.watch_id = int(first.id)
+    previous_audience = str(first.push_audience)
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    expected_audience = gmail_provisioning.gmail_callback_url(
+        "https://sg-origin.cloud.xagent.co",
+        str(first.callback_id),
+    )
+
+    ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert observed["push_audience"] == expected_audience
+    assert observed["previous_push_audience"] == previous_audience
+    assert observed["previous_push_audience_expires_at"] is not None
+
+
 def test_existing_subscription_resyncs_a_stale_oidc_audience(
     db_session: Session,
 ) -> None:
@@ -1758,10 +1818,9 @@ def test_patch_failure_marks_failed_not_active(
     assert first.status == TriggerProvisioningStatus.ACTIVE.value
     old_audience = str(first.push_audience)
 
-    # A base-URL change forces a resync, and the patch itself fails. Unlike an
-    # inspection failure, this must propagate so the watch lands FAILED rather
-    # than recording the new audience as ACTIVE against a subscription that was
-    # never updated.
+    # A base-URL change forces a resync, and the patch itself fails. The watch
+    # must land FAILED, while the pre-cloud audience transition remains durable
+    # so both the old cloud audience and the intended retry target are accepted.
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://api-v2.example.com")
     second = ensure_gmail_mailbox_provisioned(
         db_session,
@@ -1773,9 +1832,12 @@ def test_patch_failure_marks_failed_not_active(
 
     assert second.status == TriggerProvisioningStatus.FAILED.value
     assert "pubsub modify_push_config unavailable" in str(second.last_error)
-    # The persisted audience must not have advanced to the un-synced value.
-    assert second.push_audience == old_audience
-    assert "api-v2.example.com" not in str(second.push_audience)
+    assert second.push_audience == gmail_provisioning.gmail_callback_url(
+        "https://api-v2.example.com",
+        str(second.callback_id),
+    )
+    assert second.previous_push_audience == old_audience
+    assert second.previous_push_audience_expires_at is not None
 
 
 class GetIamPolicyFailsFakePublisher(FakePublisher):
