@@ -10,10 +10,13 @@ previous value and its expiry so callback verification can honor that bounded
 delivery grace period across processes and restarts.
 """
 
+import logging
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+
+logger = logging.getLogger(__name__)
 
 revision: str = "20260729_add_gmail_audience_grace"
 down_revision: Union[str, None] = "20260724_add_upload_source_to_uploaded_files"
@@ -48,10 +51,17 @@ def upgrade() -> None:
 
     existing_columns = _column_names()
     if not existing_columns:
-        raise RuntimeError(
-            f"Required table {TABLE!r} is missing; refusing to stamp "
-            f"migration {revision!r} without applying its schema changes"
+        # XAgent supports upgrading deliberately partial databases used by
+        # migration recovery and compatibility tooling. Keep that path
+        # non-fatal, but make the skipped schema change observable instead of
+        # silently stamping the revision.
+        logger.warning(
+            "Required table %r is missing; skipping migration %r because "
+            "this database has a partial schema",
+            TABLE,
+            revision,
         )
+        return
     for column in COLUMNS:
         if column.name not in existing_columns:
             op.add_column(TABLE, column)

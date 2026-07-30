@@ -1,10 +1,10 @@
 """Tests for the Gmail callback-audience grace migration."""
 
 import importlib.util
+import logging
 from io import StringIO
 from pathlib import Path
 
-import pytest
 import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -107,15 +107,18 @@ def test_online_upgrade_adds_only_missing_columns() -> None:
         }
 
 
-def test_online_upgrade_rejects_a_missing_watch_table() -> None:
+def test_online_upgrade_warns_and_skips_a_missing_watch_table(caplog) -> None:
     migration = _load_migration_module()
     engine = sa.create_engine("sqlite:///:memory:")
 
     with engine.begin() as connection:
         operations = _operations(connection)
         with Operations.context(operations.get_context()):
-            with pytest.raises(RuntimeError, match="gmail_watch_states"):
+            with caplog.at_level(logging.WARNING):
                 migration.upgrade()
+
+        assert "Required table 'gmail_watch_states' is missing" in caplog.text
+        assert TABLE not in sa.inspect(connection).get_table_names()
 
 
 def test_offline_upgrade_and_downgrade_emit_both_columns() -> None:
