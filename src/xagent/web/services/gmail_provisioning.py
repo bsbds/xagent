@@ -102,6 +102,7 @@ class GmailPushEndpointReconciliation:
     changed: int
     unchanged: int
     failed: int
+    skipped: int = 0
     errors: tuple[str, ...] = ()
 
 
@@ -554,6 +555,7 @@ def reconcile_gmail_push_endpoints(
     scanned = 0
     changed = 0
     unchanged = 0
+    skipped = 0
     failed = 0
     errors: list[str] = []
 
@@ -631,6 +633,7 @@ def reconcile_gmail_push_endpoints(
                     unchanged += 1
                     continue
                 if outcome == "skipped":
+                    skipped += 1
                     continue
                 changed += 1
             except Exception as exc:
@@ -643,6 +646,7 @@ def reconcile_gmail_push_endpoints(
         changed=changed,
         unchanged=unchanged,
         failed=failed,
+        skipped=skipped,
         errors=tuple(errors),
     )
 

@@ -59,6 +59,7 @@ def test_cli_defaults_to_audit_mode(monkeypatch, capsys) -> None:
         "scanned": 2,
         "changed": 1,
         "unchanged": 1,
+        "skipped": 0,
         "failed": 0,
         "errors": [],
     }
@@ -116,6 +117,7 @@ def test_cli_reports_invalid_provisioning_config_as_json(monkeypatch, capsys) ->
         "scanned": 0,
         "changed": 0,
         "unchanged": 0,
+        "skipped": 0,
         "failed": 1,
         "errors": ["missing Gmail Pub/Sub project"],
     }

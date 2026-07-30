@@ -1177,6 +1177,7 @@ def test_reconcile_continues_when_a_snapshotted_watch_is_deleted(
 
     assert result.scanned == 2
     assert result.changed == 1
+    assert result.skipped == 1
     assert result.failed == 0
     assert result.errors == ()
     assert len(subscriber.modify_calls) == 1

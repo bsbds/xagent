@@ -59,6 +59,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 "scanned": 0,
                 "changed": 0,
                 "unchanged": 0,
+                "skipped": 0,
                 "failed": 1,
                 "errors": [str(exc)],
             }
