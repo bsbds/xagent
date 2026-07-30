@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 from xagent.web import reconcile_gmail_push_endpoints as cli
 from xagent.web.models import database
 from xagent.web.services.gmail_provisioning import (
+    GmailProvisioningError,
     GmailPushEndpointReconciliation,
 )
 
@@ -94,6 +95,30 @@ def test_cli_execute_returns_failure_when_any_subscription_fails(
     assert initialized == [True]
     assert json.loads(capsys.readouterr().out)["mode"] == "execute"
     assert session.closed is True
+
+
+def test_cli_reports_invalid_provisioning_config_as_json(monkeypatch, capsys) -> None:
+    session = FakeSession()
+    monkeypatch.setattr(cli, "configure_db", lambda *, read_only: None)
+    monkeypatch.setattr(cli, "get_session_local", lambda: lambda: session)
+    monkeypatch.setattr(
+        cli,
+        "reconcile_gmail_push_endpoints",
+        lambda _db, *, execute: (_ for _ in ()).throw(
+            GmailProvisioningError("missing Gmail Pub/Sub project")
+        ),
+    )
+
+    assert cli.run([]) == 1
+    assert session.closed is True
+    assert json.loads(capsys.readouterr().out) == {
+        "mode": "audit",
+        "scanned": 0,
+        "changed": 0,
+        "unchanged": 0,
+        "failed": 1,
+        "errors": ["missing Gmail Pub/Sub project"],
+    }
 
 
 def test_configure_db_read_only_does_not_create_a_missing_sqlite_file(

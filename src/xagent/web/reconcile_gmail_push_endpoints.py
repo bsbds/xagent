@@ -21,7 +21,10 @@ from dataclasses import asdict
 from typing import Sequence
 
 from .models.database import configure_db, get_session_local, init_db
-from .services.gmail_provisioning import reconcile_gmail_push_endpoints
+from .services.gmail_provisioning import (
+    GmailProvisioningError,
+    reconcile_gmail_push_endpoints,
+)
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -48,7 +51,19 @@ def run(argv: Sequence[str] | None = None) -> int:
         configure_db(read_only=True)
     db = get_session_local()()
     try:
-        result = reconcile_gmail_push_endpoints(db, execute=args.execute)
+        try:
+            result = reconcile_gmail_push_endpoints(db, execute=args.execute)
+        except GmailProvisioningError as exc:
+            payload = {
+                "mode": "execute" if args.execute else "audit",
+                "scanned": 0,
+                "changed": 0,
+                "unchanged": 0,
+                "failed": 1,
+                "errors": [str(exc)],
+            }
+            print(json.dumps(payload, sort_keys=True))
+            return 1
     finally:
         db.close()
 
