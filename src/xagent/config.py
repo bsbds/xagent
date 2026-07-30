@@ -996,10 +996,7 @@ def get_s2s_api_base_url() -> str | None:
     using the canonical public API. Trailing slashes are removed so consumers
     can append absolute API paths without producing duplicate separators.
     """
-    cleaned = _normalized_http_env_url(S2S_API_BASE_URL)
-    if cleaned is not None:
-        return cleaned
-    return get_public_api_base_url()
+    return _normalized_http_env_url(S2S_API_BASE_URL) or get_public_api_base_url()
 
 
 def get_gmail_callback_base_url() -> str | None:
@@ -1018,13 +1015,11 @@ def get_gmail_callback_base_url() -> str | None:
         3. XAGENT_PUBLIC_API_BASE_URL
         4. None
     """
-    s2s_url = _normalized_http_env_url(S2S_API_BASE_URL)
-    if s2s_url is not None:
-        return s2s_url
-    legacy_url = _normalized_env_url(TRIGGER_CALLBACK_BASE_URL)
-    if legacy_url is not None:
-        return legacy_url
-    return get_public_api_base_url()
+    return (
+        _normalized_http_env_url(S2S_API_BASE_URL)
+        or _normalized_env_url(TRIGGER_CALLBACK_BASE_URL)
+        or get_public_api_base_url()
+    )
 
 
 def get_gmail_watch_enabled() -> bool:
