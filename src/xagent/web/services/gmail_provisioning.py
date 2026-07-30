@@ -511,6 +511,7 @@ def _reconcile_gmail_push_endpoint(
                 .one_or_none()
             )
             if current_row is None:
+                db.rollback()
                 return "skipped"
             (
                 state_id,
@@ -547,6 +548,8 @@ def _reconcile_gmail_push_endpoint(
             cloud_is_current = _push_config_matches(existing, expected_push_config)
         database_is_current = str(raw_push_audience or "") == expected_audience
         if cloud_is_current and database_is_current:
+            if execute:
+                db.rollback()
             return "unchanged"
 
         if execute:

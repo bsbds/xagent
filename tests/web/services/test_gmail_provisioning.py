@@ -967,6 +967,79 @@ def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
     assert len(subscriber.modify_calls) == 1
 
 
+def test_reconcile_unchanged_outcome_releases_the_row_lock_transaction(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    state_row = (
+        int(state.id),
+        int(state.oauth_account_id),
+        str(state.email),
+        str(state.callback_id),
+        str(state.subscription_name),
+        str(state.push_audience),
+    )
+    db_session.rollback()
+
+    outcome = gmail_provisioning._reconcile_gmail_push_endpoint(
+        db_session,
+        state_row=state_row,
+        base_url="https://api.example.com",
+        push_service_account="pubsub-push@demo-project.iam.gserviceaccount.com",
+        subscriber=subscriber,
+        execute=True,
+    )
+
+    assert outcome == "unchanged"
+    assert db_session.in_transaction() is False
+
+
+def test_reconcile_skipped_outcome_releases_the_row_lock_transaction(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    state_row = (
+        int(state.id),
+        int(state.oauth_account_id),
+        str(state.email),
+        str(state.callback_id),
+        str(state.subscription_name),
+        str(state.push_audience),
+    )
+    db_session.delete(state)
+    db_session.commit()
+
+    outcome = gmail_provisioning._reconcile_gmail_push_endpoint(
+        db_session,
+        state_row=state_row,
+        base_url="https://api.example.com",
+        push_service_account="pubsub-push@demo-project.iam.gserviceaccount.com",
+        subscriber=subscriber,
+        execute=True,
+    )
+
+    assert outcome == "skipped"
+    assert db_session.in_transaction() is False
+
+
 def test_reconcile_audit_detects_cloud_drift_when_database_is_current(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
