@@ -181,6 +181,11 @@ export function WorkforceWidgetDialog({ workforce, open, onClose }: WorkforceWid
       setCopied(true)
       toast.success(t("workforces.widget.messages.copied") || "Copied to clipboard")
       setTimeout(() => setCopied(false), 2000)
+    } else {
+      toast.error(
+        t("workforces.widget.messages.copy_failed")
+        || "Failed to copy to clipboard",
+      )
     }
   }
 

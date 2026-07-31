@@ -3410,6 +3410,7 @@ const zh = {
     title: "通过 REST API / SDK 部署",
     desc: "使用 Workforce API Key 创建运行，然后轮询 GET /v1/chat/tasks/{id} 获取结果。",
     copy: "复制",
+    copy_failed: "复制到剪贴板失败",
     new_key: "请立即复制此 Key —— 它不会再次显示。",
     keys_title: "API Keys",
     label_placeholder: "标签（可选），如 CI 流水线",
@@ -3837,6 +3838,7 @@ const zh = {
         disabled: "分享链接已停用",
         failed: "分享链接操作失败",
         link_copied: "链接已复制到剪贴板",
+        copy_failed: "复制到剪贴板失败",
       },
     },
     widget: {
@@ -3863,6 +3865,7 @@ const zh = {
         rotated: "组件密钥已重置",
         failed: "组件操作失败",
         copied: "已复制到剪贴板",
+        copy_failed: "复制到剪贴板失败",
       },
     },
     fields: {

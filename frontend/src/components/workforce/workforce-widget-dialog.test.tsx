@@ -6,11 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkforceDetail } from "@/types/workforce"
 
 const apiRequestMock = vi.hoisted(() => vi.fn())
+const copyToClipboardMock = vi.hoisted(() => vi.fn())
 const getWorkforceWidgetConfigMock = vi.hoisted(() => vi.fn())
 const toastErrorMock = vi.hoisted(() => vi.fn())
 
 vi.mock("@/lib/api-wrapper", () => ({
   apiRequest: apiRequestMock,
+}))
+
+vi.mock("@/lib/clipboard", () => ({
+  copyToClipboard: copyToClipboardMock,
 }))
 
 vi.mock("@/lib/utils", async (importOriginal) => ({
@@ -67,6 +72,8 @@ describe("WorkforceWidgetDialog", () => {
       widget_key: "wk-regional",
       allowed_domains: ["*"],
     })
+    copyToClipboardMock.mockReset()
+    copyToClipboardMock.mockResolvedValue(true)
     toastErrorMock.mockReset()
   })
 
@@ -114,5 +121,30 @@ describe("WorkforceWidgetDialog", () => {
         ),
       ),
     ).toBeInTheDocument()
+  })
+
+  it("reports clipboard failures", async () => {
+    copyToClipboardMock.mockResolvedValue(false)
+
+    render(
+      <WorkforceWidgetDialog
+        workforce={WORKFORCE}
+        open
+        onClose={vi.fn()}
+      />,
+    )
+
+    await screen.findByText((content) =>
+      content.includes(
+        'src="https://sg-origin.cloud.example.test/widget.js"',
+      ),
+    )
+    screen.getByTitle("workforces.widget.copy_btn").click()
+
+    await vi.waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "workforces.widget.messages.copy_failed",
+      )
+    })
   })
 })

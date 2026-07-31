@@ -124,6 +124,11 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
       setCopied(true)
       toast.success(t("workforces.share_link.messages.link_copied") || "Link copied to clipboard")
       setTimeout(() => setCopied(false), 2000)
+    } else {
+      toast.error(
+        t("workforces.share_link.messages.copy_failed")
+        || "Failed to copy to clipboard",
+      )
     }
   }
 

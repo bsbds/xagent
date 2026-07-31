@@ -123,6 +123,10 @@ export function DeployWorkforceDialog({
     if (ok) {
       setCopiedSnippet(true)
       setTimeout(() => setCopiedSnippet(false), 1500)
+    } else {
+      toast.error(
+        t("deploy_workforce.copy_failed") || "Failed to copy to clipboard",
+      )
     }
   }
 
@@ -132,6 +136,10 @@ export function DeployWorkforceDialog({
     if (ok) {
       setCopiedKey(true)
       setTimeout(() => setCopiedKey(false), 1500)
+    } else {
+      toast.error(
+        t("deploy_workforce.copy_failed") || "Failed to copy to clipboard",
+      )
     }
   }
 

@@ -6,11 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkforceDetail } from "@/types/workforce"
 
 const apiRequestMock = vi.hoisted(() => vi.fn())
+const copyToClipboardMock = vi.hoisted(() => vi.fn())
 const getWorkforceShareLinkMock = vi.hoisted(() => vi.fn())
 const toastErrorMock = vi.hoisted(() => vi.fn())
 
 vi.mock("@/lib/api-wrapper", () => ({
   apiRequest: apiRequestMock,
+}))
+
+vi.mock("@/lib/clipboard", () => ({
+  copyToClipboard: copyToClipboardMock,
 }))
 
 vi.mock("@/lib/utils", async (importOriginal) => ({
@@ -68,6 +73,8 @@ describe("WorkforceShareDialog", () => {
       share_token: "regional-share",
       share_updated_at: "2026-07-24T00:00:00Z",
     })
+    copyToClipboardMock.mockReset()
+    copyToClipboardMock.mockResolvedValue(true)
     toastErrorMock.mockReset()
   })
 
@@ -110,5 +117,28 @@ describe("WorkforceShareDialog", () => {
         "https://cloud.example.test/change-region?region=sg&next=%2Fshare%2Fregional-share",
       ),
     ).toBeInTheDocument()
+  })
+
+  it("reports clipboard failures", async () => {
+    copyToClipboardMock.mockResolvedValue(false)
+
+    render(
+      <WorkforceShareDialog
+        workforce={WORKFORCE}
+        open
+        onClose={vi.fn()}
+      />,
+    )
+
+    await screen.findByDisplayValue(
+      "https://cloud.example.test/change-region?region=sg&next=%2Fshare%2Fregional-share",
+    )
+    screen.getByText("common.copy").click()
+
+    await vi.waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "workforces.share_link.messages.copy_failed",
+      )
+    })
   })
 })
