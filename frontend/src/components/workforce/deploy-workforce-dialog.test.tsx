@@ -3,9 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const createWorkforceApiKeyMock = vi.hoisted(() => vi.fn())
+const apiRequestMock = vi.hoisted(() => vi.fn())
 const copyToClipboardMock = vi.hoisted(() => vi.fn())
-const fetchDeploymentConfigMock = vi.hoisted(() => vi.fn())
-const getApiSnippetTargetMock = vi.hoisted(() => vi.fn())
 const listAgentApiKeysMock = vi.hoisted(() => vi.fn())
 const toastErrorMock = vi.hoisted(() => vi.fn())
 const translateMock = vi.hoisted(() => (key: string) => key)
@@ -19,12 +18,17 @@ vi.mock("@/lib/clipboard", () => ({
   copyToClipboard: copyToClipboardMock,
 }))
 
-vi.mock("@/lib/deployment-config", () => ({
-  fetchDeploymentConfig: fetchDeploymentConfigMock,
+vi.mock("@/lib/api-wrapper", () => ({
+  apiRequest: apiRequestMock,
 }))
 
-vi.mock("@/lib/api-snippet-base-url", () => ({
-  getApiSnippetTarget: getApiSnippetTargetMock,
+vi.mock("@/lib/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/utils")>()),
+  getApiUrl: () => "https://configured-api.example.test",
+}))
+
+vi.mock("@/lib/browser-location", () => ({
+  getBrowserLocationOrigin: () => "https://cloud.example.test",
 }))
 
 vi.mock("@/components/ui/sonner", () => ({
@@ -37,23 +41,26 @@ vi.mock("@/contexts/i18n-context", () => ({
   useI18n: () => ({ t: translateMock }),
 }))
 
+import { __resetDeploymentConfigCache } from "@/lib/deployment-config"
 import { DeployWorkforceDialog } from "./deploy-workforce-dialog"
 
 describe("DeployWorkforceDialog", () => {
   beforeEach(() => {
+    __resetDeploymentConfigCache()
     createWorkforceApiKeyMock.mockReset()
+    apiRequestMock.mockReset()
+    apiRequestMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          deployment_origin: "https://sg-origin.cloud.example.test",
+          app_origin: "https://cloud.example.test",
+          region: "sg",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    )
     copyToClipboardMock.mockReset()
     copyToClipboardMock.mockResolvedValue(true)
-    fetchDeploymentConfigMock.mockReset()
-    fetchDeploymentConfigMock.mockResolvedValue({
-      deployment_origin: "https://sg-origin.cloud.example.test",
-      app_origin: "https://cloud.example.test",
-      region: "sg",
-    })
-    getApiSnippetTargetMock.mockReset()
-    getApiSnippetTargetMock.mockReturnValue({
-      baseUrl: "https://sg-origin.cloud.example.test",
-    })
     listAgentApiKeysMock.mockReset()
     toastErrorMock.mockReset()
   })
@@ -70,13 +77,8 @@ describe("DeployWorkforceDialog", () => {
       />,
     )
 
-    await waitFor(() => {
-      expect(getApiSnippetTargetMock).toHaveBeenCalledWith(
-        "https://sg-origin.cloud.example.test",
-      )
-    })
     expect(
-      screen.getByText((content) =>
+      await screen.findByText((content) =>
         content.includes(
           "https://sg-origin.cloud.example.test/v1/workforces/42/runs",
         ),
@@ -89,7 +91,7 @@ describe("DeployWorkforceDialog", () => {
   })
 
   it("restores the local API target when deployment config loading fails", async () => {
-    fetchDeploymentConfigMock.mockRejectedValue(
+    apiRequestMock.mockRejectedValue(
       new Error("deployment config unavailable"),
     )
     listAgentApiKeysMock.mockResolvedValue([])
@@ -103,9 +105,13 @@ describe("DeployWorkforceDialog", () => {
       />,
     )
 
-    await waitFor(() => {
-      expect(getApiSnippetTargetMock).toHaveBeenCalledWith()
-    })
+    expect(
+      await screen.findByText((content) =>
+        content.includes(
+          "https://cloud.example.test/v1/workforces/42/runs",
+        ),
+      ),
+    ).toBeInTheDocument()
     expect(toastErrorMock).toHaveBeenCalledWith(
       "deployment_config.messages.load_failed",
     )

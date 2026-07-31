@@ -17,6 +17,7 @@ import { useI18n } from "@/contexts/i18n-context"
 import { copyToClipboard } from "@/lib/clipboard"
 import { fetchDeploymentConfig } from "@/lib/deployment-config"
 import { getApiSnippetTarget } from "@/lib/api-snippet-base-url"
+import { getBrowserLocationOrigin } from "@/lib/browser-location"
 import {
   formatWorkforceApiSnippets,
   type ApiSnippetTab,
@@ -77,7 +78,7 @@ export function DeployWorkforceDialog({
       })
       .catch(() => {
         if (!cancelled) {
-          setApiTarget(getApiSnippetTarget())
+          setApiTarget(getApiSnippetTarget(getBrowserLocationOrigin()))
           toast.error(
             t("deployment_config.messages.load_failed")
             || "Failed to load deployment configuration; using this browser's origin.",
