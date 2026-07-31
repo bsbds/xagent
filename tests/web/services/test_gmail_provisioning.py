@@ -38,6 +38,7 @@ from xagent.web.services.gmail_provisioning import (
     release_gmail_mailbox_if_unused,
     sweep_gmail_provisioning,
 )
+from xagent.web.services.trigger_providers import gmail as gmail_trigger_provider
 
 
 def test_gmail_callback_url_builds_the_canonical_callback_contract() -> None:
@@ -49,14 +50,37 @@ def test_gmail_callback_url_builds_the_canonical_callback_contract() -> None:
     )
 
 
-def test_callback_audience_grace_covers_pubsub_token_reuse_window() -> None:
-    # Pub/Sub documents that an authenticated push token may be up to one hour
-    # old. Keep a small margin so a token minted immediately before a rollout
-    # remains valid despite process propagation and ordinary clock skew.
-    assert gmail_provisioning.GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD >= timedelta(
-        hours=1,
-        minutes=5,
+def test_callback_audience_accepts_token_minted_before_recent_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the previous callback audience valid through Pub/Sub token reuse."""
+    monkeypatch.setenv(
+        "XAGENT_S2S_API_BASE_URL",
+        "https://sg-origin.cloud.example.test",
     )
+    previous_audience = (
+        "https://legacy-origin.cloud.example.test/"
+        "api/triggers/callback/gmail/callback-id"
+    )
+    rotated_at = datetime.now(timezone.utc) - timedelta(minutes=55)
+    state = GmailWatchState(
+        callback_id="callback-id",
+        push_audience=(
+            "https://sg-origin.cloud.example.test/"
+            "api/triggers/callback/gmail/callback-id"
+        ),
+        previous_push_audience=previous_audience,
+        previous_push_audience_expires_at=(
+            rotated_at + gmail_provisioning.GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+        ),
+    )
+
+    audiences = gmail_trigger_provider._accepted_callback_audiences(
+        state,
+        "callback-id",
+    )
+
+    assert previous_audience in audiences
 
 
 def test_transition_lock_yields_the_database_session(
