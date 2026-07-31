@@ -50,7 +50,11 @@ logger = logging.getLogger(__name__)
 
 GMAIL_PUSH_PUBLISHER = "gmail-api-push@system.gserviceaccount.com"
 GMAIL_WATCH_LABEL_IDS = ["INBOX"]
-GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD = timedelta(minutes=10)
+# Pub/Sub can reuse an authenticated push token for up to one hour:
+# https://docs.cloud.google.com/pubsub/docs/authenticate-push-subscriptions
+# Retain five additional minutes for rollout propagation and ordinary clock
+# skew so an old, still-valid audience is never rejected during rotation.
+GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD = timedelta(hours=1, minutes=5)
 GMAIL_WATCH_TRANSITION_LOCK_NAMESPACE = 0x58414754
 _LOCAL_GMAIL_WATCH_TRANSITION_LOCK = threading.RLock()
 

@@ -49,6 +49,16 @@ def test_gmail_callback_url_builds_the_canonical_callback_contract() -> None:
     )
 
 
+def test_callback_audience_grace_covers_pubsub_token_reuse_window() -> None:
+    # Pub/Sub documents that an authenticated push token may be up to one hour
+    # old. Keep a small margin so a token minted immediately before a rollout
+    # remains valid despite process propagation and ordinary clock skew.
+    assert gmail_provisioning.GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD >= timedelta(
+        hours=1,
+        minutes=5,
+    )
+
+
 def test_transition_lock_yields_the_database_session(
     db_session: Session,
 ) -> None:
