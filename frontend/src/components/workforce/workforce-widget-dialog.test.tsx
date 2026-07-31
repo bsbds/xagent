@@ -44,6 +44,7 @@ vi.mock("@/components/ui/sonner", () => ({
   },
 }))
 
+import { __resetDeploymentConfigCache } from "@/lib/deployment-config"
 import { WorkforceWidgetDialog } from "./workforce-widget-dialog"
 
 const WORKFORCE = {
@@ -54,6 +55,7 @@ const WORKFORCE = {
 
 describe("WorkforceWidgetDialog", () => {
   beforeEach(() => {
+    __resetDeploymentConfigCache()
     apiRequestMock.mockReset()
     apiRequestMock.mockResolvedValue(
       new Response(

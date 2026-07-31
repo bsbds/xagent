@@ -45,6 +45,18 @@ export function fetchDeploymentConfig(): Promise<DeploymentConfig> {
 }
 
 /**
+ * Clear the session memo so tests can isolate request outcomes.
+ *
+ * Production code must not call this function: deployment configuration is
+ * immutable for the lifetime of a loaded frontend, and failed requests already
+ * evict themselves. Tests need an explicit reset because Vitest reuses this
+ * module instance across cases.
+ */
+export function __resetDeploymentConfigCache(): void {
+  deploymentConfigRequest = null
+}
+
+/**
  * Represent the known-safe local target after configuration loading failed.
  *
  * Callers keep `null` while loading so regional deployments cannot briefly

@@ -12,6 +12,7 @@ vi.mock("@/lib/utils", () => ({
 }))
 
 import {
+  __resetDeploymentConfigCache,
   buildDeploymentShareUrl,
   fetchDeploymentConfig,
   resolveDeploymentOrigin,
@@ -19,9 +20,29 @@ import {
 
 describe("deployment config", () => {
   beforeEach(() => {
+    __resetDeploymentConfigCache()
     apiRequestMock.mockReset()
     getApiUrlMock.mockReset()
     getApiUrlMock.mockReturnValue("")
+  })
+
+  it("lets tests isolate successful memoized requests", async () => {
+    apiRequestMock.mockImplementation(() =>
+      Promise.resolve(new Response(
+        JSON.stringify({
+          deployment_origin: "https://sg-origin.cloud.example.test",
+          app_origin: "https://cloud.example.test",
+          region: "sg",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )),
+    )
+
+    await fetchDeploymentConfig()
+    __resetDeploymentConfigCache()
+    await fetchDeploymentConfig()
+
+    expect(apiRequestMock).toHaveBeenCalledTimes(2)
   })
 
   it("retries a failed request and caches the successful deployment targets", async () => {

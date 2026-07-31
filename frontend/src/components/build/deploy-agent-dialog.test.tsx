@@ -37,6 +37,7 @@ vi.mock("@/lib/browser-location", () => ({
   getBrowserLocationOrigin: () => "https://cloud.example.test",
 }))
 
+import { __resetDeploymentConfigCache } from "@/lib/deployment-config"
 import { DeployAgentDialog, type Agent } from "./deploy-agent-dialog"
 
 const AGENT: Agent = {
@@ -61,6 +62,7 @@ function jsonResponse(body: unknown): Response {
 
 describe("DeployAgentDialog regional targets", () => {
   beforeEach(() => {
+    __resetDeploymentConfigCache()
     deploymentConfigFails = false
     apiRequestMock.mockReset()
     apiRequestMock.mockImplementation((url: string) => {
