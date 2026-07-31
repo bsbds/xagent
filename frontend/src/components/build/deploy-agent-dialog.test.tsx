@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const apiRequestMock = vi.hoisted(() => vi.fn())
 const copyToClipboardMock = vi.hoisted(() => vi.fn())
 const toastErrorMock = vi.hoisted(() => vi.fn())
+const translateMock = vi.hoisted(() => vi.fn((key: string) => key))
 let deploymentConfigFails = false
 
 vi.mock("@/lib/api-wrapper", () => ({
@@ -19,7 +20,9 @@ vi.mock("@/lib/utils", () => ({
 }))
 
 vi.mock("@/contexts/i18n-context", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  // The production context memoizes `t`. Preserve that contract so effects
+  // which correctly depend on it do not rerun solely because of the test mock.
+  useI18n: () => ({ t: translateMock }),
 }))
 
 vi.mock("@/components/ui/sonner", () => ({
