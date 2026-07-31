@@ -121,7 +121,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     setShareLink(null)
