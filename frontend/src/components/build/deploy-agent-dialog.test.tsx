@@ -15,7 +15,7 @@ vi.mock("@/lib/api-wrapper", () => ({
 vi.mock("@/lib/utils", () => ({
   cn: (...values: Array<string | false | null | undefined>) =>
     values.filter(Boolean).join(" "),
-  getApiUrl: () => "https://cloud.example.test",
+  getApiUrl: () => "https://configured-api.example.test",
 }))
 
 vi.mock("@/contexts/i18n-context", () => ({

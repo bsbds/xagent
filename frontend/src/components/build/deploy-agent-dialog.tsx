@@ -111,7 +111,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
         if (cancelled) return
         console.error("Failed to load deployment configuration", error)
         setDeploymentConfig(browserDeploymentConfig(browserOrigin))
-        setApiSnippetTarget(getApiSnippetTarget())
+        setApiSnippetTarget(getApiSnippetTarget(browserOrigin))
         toast.error(
           t("deployment_config.messages.load_failed")
           || "Failed to load deployment configuration; using this browser's origin.",
