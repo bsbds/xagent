@@ -77,7 +77,11 @@ export function DeployWorkforceDialog({
       })
       .catch(() => {
         if (!cancelled) {
-          toast.error(t("apiKeysPage.messages.loadFailed"))
+          setApiTarget(getApiSnippetTarget())
+          toast.error(
+            t("deployment_config.messages.load_failed")
+            || "Failed to load deployment configuration; using this browser's origin.",
+          )
         }
       })
     return () => {

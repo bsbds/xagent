@@ -17,13 +17,48 @@ export interface DeploymentConfig {
   region: string | null
 }
 
-/** Load deployment targets from the backend serving the current owner. */
-export async function fetchDeploymentConfig(): Promise<DeploymentConfig> {
+let deploymentConfigRequest: Promise<DeploymentConfig> | null = null
+
+async function loadDeploymentConfig(): Promise<DeploymentConfig> {
   const response = await apiRequest(`${getApiUrl()}/api/deployment-config`)
   if (!response.ok) {
     throw new Error("Failed to load deployment configuration")
   }
   return response.json()
+}
+
+/**
+ * Load deployment targets once per browser session.
+ *
+ * The value is immutable for a deployed frontend. Reusing the same promise
+ * deduplicates consumers that mount together; a failed request is deliberately
+ * evicted so a later dialog open can recover from a transient network error.
+ */
+export function fetchDeploymentConfig(): Promise<DeploymentConfig> {
+  if (!deploymentConfigRequest) {
+    deploymentConfigRequest = loadDeploymentConfig().catch((error) => {
+      deploymentConfigRequest = null
+      throw error
+    })
+  }
+  return deploymentConfigRequest
+}
+
+/**
+ * Represent the known-safe local target after configuration loading failed.
+ *
+ * Callers keep `null` while loading so regional deployments cannot briefly
+ * expose the canonical routing edge. Only a completed failure should use this
+ * standalone-shaped value to restore the pre-configuration browser fallback.
+ */
+export function browserDeploymentConfig(
+  browserOrigin: string,
+): DeploymentConfig {
+  return {
+    deployment_origin: null,
+    app_origin: browserOrigin || null,
+    region: null,
+  }
 }
 
 /**

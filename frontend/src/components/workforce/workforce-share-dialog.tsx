@@ -11,6 +11,7 @@ import { toast } from "@/components/ui/sonner"
 import { copyToClipboard } from "@/lib/clipboard"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
 import {
+  browserDeploymentConfig,
   buildDeploymentShareUrl,
   fetchDeploymentConfig,
   type DeploymentConfig,
@@ -61,14 +62,26 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
     const load = async () => {
       try {
         setIsLoading(true)
-        const [state, targets] = await Promise.all([
+        const browserOrigin = getBrowserLocationOrigin()
+        const [stateResult, targetsResult] = await Promise.allSettled([
           getWorkforceShareLink(workforce.id),
           fetchDeploymentConfig(),
         ])
-        if (!cancelled) {
-          setShareLink(state)
-          setDeploymentConfig(targets)
+        if (cancelled) return
+
+        if (targetsResult.status === "fulfilled") {
+          setDeploymentConfig(targetsResult.value)
+        } else {
+          console.error(targetsResult.reason)
+          setDeploymentConfig(browserDeploymentConfig(browserOrigin))
+          toast.error(
+            t("deployment_config.messages.load_failed")
+            || "Failed to load deployment configuration; using this browser's origin.",
+          )
         }
+
+        if (stateResult.status === "rejected") throw stateResult.reason
+        setShareLink(stateResult.value)
       } catch (err) {
         if (!cancelled) {
           console.error(err)

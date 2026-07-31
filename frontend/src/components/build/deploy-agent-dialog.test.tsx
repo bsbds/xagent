@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const apiRequestMock = vi.hoisted(() => vi.fn())
 const copyToClipboardMock = vi.hoisted(() => vi.fn())
+const toastErrorMock = vi.hoisted(() => vi.fn())
+let deploymentConfigFails = false
 
 vi.mock("@/lib/api-wrapper", () => ({
   apiRequest: apiRequestMock,
@@ -22,7 +24,7 @@ vi.mock("@/contexts/i18n-context", () => ({
 
 vi.mock("@/components/ui/sonner", () => ({
   toast: {
-    error: vi.fn(),
+    error: toastErrorMock,
     success: vi.fn(),
   },
 }))
@@ -59,9 +61,13 @@ function jsonResponse(body: unknown): Response {
 
 describe("DeployAgentDialog regional targets", () => {
   beforeEach(() => {
+    deploymentConfigFails = false
     apiRequestMock.mockReset()
     apiRequestMock.mockImplementation((url: string) => {
       if (url.endsWith("/api/deployment-config")) {
+        if (deploymentConfigFails) {
+          return Promise.reject(new Error("deployment config unavailable"))
+        }
         return Promise.resolve(
           jsonResponse({
             deployment_origin: "https://sg-origin.cloud.example.test",
@@ -93,6 +99,7 @@ describe("DeployAgentDialog regional targets", () => {
     })
     copyToClipboardMock.mockReset()
     copyToClipboardMock.mockResolvedValue(true)
+    toastErrorMock.mockReset()
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -101,6 +108,29 @@ describe("DeployAgentDialog regional targets", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("falls back to the browser API target after config loading fails", async () => {
+    deploymentConfigFails = true
+
+    render(
+      <DeployAgentDialog
+        deployAgent={AGENT}
+        onClose={vi.fn()}
+        onUpdate={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("deploy_agent.options.rest_api.title"))
+
+    expect(
+      await screen.findByText((content) =>
+        content.includes("https://cloud.example.test/v1/chat/tasks"),
+      ),
+    ).toBeInTheDocument()
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "deployment_config.messages.load_failed",
+    )
   })
 
   it("uses the deployment origin for API and SDK snippets", async () => {

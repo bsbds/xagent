@@ -81,6 +81,29 @@ describe("DeployWorkforceDialog", () => {
     cleanup()
   })
 
+  it("restores the local API target when deployment config loading fails", async () => {
+    fetchDeploymentConfigMock.mockRejectedValue(
+      new Error("deployment config unavailable"),
+    )
+    listAgentApiKeysMock.mockResolvedValue([])
+
+    render(
+      <DeployWorkforceDialog
+        open
+        workforceId={42}
+        workforceName="Regional Workforce"
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(getApiSnippetTargetMock).toHaveBeenCalledWith()
+    })
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "deployment_config.messages.load_failed",
+    )
+  })
+
   it("keeps a newly created secret visible when refreshing the key list fails", async () => {
     listAgentApiKeysMock
       .mockResolvedValueOnce([])

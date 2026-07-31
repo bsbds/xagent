@@ -19,6 +19,7 @@ import { formatAgentApiSnippets, type ApiSnippetTab } from "@/lib/api-snippet-fo
 import type { ApiSnippetTarget } from "@/lib/api-snippet-target"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
 import {
+  browserDeploymentConfig,
   buildDeploymentShareUrl,
   fetchDeploymentConfig,
   resolveDeploymentOrigin,
@@ -107,10 +108,14 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
         setApiSnippetTarget(getApiSnippetTarget(config.deployment_origin))
       })
       .catch((error) => {
-        // Deployment targets are security-sensitive: leaving snippets empty is
-        // preferable to silently publishing a canonical URL that a regional
-        // router will reject with `region_required`.
+        if (cancelled) return
         console.error("Failed to load deployment configuration", error)
+        setDeploymentConfig(browserDeploymentConfig(browserOrigin))
+        setApiSnippetTarget(getApiSnippetTarget())
+        toast.error(
+          t("deployment_config.messages.load_failed")
+          || "Failed to load deployment configuration; using this browser's origin.",
+        )
       })
 
     return () => {

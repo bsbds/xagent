@@ -5,18 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { WorkforceDetail } from "@/types/workforce"
 
-const fetchDeploymentConfigMock = vi.hoisted(() => vi.fn())
+const apiRequestMock = vi.hoisted(() => vi.fn())
 const getWorkforceShareLinkMock = vi.hoisted(() => vi.fn())
+const toastErrorMock = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/deployment-config", () => ({
-  fetchDeploymentConfig: fetchDeploymentConfigMock,
-  buildDeploymentShareUrl: (
-    token: string,
-    config: { app_origin: string; region: string } | null,
-  ) =>
-    config
-      ? `${config.app_origin}/change-region?region=${config.region}&next=%2Fshare%2F${token}`
-      : "",
+vi.mock("@/lib/api-wrapper", () => ({
+  apiRequest: apiRequestMock,
+}))
+
+vi.mock("@/lib/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/utils")>()),
+  getApiUrl: () => "",
 }))
 
 vi.mock("@/lib/workforces-api", () => ({
@@ -34,6 +33,13 @@ vi.mock("@/contexts/i18n-context", () => ({
   useI18n: () => ({ t: (key: string) => key }),
 }))
 
+vi.mock("@/components/ui/sonner", () => ({
+  toast: {
+    error: toastErrorMock,
+    success: vi.fn(),
+  },
+}))
+
 import { WorkforceShareDialog } from "./workforce-share-dialog"
 
 const WORKFORCE = {
@@ -44,12 +50,17 @@ const WORKFORCE = {
 
 describe("WorkforceShareDialog", () => {
   beforeEach(() => {
-    fetchDeploymentConfigMock.mockReset()
-    fetchDeploymentConfigMock.mockResolvedValue({
-      deployment_origin: "https://sg-origin.cloud.example.test",
-      app_origin: "https://cloud.example.test",
-      region: "sg",
-    })
+    apiRequestMock.mockReset()
+    apiRequestMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          deployment_origin: "https://sg-origin.cloud.example.test",
+          app_origin: "https://cloud.example.test",
+          region: "sg",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    )
     getWorkforceShareLinkMock.mockReset()
     getWorkforceShareLinkMock.mockResolvedValue({
       workforce_id: 42,
@@ -57,10 +68,32 @@ describe("WorkforceShareDialog", () => {
       share_token: "regional-share",
       share_updated_at: "2026-07-24T00:00:00Z",
     })
+    toastErrorMock.mockReset()
   })
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("keeps the standalone share link usable when config loading fails", async () => {
+    apiRequestMock.mockRejectedValue(new Error("deployment config unavailable"))
+
+    render(
+      <WorkforceShareDialog
+        workforce={WORKFORCE}
+        open
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(
+      await screen.findByDisplayValue(
+        "https://cloud.example.test/share/regional-share",
+      ),
+    ).toBeInTheDocument()
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "deployment_config.messages.load_failed",
+    )
   })
 
   it("builds a canonical share link that bootstraps the owning region", async () => {

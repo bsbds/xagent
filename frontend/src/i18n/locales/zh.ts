@@ -3321,6 +3321,11 @@ const zh = {
     unknownWorker: "未知 Worker",
     viewAgentExecution: "查看 Agent 详情"
   },
+  deployment_config: {
+    messages: {
+      load_failed: "部署配置加载失败，已改用当前浏览器地址。"
+    }
+  },
   deploy_agent: {
     title: "部署 Agent",
     tabs: {

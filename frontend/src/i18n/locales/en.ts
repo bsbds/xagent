@@ -3321,6 +3321,11 @@ Build when you need.`,
     unknownWorker: "Unknown Worker",
     viewAgentExecution: "View Agent details"
   },
+  deployment_config: {
+    messages: {
+      load_failed: "Failed to load deployment configuration; using this browser's origin."
+    }
+  },
   deploy_agent: {
     title: "Deploy Agent",
     tabs: {
