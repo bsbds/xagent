@@ -25,7 +25,6 @@ from typing import Any, Callable, Iterator
 from sqlalchemy import String
 from sqlalchemy import cast as sql_cast
 from sqlalchemy import func, or_, text
-from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -92,23 +91,6 @@ def _gmail_watch_transition_lock(
         "namespace": GMAIL_WATCH_TRANSITION_LOCK_NAMESPACE,
         "oauth_account_id": int(oauth_account_id),
     }
-    if isinstance(bind, Connection):
-        db.execute(
-            text("SELECT pg_advisory_lock(:namespace, :oauth_account_id)"),
-            parameters,
-        )
-        db.commit()
-        try:
-            yield db
-        finally:
-            db.rollback()
-            db.execute(
-                text("SELECT pg_advisory_unlock(:namespace, :oauth_account_id)"),
-                parameters,
-            )
-            db.commit()
-        return
-
     # The caller's read transaction may already own a pooled connection.
     # Commit it before acquiring the lock connection; the transition Session
     # below performs all database work on that one lock-owning connection.
