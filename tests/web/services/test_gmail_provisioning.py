@@ -1299,6 +1299,64 @@ def test_reconcile_execute_repairs_cloud_drift_when_database_is_current(
     assert stored["push_config"]["oidc_token"]["audience"] == expected_audience
 
 
+def test_reconcile_cloud_drift_refreshes_durable_previous_audience_grace(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preserve the old audience when repairing a legacy DB-first transition."""
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    previous_audience = str(state.push_audience)
+    frozen_now = datetime.now(timezone.utc)
+    monkeypatch.setattr(gmail_provisioning, "_now", lambda: frozen_now)
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    expected_audience = (
+        "https://sg-origin.cloud.xagent.co/api/triggers/callback/gmail/"
+        f"{state.callback_id}"
+    )
+    setattr(state, "push_audience", expected_audience)
+    setattr(state, "previous_push_audience", previous_audience)
+    setattr(
+        state,
+        "previous_push_audience_expires_at",
+        frozen_now - timedelta(minutes=1),
+    )
+    db_session.commit()
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    db_session.refresh(state)
+    stored = subscriber.subscriptions[str(state.subscription_name)]
+    grace_expires_at = state.previous_push_audience_expires_at
+    assert grace_expires_at is not None
+    if grace_expires_at.tzinfo is None:
+        grace_expires_at = grace_expires_at.replace(tzinfo=timezone.utc)
+    assert result.changed == 1
+    assert stored["push_config"]["push_endpoint"] == expected_audience
+    assert stored["push_config"]["oidc_token"]["audience"] == expected_audience
+    assert state.previous_push_audience == previous_audience
+    assert grace_expires_at == (
+        frozen_now + gmail_provisioning.GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+    )
+    assert previous_audience in gmail_trigger_provider._accepted_callback_audiences(
+        state,
+        str(state.callback_id),
+    )
+
+
 def test_reconcile_execute_supports_update_only_pubsub_permissions(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
