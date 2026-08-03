@@ -75,6 +75,51 @@ describe("deployment config", () => {
     expect(apiRequestMock).toHaveBeenLastCalledWith("/api/deployment-config")
   })
 
+  it.each([
+    [
+      "missing fields",
+      {
+        deployment_origin: "https://sg-origin.cloud.example.test",
+        app_origin: "https://cloud.example.test",
+      },
+    ],
+    [
+      "non-string fields",
+      {
+        deployment_origin: { origin: "https://sg-origin.cloud.example.test" },
+        app_origin: "https://cloud.example.test",
+        region: "sg",
+      },
+    ],
+    [
+      "invalid origins",
+      {
+        deployment_origin: "not-an-origin",
+        app_origin: "https://cloud.example.test",
+        region: "sg",
+      },
+    ],
+    [
+      "origins with query parameters",
+      {
+        deployment_origin: "https://sg-origin.cloud.example.test?region=sg",
+        app_origin: "https://cloud.example.test",
+        region: "sg",
+      },
+    ],
+  ])("rejects a 200 response with %s", async (_case, payload) => {
+    apiRequestMock.mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+
+    await expect(fetchDeploymentConfig()).rejects.toThrow(
+      "Invalid deployment configuration",
+    )
+  })
+
   it("uses the explicit deployment origin after configuration loads", () => {
     expect(
       resolveDeploymentOrigin(

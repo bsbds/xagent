@@ -24,7 +24,51 @@ async function loadDeploymentConfig(): Promise<DeploymentConfig> {
   if (!response.ok) {
     throw new Error("Failed to load deployment configuration")
   }
-  return response.json()
+  return parseDeploymentConfig(await response.json())
+}
+
+function parseDeploymentConfig(value: unknown): DeploymentConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid deployment configuration")
+  }
+
+  const candidate = value as Record<string, unknown>
+  if (
+    !isNullableOrigin(candidate.deployment_origin)
+    || !isNullableOrigin(candidate.app_origin)
+    || !isNullableString(candidate.region)
+  ) {
+    throw new Error("Invalid deployment configuration")
+  }
+
+  return {
+    deployment_origin: candidate.deployment_origin,
+    app_origin: candidate.app_origin,
+    region: candidate.region,
+  }
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string"
+}
+
+function isNullableOrigin(value: unknown): value is string | null {
+  if (value === null) return true
+  if (typeof value !== "string") return false
+
+  try {
+    const url = new URL(value)
+    return (
+      (url.protocol === "http:" || url.protocol === "https:")
+      && !url.username
+      && !url.password
+      && url.pathname === "/"
+      && !url.search
+      && !url.hash
+    )
+  } catch {
+    return false
+  }
 }
 
 /**
