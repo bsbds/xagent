@@ -99,11 +99,11 @@ def _accepted_callback_audiences(
     """Return the audiences valid during a callback endpoint transition.
 
     Reconciliation must update Pub/Sub before it can persist the corresponding
-    audience locally. During that short interval Google signs callbacks for the
-    configured endpoint while the watch row still contains the previous one.
-    Accepting both values makes that transition lossless; once the database
-    commit succeeds both values collapse to the same URL and the old audience
-    is no longer trusted.
+    audience locally. During that short interval, the stored old audience and
+    the configured new audience cover both sides of the cloud-before-database
+    transition. After the commit, those values collapse to the new URL while
+    the durable previous audience remains accepted until its bounded grace
+    period expires.
     """
     stored_audience = str(state.push_audience or "").strip()
     callback_base_url = get_gmail_callback_base_url()
