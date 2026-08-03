@@ -3353,6 +3353,9 @@ Build when you need.`,
     viewAgentExecution: "View Agent details"
   },
   deployment_config: {
+    actions: {
+      retry: "Retry"
+    },
     messages: {
       load_failed: "Failed to load deployment configuration; using this browser's origin."
     }

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react"
 import { Check, Copy, Share } from "lucide-react"
+import { DeploymentConfigFallbackAlert } from "@/components/deployment/deployment-config-fallback-alert"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -39,6 +40,7 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
   const [appOrigin, setAppOrigin] = useState("")
   const [deploymentConfig, setDeploymentConfig] =
     useState<DeploymentConfig | null>(null)
+  const [deploymentConfigFailed, setDeploymentConfigFailed] = useState(false)
 
   const isActive = workforce?.status === "active"
   const shareEnabled = shareLink?.share_enabled ?? false
@@ -62,7 +64,6 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
     const load = async () => {
       try {
         setIsLoading(true)
-        const browserOrigin = getBrowserLocationOrigin()
         const [stateResult, targetsResult] = await Promise.allSettled([
           getWorkforceShareLink(workforce.id),
           fetchDeploymentConfig(),
@@ -71,9 +72,11 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
 
         if (targetsResult.status === "fulfilled") {
           setDeploymentConfig(targetsResult.value)
+          setDeploymentConfigFailed(false)
         } else {
           console.error(targetsResult.reason)
           setDeploymentConfig(browserDeploymentConfig())
+          setDeploymentConfigFailed(true)
           toast.error(
             t("deployment_config.messages.load_failed")
             || "Failed to load deployment configuration; using this browser's origin.",
@@ -99,6 +102,19 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
     // would refetch on every render where the i18n function identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, workforce?.id, isActive])
+
+  const retryDeploymentConfig = async () => {
+    try {
+      setDeploymentConfig(await fetchDeploymentConfig())
+      setDeploymentConfigFailed(false)
+    } catch (error) {
+      console.error(error)
+      toast.error(
+        t("deployment_config.messages.load_failed")
+        || "Failed to load deployment configuration; using this browser's origin.",
+      )
+    }
+  }
 
   const runShareAction = async (
     action: (id: number) => Promise<WorkforceShareLink>,
@@ -142,6 +158,10 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
           </DialogTitle>
           <DialogDescription>{workforce?.name}</DialogDescription>
         </DialogHeader>
+
+        {deploymentConfigFailed && (
+          <DeploymentConfigFallbackAlert onRetry={retryDeploymentConfig} />
+        )}
 
         <div className="space-y-4 border rounded-lg p-4">
           <div className="space-y-1">

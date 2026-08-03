@@ -132,6 +132,23 @@ describe("DeployAgentDialog regional targets", () => {
     expect(toastErrorMock).toHaveBeenCalledWith(
       "deployment_config.messages.load_failed",
     )
+
+    expect(screen.getByText("deployment_config.messages.load_failed")).toBeInTheDocument()
+    deploymentConfigFails = false
+    fireEvent.click(screen.getByRole("button", {
+      name: "deployment_config.actions.retry",
+    }))
+
+    expect(
+      await screen.findByText((content) =>
+        content.includes(
+          "https://sg-origin.cloud.example.test/v1/chat/tasks",
+        ),
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("deployment_config.messages.load_failed"),
+    ).not.toBeInTheDocument()
   })
 
   it("uses the deployment origin for API and SDK snippets", async () => {

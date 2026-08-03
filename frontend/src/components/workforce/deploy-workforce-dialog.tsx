@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react"
 import { Check, Copy, KeyRound, Loader2 } from "lucide-react"
 
+import { DeploymentConfigFallbackAlert } from "@/components/deployment/deployment-config-fallback-alert"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -55,6 +56,7 @@ export function DeployWorkforceDialog({
   const [apiTab, setApiTab] = useState<ApiSnippetTab>("curl")
   const [copiedSnippet, setCopiedSnippet] = useState(false)
   const [apiTarget, setApiTarget] = useState<ApiSnippetTarget>({ baseUrl: "" })
+  const [deploymentConfigFailed, setDeploymentConfigFailed] = useState(false)
 
   const [keys, setKeys] = useState<AgentApiKeyListItem[]>([])
   const [loadingKeys, setLoadingKeys] = useState(false)
@@ -66,6 +68,7 @@ export function DeployWorkforceDialog({
   useEffect(() => {
     if (!open) {
       setApiTarget({ baseUrl: "" })
+      setDeploymentConfigFailed(false)
       return
     }
 
@@ -74,11 +77,13 @@ export function DeployWorkforceDialog({
       .then((config) => {
         if (!cancelled) {
           setApiTarget(getApiSnippetTarget(config.deployment_origin))
+          setDeploymentConfigFailed(false)
         }
       })
       .catch(() => {
         if (!cancelled) {
           setApiTarget(getApiSnippetTarget(getBrowserLocationOrigin()))
+          setDeploymentConfigFailed(true)
           toast.error(
             t("deployment_config.messages.load_failed")
             || "Failed to load deployment configuration; using this browser's origin.",
@@ -89,6 +94,19 @@ export function DeployWorkforceDialog({
       cancelled = true
     }
   }, [open, t])
+
+  const retryDeploymentConfig = async () => {
+    try {
+      const config = await fetchDeploymentConfig()
+      setApiTarget(getApiSnippetTarget(config.deployment_origin))
+      setDeploymentConfigFailed(false)
+    } catch {
+      toast.error(
+        t("deployment_config.messages.load_failed")
+        || "Failed to load deployment configuration; using this browser's origin.",
+      )
+    }
+  }
 
   useEffect(() => {
     if (!open) {
@@ -182,6 +200,10 @@ export function DeployWorkforceDialog({
               `Create runs on "${workforceName}" with a workforce API key, then poll GET /v1/chat/tasks/{id} for results.`}
           </DialogDescription>
         </DialogHeader>
+
+        {deploymentConfigFailed && (
+          <DeploymentConfigFallbackAlert onRetry={retryDeploymentConfig} />
+        )}
 
         <div className="space-y-5">
           {/* Snippet tabs */}

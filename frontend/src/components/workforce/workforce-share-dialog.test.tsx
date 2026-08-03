@@ -1,6 +1,6 @@
 /// <reference types="@testing-library/jest-dom/vitest" />
 import React from "react"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { WorkforceDetail } from "@/types/workforce"
@@ -85,7 +85,7 @@ describe("WorkforceShareDialog", () => {
   })
 
   it("keeps the standalone share link usable when config loading fails", async () => {
-    apiRequestMock.mockRejectedValue(new Error("deployment config unavailable"))
+    apiRequestMock.mockRejectedValueOnce(new Error("deployment config unavailable"))
 
     render(
       <WorkforceShareDialog
@@ -103,6 +103,20 @@ describe("WorkforceShareDialog", () => {
     expect(toastErrorMock).toHaveBeenCalledWith(
       "deployment_config.messages.load_failed",
     )
+
+    expect(screen.getByText("deployment_config.messages.load_failed")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", {
+      name: "deployment_config.actions.retry",
+    }))
+
+    expect(
+      await screen.findByDisplayValue(
+        "https://cloud.example.test/change-region?region=sg&next=%2Fshare%2Fregional-share",
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("deployment_config.messages.load_failed"),
+    ).not.toBeInTheDocument()
   })
 
   it("builds a canonical share link that bootstraps the owning region", async () => {

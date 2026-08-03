@@ -3353,6 +3353,9 @@ const zh = {
     viewAgentExecution: "查看 Agent 详情"
   },
   deployment_config: {
+    actions: {
+      retry: "重试"
+    },
     messages: {
       load_failed: "部署配置加载失败，已改用当前浏览器地址。"
     }

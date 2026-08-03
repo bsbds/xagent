@@ -91,7 +91,7 @@ describe("DeployWorkforceDialog", () => {
   })
 
   it("restores the local API target when deployment config loading fails", async () => {
-    apiRequestMock.mockRejectedValue(
+    apiRequestMock.mockRejectedValueOnce(
       new Error("deployment config unavailable"),
     )
     listAgentApiKeysMock.mockResolvedValue([])
@@ -115,6 +115,22 @@ describe("DeployWorkforceDialog", () => {
     expect(toastErrorMock).toHaveBeenCalledWith(
       "deployment_config.messages.load_failed",
     )
+
+    expect(screen.getByText("deployment_config.messages.load_failed")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", {
+      name: "deployment_config.actions.retry",
+    }))
+
+    expect(
+      await screen.findByText((content) =>
+        content.includes(
+          "https://sg-origin.cloud.example.test/v1/workforces/42/runs",
+        ),
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("deployment_config.messages.load_failed"),
+    ).not.toBeInTheDocument()
   })
 
   it("reports snippet clipboard failures", async () => {

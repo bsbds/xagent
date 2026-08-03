@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useState } from "react"
+import { DeploymentConfigFallbackAlert } from "@/components/deployment/deployment-config-fallback-alert"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
@@ -79,6 +80,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
   const [appOrigin, setAppOrigin] = useState("")
   const [deploymentConfig, setDeploymentConfig] =
     useState<DeploymentConfig | null>(null)
+  const [deploymentConfigFailed, setDeploymentConfigFailed] = useState(false)
   const isPublished = deployAgent?.status === "published"
   const shareEnabled = shareLink?.share_enabled ?? deployAgent?.share_enabled ?? false
   const shareUrl = buildDeploymentShareUrl(
@@ -106,12 +108,14 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
         if (cancelled) return
         setDeploymentConfig(config)
         setApiSnippetTarget(getApiSnippetTarget(config.deployment_origin))
+        setDeploymentConfigFailed(false)
       })
       .catch((error) => {
         if (cancelled) return
         console.error("Failed to load deployment configuration", error)
         setDeploymentConfig(browserDeploymentConfig())
         setApiSnippetTarget(getApiSnippetTarget(browserOrigin))
+        setDeploymentConfigFailed(true)
         toast.error(
           t("deployment_config.messages.load_failed")
           || "Failed to load deployment configuration; using this browser's origin.",
@@ -122,6 +126,21 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
       cancelled = true
     }
   }, [t])
+
+  const retryDeploymentConfig = async () => {
+    try {
+      const config = await fetchDeploymentConfig()
+      setDeploymentConfig(config)
+      setApiSnippetTarget(getApiSnippetTarget(config.deployment_origin))
+      setDeploymentConfigFailed(false)
+    } catch (error) {
+      console.error("Failed to load deployment configuration", error)
+      toast.error(
+        t("deployment_config.messages.load_failed")
+        || "Failed to load deployment configuration; using this browser's origin.",
+      )
+    }
+  }
 
   useEffect(() => {
     setShareLink(null)
@@ -458,6 +477,10 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
           </DialogTitle>
           <DialogDescription>{deployAgent?.name}</DialogDescription>
         </DialogHeader>
+
+        {deploymentConfigFailed && (
+          <DeploymentConfigFallbackAlert onRetry={retryDeploymentConfig} />
+        )}
 
         {activeView === "options" ? (
           <div className="mt-6">
