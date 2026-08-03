@@ -23,6 +23,7 @@ from typing import Sequence
 from .models.database import configure_db, get_session_local, init_db
 from .services.gmail_provisioning import (
     GmailProvisioningError,
+    GmailPushEndpointReconciliation,
     reconcile_gmail_push_endpoints,
 )
 
@@ -54,17 +55,14 @@ def run(argv: Sequence[str] | None = None) -> int:
         try:
             result = reconcile_gmail_push_endpoints(db, execute=args.execute)
         except (GmailProvisioningError, ValueError) as exc:
-            payload = {
-                "mode": "execute" if args.execute else "audit",
-                "scanned": 0,
-                "changed": 0,
-                "unchanged": 0,
-                "skipped": 0,
-                "failed": 1,
-                "errors": [str(exc)],
-            }
-            print(json.dumps(payload, sort_keys=True))
-            return 1
+            result = GmailPushEndpointReconciliation(
+                scanned=0,
+                changed=0,
+                unchanged=0,
+                skipped=0,
+                failed=1,
+                errors=(str(exc),),
+            )
     finally:
         db.close()
 
