@@ -86,6 +86,12 @@ degrades to re-applying it when that read is unavailable. Allow
 topic. Xagent grants the Gmail publisher IAM binding during provisioning when
 the credentials have permission to update topic IAM policy.
 
+Backend startup applies the
+`20260729_add_gmail_audience_grace` Alembic migration before serving requests.
+It adds two nullable audience-grace columns to `gmail_watch_states`; no data
+backfill or separate migration command is required. Complete that backend
+startup before running the endpoint reconciler below.
+
 When introducing or changing `XAGENT_S2S_API_BASE_URL`, deploy and verify its
 direct-origin ingress before changing the backend environment. Existing Gmail
 subscriptions persist their push endpoint and OIDC audience in Pub/Sub, so
@@ -129,22 +135,28 @@ advertise a shared external ingress and a region bootstrap.
 
 ### Prerequisites and configuration
 
-No new standalone environment variable or data migration is required. Existing
-reverse proxies must continue forwarding `/api/*` to the backend.
+No new standalone environment variable is required. Existing reverse proxies
+must continue forwarding `/api/*` to the backend. The Gmail audience-grace
+migration described above is part of the same backend release, but the owner
+deployment-target route itself does not require a data backfill.
 
 ### Deployment and migration steps
 
 Deploy the backend containing `/api/deployment-config` before the matching
-frontend. A new frontend paired with an older backend deliberately leaves
-deployment artifacts unavailable instead of emitting an origin that may be
-incorrect.
+frontend. If a new frontend temporarily reaches an older backend, it uses the
+browser origin and keeps a warning with a retry action visible. That fallback
+preserves standalone behavior, but it can be the wrong external target for a
+regional deployment; finish the backend rollout and retry before copying an
+artifact there.
 
 ### Verification and monitoring
 
 Verify that `/api/deployment-config` returns the expected `app_origin`, with
 `deployment_origin` and `region` unset for standalone XAgent. In the owner UI,
 verify one Agent or Workforce API snippet, widget snippet, and public share
-link against the deployment's existing external origins.
+link against the deployment's existing external origins. Also verify that a
+failed configuration request shows the persistent fallback warning and that
+Retry clears it after the route becomes available.
 
 ### Rollback
 
