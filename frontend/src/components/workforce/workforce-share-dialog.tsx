@@ -73,7 +73,7 @@ export function WorkforceShareDialog({ workforce, open, onClose }: WorkforceShar
           setDeploymentConfig(targetsResult.value)
         } else {
           console.error(targetsResult.reason)
-          setDeploymentConfig(browserDeploymentConfig(browserOrigin))
+          setDeploymentConfig(browserDeploymentConfig())
           toast.error(
             t("deployment_config.messages.load_failed")
             || "Failed to load deployment configuration; using this browser's origin.",

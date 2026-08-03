@@ -107,12 +107,10 @@ export function __resetDeploymentConfigCache(): void {
  * expose the canonical routing edge. Only a completed failure should use this
  * standalone-shaped value to restore the pre-configuration browser fallback.
  */
-export function browserDeploymentConfig(
-  browserOrigin: string,
-): DeploymentConfig {
+export function browserDeploymentConfig(): DeploymentConfig {
   return {
     deployment_origin: null,
-    app_origin: browserOrigin || null,
+    app_origin: null,
     region: null,
   }
 }

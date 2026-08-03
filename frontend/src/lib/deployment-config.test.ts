@@ -13,6 +13,7 @@ vi.mock("@/lib/utils", () => ({
 
 import {
   __resetDeploymentConfigCache,
+  browserDeploymentConfig,
   buildDeploymentShareUrl,
   fetchDeploymentConfig,
   resolveDeploymentOrigin,
@@ -144,6 +145,14 @@ describe("deployment config", () => {
         "https://cloud.example.test",
       ),
     ).toBe("")
+  })
+
+  it("represents browser fallback without duplicating the browser origin", () => {
+    expect(browserDeploymentConfig()).toEqual({
+      deployment_origin: null,
+      app_origin: null,
+      region: null,
+    })
   })
 
   it("uses browser origins for standalone deployment configuration", () => {
