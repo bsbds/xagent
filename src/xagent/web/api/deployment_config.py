@@ -5,7 +5,7 @@ clients should call. Hosting layers may replace this route to advertise an
 explicit regional origin while the standalone application keeps using its
 configured public URLs.
 
-This endpoint is intentionally unauthenticated: it exposes only public origins
+This endpoint is intentionally unauthenticated: it exposes only public URLs
 that generated snippets and links already reveal. A hosting layer that uses
 ``region`` to construct a ``/change-region?next=...`` bootstrap must validate
 ``next`` as an allowlisted same-origin relative path; this generic contract

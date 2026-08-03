@@ -8,7 +8,7 @@ export interface DeploymentConfig {
    * advertise a region-pinned origin that differs from the owner's browser.
    */
   deployment_origin: string | null
-  /** Canonical application origin used for browser share links. */
+  /** Canonical application base URL used for browser share links. */
   app_origin: string | null
   /**
    * Optional routing region. When present, share links first visit the
@@ -35,7 +35,7 @@ function parseDeploymentConfig(value: unknown): DeploymentConfig {
   const candidate = value as Record<string, unknown>
   if (
     !isNullableOrigin(candidate.deployment_origin)
-    || !isNullableOrigin(candidate.app_origin)
+    || !isNullableAppBaseUrl(candidate.app_origin)
     || !isNullableString(candidate.region)
   ) {
     throw new Error("Invalid deployment configuration")
@@ -53,6 +53,17 @@ function isNullableString(value: unknown): value is string | null {
 }
 
 function isNullableOrigin(value: unknown): value is string | null {
+  return isNullableHttpUrl(value, false)
+}
+
+function isNullableAppBaseUrl(value: unknown): value is string | null {
+  return isNullableHttpUrl(value, true)
+}
+
+function isNullableHttpUrl(
+  value: unknown,
+  allowPath: boolean,
+): value is string | null {
   if (value === null) return true
   if (typeof value !== "string") return false
 
@@ -62,7 +73,7 @@ function isNullableOrigin(value: unknown): value is string | null {
       (url.protocol === "http:" || url.protocol === "https:")
       && !url.username
       && !url.password
-      && url.pathname === "/"
+      && (allowPath || url.pathname === "/")
       && !url.search
       && !url.hash
     )
@@ -136,7 +147,7 @@ export function resolveDeploymentOrigin(
  * regional origin.
  *
  * Standalone deployments use their ordinary application URL. Multi-region
- * hosts advertise a region and canonical application origin, causing the
+ * hosts advertise a region and canonical application base URL, causing the
  * recipient to establish routing state through `/change-region` before the
  * browser opens `/share/<token>`.
  */
@@ -147,19 +158,30 @@ export function buildDeploymentShareUrl(
 ): string {
   if (!shareToken || !config) return ""
 
-  const sharePath = `/share/${encodeURIComponent(shareToken)}`
   const appOrigin = resolveApiSnippetBaseUrl(
     config.app_origin || browserOrigin,
     browserOrigin,
   )
   if (!appOrigin) return ""
 
+  const shareUrl = appendDeploymentPath(
+    appOrigin,
+    `share/${encodeURIComponent(shareToken)}`,
+  )
   if (!config.region) {
-    return new URL(sharePath, appOrigin).toString()
+    return shareUrl.toString()
   }
 
-  const bootstrap = new URL("/change-region", appOrigin)
+  const bootstrap = appendDeploymentPath(appOrigin, "change-region")
   bootstrap.searchParams.set("region", config.region)
-  bootstrap.searchParams.set("next", sharePath)
+  bootstrap.searchParams.set("next", shareUrl.pathname)
   return bootstrap.toString()
+}
+
+/** Append an application route without discarding a configured path prefix. */
+function appendDeploymentPath(baseUrl: string, path: string): URL {
+  const url = new URL(baseUrl)
+  const basePath = url.pathname.replace(/\/+$/, "")
+  url.pathname = `${basePath}/${path.replace(/^\/+/, "")}`
+  return url
 }

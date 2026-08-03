@@ -121,6 +121,25 @@ describe("deployment config", () => {
     )
   })
 
+  it("accepts an application base URL with a path prefix", async () => {
+    apiRequestMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          deployment_origin: "https://sg-origin.cloud.example.test",
+          app_origin: "https://cloud.example.test/xagent",
+          region: "sg",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+
+    await expect(fetchDeploymentConfig()).resolves.toEqual({
+      deployment_origin: "https://sg-origin.cloud.example.test",
+      app_origin: "https://cloud.example.test/xagent",
+      region: "sg",
+    })
+  })
+
   it("uses the explicit deployment origin after configuration loads", () => {
     expect(
       resolveDeploymentOrigin(
@@ -202,6 +221,20 @@ describe("deployment config", () => {
     ).toBe("https://app.example.test/share/share-token")
   })
 
+  it("preserves the application path prefix in standalone share links", () => {
+    expect(
+      buildDeploymentShareUrl(
+        "share-token",
+        {
+          deployment_origin: "https://api.example.test",
+          app_origin: "https://app.example.test/xagent",
+          region: null,
+        },
+        "https://app.example.test",
+      ),
+    ).toBe("https://app.example.test/xagent/share/share-token")
+  })
+
   it("routes regional share links through the canonical region bootstrap", () => {
     expect(
       buildDeploymentShareUrl(
@@ -215,6 +248,22 @@ describe("deployment config", () => {
       ),
     ).toBe(
       "https://cloud.example.test/change-region?region=sg&next=%2Fshare%2Fshare-token",
+    )
+  })
+
+  it("preserves the application path prefix in regional share links", () => {
+    expect(
+      buildDeploymentShareUrl(
+        "share-token",
+        {
+          deployment_origin: "https://sg-origin.cloud.example.test",
+          app_origin: "https://cloud.example.test/xagent",
+          region: "sg",
+        },
+        "https://cloud.example.test",
+      ),
+    ).toBe(
+      "https://cloud.example.test/xagent/change-region?region=sg&next=%2Fxagent%2Fshare%2Fshare-token",
     )
   })
 })
