@@ -93,15 +93,6 @@ def test_transition_lock_yields_the_database_session(
         assert transition_db is db_session
 
 
-def test_session_engine_supports_connection_bound_sessions() -> None:
-    helper = getattr(gmail_provisioning, "_session_engine", None)
-    assert callable(helper)
-    engine = get_engine()
-
-    with engine.connect() as connection, Session(bind=connection) as db:
-        assert helper(db) is engine
-
-
 def test_postgresql_transition_uses_only_the_lock_owning_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

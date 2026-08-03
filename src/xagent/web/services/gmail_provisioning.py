@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator
 
-from sqlalchemy import Engine, String
+from sqlalchemy import String
 from sqlalchemy import cast as sql_cast
 from sqlalchemy import func, or_, text
 from sqlalchemy.engine import Connection
@@ -82,7 +82,7 @@ def _gmail_watch_transition_lock(
     and reconciliation workers share one process.
     """
     bind = db.get_bind()
-    engine = _session_engine(db)
+    engine = bind.engine
     if engine.dialect.name != "postgresql":
         with _LOCAL_GMAIL_WATCH_TRANSITION_LOCK:
             yield db
@@ -130,12 +130,6 @@ def _gmail_watch_transition_lock(
                 parameters,
             )
             lock_connection.commit()
-
-
-def _session_engine(db: Session) -> Engine:
-    """Return a Session's engine for both Engine- and Connection-bound forms."""
-    return db.get_bind().engine
-
 
 @dataclass(frozen=True)
 class GmailPushEndpointReconciliation:
