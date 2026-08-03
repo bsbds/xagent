@@ -2017,7 +2017,7 @@ def pg_session():
         Base.metadata.drop_all(bind=engine)
 
 
-def test_postgresql_transition_lock_serializes_each_oauth_account(
+def test_postgresql_transition_lock_contends_per_oauth_account(
     pg_session: Session,
 ) -> None:
     """Exercise the real PostgreSQL advisory-lock scope and release behavior.
