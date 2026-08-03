@@ -2017,6 +2017,69 @@ def pg_session():
         Base.metadata.drop_all(bind=engine)
 
 
+def test_postgresql_transition_lock_serializes_each_oauth_account(
+    pg_session: Session,
+) -> None:
+    """Exercise the real PostgreSQL advisory-lock scope and release behavior.
+
+    A transition for the same OAuth account must wait, while a transition for
+    a different account must remain independent. Releasing the first lock must
+    then let its waiter complete. This complements the SQLite pool fake above:
+    only PostgreSQL can prove the actual advisory-lock semantics.
+    """
+    same_lock_attempted = threading.Event()
+    same_lock_acquired = threading.Event()
+    other_lock_acquired = threading.Event()
+    errors: list[BaseException] = []
+
+    def acquire_lock(
+        oauth_account_id: int,
+        attempted: threading.Event,
+        acquired: threading.Event,
+    ) -> None:
+        session = get_session_local()()
+        try:
+            attempted.set()
+            with gmail_provisioning._gmail_watch_transition_lock(
+                session,
+                oauth_account_id=oauth_account_id,
+            ):
+                acquired.set()
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+        finally:
+            session.close()
+
+    same_account = threading.Thread(
+        target=acquire_lock,
+        args=(7001, same_lock_attempted, same_lock_acquired),
+    )
+    other_account_attempted = threading.Event()
+    other_account = threading.Thread(
+        target=acquire_lock,
+        args=(7002, other_account_attempted, other_lock_acquired),
+    )
+
+    with gmail_provisioning._gmail_watch_transition_lock(
+        pg_session,
+        oauth_account_id=7001,
+    ):
+        same_account.start()
+        assert same_lock_attempted.wait(timeout=10)
+        assert not same_lock_acquired.wait(timeout=0.5)
+
+        other_account.start()
+        assert other_account_attempted.wait(timeout=10)
+        assert other_lock_acquired.wait(timeout=10)
+        other_account.join(timeout=10)
+        assert not other_account.is_alive()
+
+    assert same_lock_acquired.wait(timeout=10)
+    same_account.join(timeout=10)
+    assert not same_account.is_alive()
+    assert errors == []
+
+
 def test_release_and_reprovision_contend_on_the_watch_state_lock(
     pg_session: Session,
 ) -> None:
