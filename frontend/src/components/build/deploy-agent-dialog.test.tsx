@@ -105,10 +105,6 @@ describe("DeployAgentDialog regional targets", () => {
     copyToClipboardMock.mockReset()
     copyToClipboardMock.mockResolvedValue(true)
     toastErrorMock.mockReset()
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-    })
   })
 
   afterEach(() => {
