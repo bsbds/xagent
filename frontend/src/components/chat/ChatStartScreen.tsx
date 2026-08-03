@@ -1,6 +1,7 @@
 import React from "react";
 import { Bot, Sparkles } from "lucide-react";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { TemplateQuickAccess } from "@/components/chat/TemplateQuickAccess";
 import { useI18n } from "@/contexts/i18n-context";
 import {
   Tooltip,
@@ -9,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getApiUrl } from "@/lib/utils";
+import type { Template, SamplePrompt } from "@/types/template";
 
 export interface PromptCard {
   icon?: any;
@@ -28,9 +30,38 @@ export interface AgentCard {
   status?: string;
   readonly?: boolean;
   can_edit?: boolean;
+  // Built-in template id this agent was instantiated from, or null/undefined
+  // for agents built from scratch. Used to key template-reuse matching off a
+  // stable id instead of the user-editable display name.
+  template_id?: string | null;
 }
 
-interface ChatStartScreenProps {
+// When `templates` is supplied, TemplateQuickAccess is rendered and needs a
+// real handler for both callbacks - a `|| (() => {})` fallback would silently
+// swallow category switches/prompt picks instead of surfacing the missing
+// wiring at compile time. Omitting `templates` falls back to the plain
+// prompt-card grid, which doesn't use either handler.
+type TemplateQuickAccessSlotProps =
+  | {
+      templates?: undefined;
+      selectedCategory?: string;
+      onCategoryChange?: (category: string) => void;
+      onTemplatePromptSelect?: (template: Template, prompt: SamplePrompt, index: number) => void;
+      templatesLoading?: boolean;
+      templatesError?: boolean;
+      onRetryTemplates?: () => void;
+    }
+  | {
+      templates: Template[];
+      selectedCategory?: string;
+      onCategoryChange: (category: string) => void;
+      onTemplatePromptSelect: (template: Template, prompt: SamplePrompt, index: number) => void;
+      templatesLoading?: boolean;
+      templatesError?: boolean;
+      onRetryTemplates?: () => void;
+    };
+
+type ChatStartScreenProps = {
   title: string;
   description?: string;
   icon?: React.ReactNode | string; // URL string or ReactNode
@@ -39,7 +70,7 @@ interface ChatStartScreenProps {
   onAgentClick?: (agent: AgentCard) => void;
   selectedAgents?: AgentCard[];
   onRemoveSelectedAgent?: (agentId: number | string) => void;
-  onSend: (message: string, files: File[], config?: any) => void;
+  onSend: (message: string, files: File[], config?: any) => void | Promise<void>;
   isSending?: boolean;
   inputValue?: string;
   onInputChange?: (value: string) => void;
@@ -52,10 +83,15 @@ interface ChatStartScreenProps {
   hideConfig?: boolean;
   compactInput?: boolean;
   deferFileUpload?: boolean;
+  filesDisabled?: boolean;
+  voiceInputEnabled?: boolean;
   taskConfig?: any;
   autoFocus?: boolean;
   inputMinHeightClass?: string;
-}
+  selectedTemplate?: { id: string; name: string } | null;
+  onRemoveSelectedTemplate?: () => void;
+  selectedPromptKey?: string | null;
+} & TemplateQuickAccessSlotProps;
 
 export function ChatStartScreen({
   title,
@@ -79,11 +115,24 @@ export function ChatStartScreen({
   hideConfig = false,
   compactInput = false,
   deferFileUpload = false,
+  filesDisabled = false,
+  voiceInputEnabled = true,
   taskConfig,
   autoFocus = false,
-  inputMinHeightClass
+  inputMinHeightClass,
+  templates,
+  selectedCategory,
+  onCategoryChange,
+  selectedTemplate,
+  onRemoveSelectedTemplate,
+  selectedPromptKey,
+  onTemplatePromptSelect,
+  templatesLoading = false,
+  templatesError = false,
+  onRetryTemplates,
 }: ChatStartScreenProps) {
   const { t } = useI18n();
+  const enabledFiles = filesDisabled ? [] : files;
 
   const handlePromptClick = (prompt: string, promptHighlights?: string[]) => {
     if (onPromptSelect) {
@@ -107,10 +156,12 @@ export function ChatStartScreen({
       <div className="w-full max-w-[680px] mx-auto space-y-6">
         <div>
           <ChatInput
-            onSend={(msg, config) => onSend(msg, files, config)}
+            onSend={(msg, config) => onSend(msg, enabledFiles, config)}
             isLoading={isSending}
-            files={files}
-            onFilesChange={onFilesChange || (() => { })}
+            files={enabledFiles}
+            onFilesChange={
+              filesDisabled ? undefined : (onFilesChange || (() => { }))
+            }
             showModeToggle={showModeToggle}
             inputValue={inputValue}
             onInputChange={onInputChange}
@@ -119,15 +170,31 @@ export function ChatStartScreen({
             hideConfig={hideConfig}
             compact={compactInput}
             deferFileUpload={deferFileUpload}
+            filesDisabled={filesDisabled}
+            voiceInputEnabled={voiceInputEnabled}
+            hideFileUpload={filesDisabled}
             taskConfig={taskConfig}
             autoFocus={autoFocus}
             minHeightClass={inputMinHeightClass}
             selectedAgents={selectedAgents}
             onRemoveSelectedAgent={onRemoveSelectedAgent}
+            selectedTemplate={selectedTemplate}
+            onRemoveSelectedTemplate={onRemoveSelectedTemplate}
           />
         </div>
 
-        {prompts && prompts.length > 0 && (
+        {templates ? (
+          <TemplateQuickAccess
+            templates={templates}
+            selectedCategory={selectedCategory || ""}
+            onCategoryChange={onCategoryChange}
+            selectedPromptKey={selectedPromptKey ?? null}
+            onPromptSelect={onTemplatePromptSelect}
+            isLoading={templatesLoading}
+            loadError={templatesError}
+            onRetryLoad={onRetryTemplates}
+          />
+        ) : prompts && prompts.length > 0 && (
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-[10.5px] font-semibold text-muted-foreground uppercase tracking-[0.08em] px-1">
               <Sparkles className="w-3.5 h-3.5" />

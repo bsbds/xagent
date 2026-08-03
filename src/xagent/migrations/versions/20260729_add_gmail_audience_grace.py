@@ -1,7 +1,7 @@
 """persist the previous Gmail callback audience during endpoint transitions
 
 Revision ID: 20260729_add_gmail_audience_grace
-Revises: 20260724_add_upload_source_to_uploaded_files
+Revises: 20260802_add_workforce_run_last_activity_at
 Create Date: 2026-07-29 00:00:00.000000
 
 Gmail Pub/Sub callbacks already dispatched with the prior OIDC audience may
@@ -19,7 +19,7 @@ from alembic import op
 logger = logging.getLogger(__name__)
 
 revision: str = "20260729_add_gmail_audience_grace"
-down_revision: Union[str, None] = "20260724_add_upload_source_to_uploaded_files"
+down_revision: Union[str, None] = "20260802_add_workforce_run_last_activity_at"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

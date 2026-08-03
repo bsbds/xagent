@@ -16,7 +16,7 @@ MIGRATION_PATH = (
     / "src/xagent/migrations/versions/20260729_add_gmail_audience_grace.py"
 )
 REVISION = "20260729_add_gmail_audience_grace"
-DOWN_REVISION = "20260724_add_upload_source_to_uploaded_files"
+DOWN_REVISION = "20260802_add_workforce_run_last_activity_at"
 TABLE = "gmail_watch_states"
 COLUMNS = {
     "previous_push_audience",

@@ -22,10 +22,10 @@ import {
   getWorkforceShareLink,
   rotateWorkforceShareLink,
 } from "@/lib/workforces-api"
-import type { WorkforceDetail, WorkforceShareLink } from "@/types/workforce"
+import type { WorkforceSummary, WorkforceShareLink } from "@/types/workforce"
 
 interface WorkforceShareDialogProps {
-  workforce: WorkforceDetail | null
+  workforce: WorkforceSummary | null
   open: boolean
   onClose: () => void
 }

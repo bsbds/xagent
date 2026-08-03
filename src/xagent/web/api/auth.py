@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, cast
+from typing import Annotated, Any, Dict, Literal, Optional, cast
 
 import requests
 
@@ -17,7 +17,7 @@ os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt, StrictStr, field_validator
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -330,12 +330,19 @@ class RefreshTokenRequest(BaseModel):
 class RefreshTokenResponse(BaseModel):
     """Refresh token response model"""
 
-    success: bool
+    success: Literal[True]
     message: str
-    access_token: Optional[str] = None
-    refresh_token: Optional[str] = None
-    expires_in: Optional[int] = None
-    refresh_expires_in: Optional[int] = None
+    access_token: Annotated[StrictStr, Field(min_length=1)]
+    refresh_token: Annotated[StrictStr, Field(min_length=1)]
+    expires_in: Annotated[StrictInt, Field(gt=0)]
+    refresh_expires_in: Annotated[StrictInt, Field(gt=0)]
+
+    @field_validator("access_token", "refresh_token")
+    @classmethod
+    def tokens_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Token must not be blank")
+        return value
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -1313,14 +1320,20 @@ def generic_oauth_callback(
         data = {
             "grant_type": "authorization_code",
             "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
             "redirect_uri": redirect_uri,
         }
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        auth: tuple[str, str] | None = None
+        if provider.lower() == "zoom":
+            # Zoom's token endpoint requires HTTP Basic Auth for client
+            # credentials (client_id:client_secret, base64).
+            auth = (client_id, client_secret)
+        else:
+            data["client_id"] = client_id
+            data["client_secret"] = client_secret
 
         token_response = requests.post(
-            token_url, data=data, headers=headers, timeout=10.0
+            token_url, data=data, headers=headers, timeout=10.0, auth=auth
         )
         token_data = token_response.json()
 
@@ -1347,6 +1360,25 @@ def generic_oauth_callback(
             info_response = requests.get(actual_url, headers=info_headers, timeout=10.0)
             if info_response.status_code == 200:
                 info_data = info_response.json()
+                if isinstance(info_data, dict) and info_data.get("ok") is False:
+                    # Slack-style APIs answer HTTP 200 with {"ok": false,
+                    # "error": ...} on failure; a status check alone would
+                    # treat a bad/revoked token as success and persist a
+                    # "connected" account with no identity. Fail the
+                    # callback instead. Providers without Slack semantics
+                    # never carry an "ok" key, so they are unaffected.
+                    import html
+
+                    escaped_error = html.escape(
+                        str(info_data.get("error") or "unknown error")
+                    )
+                    return HTMLResponse(
+                        content=(
+                            "<h1>Error verifying the connected account</h1>"
+                            f"<p>The provider reported: {escaped_error}</p>"
+                        ),
+                        status_code=400,
+                    )
                 provider_user_id = info_data.get(db_provider.user_id_path or "id")
                 email = info_data.get(db_provider.email_path or "email")
 
@@ -1397,12 +1429,30 @@ def generic_oauth_callback(
                             status_code=400,
                         )
             else:
+                from ..mcp_apps import requires_app_scoped_oauth_grant
+
                 apps = [
                     app
                     for app in get_all_mcp_apps(db)
                     if app.get("provider") == provider
                 ]
                 for app_info in apps:
+                    # This bare app_id-less login only ever requests
+                    # db_provider.default_scopes (see the app_scopes=None
+                    # branch above), never an app's own oauth_scopes. Creating
+                    # a UserMCPServer row here for an app that requires an
+                    # app-scoped grant would leave an orphan the agent runtime
+                    # picks up directly (bypassing the connected-state check)
+                    # and can never resolve a token for; see
+                    # APPS_REQUIRING_APP_SCOPED_OAUTH_GRANT.
+                    if requires_app_scoped_oauth_grant(app_info.get("id")):
+                        logger.info(
+                            "Skipping app-scoped-only app %s during bare %s "
+                            "OAuth batch connect",
+                            app_info.get("id"),
+                            provider,
+                        )
+                        continue
                     # A mis-tagged non-oauth app sharing this provider must not
                     # abort the whole batch login: skip it and keep connecting
                     # the legitimate oauth apps under the same provider. Only the

@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..config import (
     get_agent_runtime,
+    get_background_job_sweep_interval_seconds,
     get_file_storage_startup_sync_enabled,
     get_gmail_watch_enabled,
     get_gmail_watch_renewal_interval_seconds,
@@ -215,6 +216,11 @@ async def _run_trigger_dispatcher(
         dispatch_pending_trigger_runs,
         scan_due_scheduled_triggers,
     )
+    from .services.workforce_runtime import (
+        WorkforceRunPauseTarget,
+        pause_workforce_tasks_after_archive,
+        reap_stale_preview_workforce_runs,
+    )
 
     def _scan_due_scheduled_triggers_tick() -> int:
         # Scan in-process so scheduled triggers fire without a Celery
@@ -224,6 +230,19 @@ async def _run_trigger_dispatcher(
         db = SessionLocal()
         try:
             return len(scan_due_scheduled_triggers(db))
+        finally:
+            db.close()
+
+    def _reap_stale_preview_workforce_runs_tick() -> list[WorkforceRunPauseTarget]:
+        # This is the third of three trigger-scan entrypoints (alongside the
+        # Celery Beat and BackgroundJob-driven variants) -- runs in-process
+        # for the same reason _scan_due_scheduled_triggers_tick does: a
+        # deployment without Celery Beat must still reap abandoned
+        # workforce-builder preview runs, not silently skip it.
+        SessionLocal = get_session_local()
+        db = SessionLocal()
+        try:
+            return reap_stale_preview_workforce_runs(db)
         finally:
             db.close()
 
@@ -250,6 +269,7 @@ async def _run_trigger_dispatcher(
 
     loop = asyncio.get_running_loop()
     next_gmail_watch_scan_at = 0.0
+    next_preview_run_reap_at = 0.0
     while True:
         try:
             now = loop.time()
@@ -280,6 +300,31 @@ async def _run_trigger_dispatcher(
                 logger.info(
                     "Trigger dispatcher processed %s due schedule(s)", processed
                 )
+
+            # Gated on its own, much coarser timer (matching the Gmail
+            # watch-renewal gating above): the staleness threshold this
+            # sweep acts on is hours-scale (get_workforce_preview_run_stale_
+            # seconds, default 7200s), so checking on every dispatcher tick
+            # (as low as a few seconds, get_trigger_dispatcher_interval_
+            # seconds) is unnecessary load with no corresponding benefit.
+            if now >= next_preview_run_reap_at:
+                try:
+                    reaped_pause_targets = await asyncio.to_thread(
+                        _reap_stale_preview_workforce_runs_tick
+                    )
+                    if reaped_pause_targets:
+                        await pause_workforce_tasks_after_archive(
+                            reaped_pause_targets, reason="preview-reap"
+                        )
+                        logger.info(
+                            "Trigger dispatcher paused %s orphaned preview "
+                            "workforce run(s)",
+                            len(reaped_pause_targets),
+                        )
+                finally:
+                    next_preview_run_reap_at = (
+                        now + get_background_job_sweep_interval_seconds()
+                    )
 
             SessionLocal = get_session_local()
             db = SessionLocal()
@@ -1307,10 +1352,18 @@ async def startup_event() -> None:
             )
 
     # Warmup sandbox manager
-    from .sandbox_manager import get_sandbox_manager
+    from .sandbox_manager import check_sandbox_static_readiness, get_sandbox_manager
 
     sandbox_mgr = get_sandbox_manager()
     if sandbox_mgr:
+        # Readiness runs before cleanup/warmup and is deliberately not
+        # wrapped in try/except: a static SANDBOX_VOLUMES/code-mount/
+        # external-upload-dir conflict must fail startup outright rather
+        # than surface later as a per-task SandboxRuntimeConflictError.
+        # This also resolves and caches the backend-capability probe as a
+        # side effect, so cleanup() below reads the cached value instead of
+        # resolving it again.
+        await check_sandbox_static_readiness(sandbox_mgr)
         await sandbox_mgr.cleanup()
         await sandbox_mgr.warmup()
         logger.info("Sandbox manager initialized and warmed up")
@@ -1338,9 +1391,10 @@ async def startup_event() -> None:
     app.state.task_command_dispatcher_task = _task_command_dispatcher_task
     logger.info("Started durable task command dispatcher")
 
-    # Start Telegram and FeiShu channels if enabled
+    # Start configured chat channels.
     try:
         from .channels.feishu.bot import get_feishu_channel
+        from .channels.slack.bot import get_slack_channel
         from .channels.telegram.bot import get_telegram_channel
 
         telegram_channel = get_telegram_channel()
@@ -1354,8 +1408,14 @@ async def startup_event() -> None:
             logger.info("Initializing Feishu channel manager...")
             app.state.feishu_task = asyncio.create_task(feishu_channel.start())
             logger.info("Feishu channel background task created successfully")
+
+        slack_channel = get_slack_channel()
+        if slack_channel.enabled:
+            logger.info("Initializing Slack channel manager...")
+            app.state.slack_task = asyncio.create_task(slack_channel.start())
+            logger.info("Slack channel background task created successfully")
     except Exception as e:
-        logger.error(f"Failed to start Telegram channel manager: {e}", exc_info=True)
+        logger.error(f"Failed to start chat channel managers: {e}", exc_info=True)
 
 
 @app.on_event("shutdown")
@@ -1415,13 +1475,17 @@ async def shutdown_event() -> None:
             with suppress(asyncio.CancelledError):
                 await task
 
-    # Shutdown Telegram channel if enabled
+    # Shutdown chat channels before draining task finalizers.
     try:
         if hasattr(app.state, "telegram_task"):
             app.state.telegram_task.cancel()
             logger.info("Cancelled Telegram polling task")
+        if hasattr(app.state, "slack_task"):
+            app.state.slack_task.cancel()
+            logger.info("Cancelled Slack manager task")
 
         from .channels.feishu.bot import get_feishu_channel
+        from .channels.slack.bot import get_slack_channel
         from .channels.telegram.bot import get_telegram_channel
 
         telegram_channel = get_telegram_channel()
@@ -1431,8 +1495,11 @@ async def shutdown_event() -> None:
 
         feishu_channel = get_feishu_channel()
         await feishu_channel.stop()
+
+        slack_channel = get_slack_channel()
+        await slack_channel.stop()
     except Exception as e:
-        logger.error("Failed to stop Telegram channel: %s", e, exc_info=True)
+        logger.error("Failed to stop chat channels: %s", e, exc_info=True)
 
     # All producers are stopped. Drain task-owned finalizers and their shared
     # lease heartbeats before tearing down the sandboxes those tasks may use.
@@ -1441,6 +1508,10 @@ async def shutdown_event() -> None:
 
     await background_task_manager.shutdown()
     await wait_for_heartbeat_manager_idle()
+
+    from .services.task_runtime import shutdown_task_runtime_hook_executor
+
+    shutdown_task_runtime_hook_executor()
 
     # Shutdown all sandboxes
     from .sandbox_manager import get_sandbox_manager
