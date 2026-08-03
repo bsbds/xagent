@@ -41,23 +41,21 @@ export function DeploymentConfigFallbackAlert({
   return (
     <Alert className="border-amber-200 bg-amber-50 text-amber-900">
       <AlertTriangle className="text-amber-700" aria-hidden="true" />
-      <AlertDescription className="text-amber-800">
-        <div className="flex w-full items-center gap-3">
-          <span className="flex-1">
-            {t("deployment_config.messages.load_failed")
-              || "Failed to load deployment configuration; using this browser's origin."}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={isRetrying}
-            onClick={() => void retry()}
-          >
-            {isRetrying && <Loader2 className="h-4 w-4 animate-spin" />}
-            {t("deployment_config.actions.retry") || "Retry"}
-          </Button>
-        </div>
+      <AlertDescription className="flex w-full items-center gap-3 text-amber-800">
+        <span className="flex-1">
+          {t("deployment_config.messages.load_failed")
+            || "Failed to load deployment configuration; using this browser's origin."}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={isRetrying}
+          onClick={() => void retry()}
+        >
+          {isRetrying && <Loader2 className="h-4 w-4 animate-spin" />}
+          {t("deployment_config.actions.retry") || "Retry"}
+        </Button>
       </AlertDescription>
     </Alert>
   )
