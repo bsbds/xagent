@@ -1901,6 +1901,40 @@ class TestGmailPubSubProvisioningConfig:
         with pytest.raises(ValueError, match="XAGENT_S2S_API_BASE_URL"):
             get_s2s_api_base_url()
 
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "https://api.example.com/base?region=sg",
+            "https://api.example.com/base#callbacks",
+        ],
+    )
+    def test_s2s_base_rejects_query_and_fragment(self, monkeypatch, value) -> None:
+        monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", value)
+
+        with pytest.raises(ValueError, match="XAGENT_S2S_API_BASE_URL"):
+            get_s2s_api_base_url()
+
+    def test_s2s_base_validates_public_api_fallback(self, monkeypatch) -> None:
+        monkeypatch.delenv("XAGENT_S2S_API_BASE_URL", raising=False)
+        monkeypatch.setenv(
+            "XAGENT_PUBLIC_API_BASE_URL",
+            "https://api.example.com?region=sg",
+        )
+
+        with pytest.raises(ValueError, match="XAGENT_PUBLIC_API_BASE_URL"):
+            get_s2s_api_base_url()
+
+    def test_gmail_callback_validates_legacy_fallback(self, monkeypatch) -> None:
+        monkeypatch.delenv("XAGENT_S2S_API_BASE_URL", raising=False)
+        monkeypatch.setenv(
+            "XAGENT_TRIGGER_CALLBACK_BASE_URL",
+            "https://legacy-callback.example.com#gmail",
+        )
+
+        resolver = getattr(config, "get_gmail_callback_base_url", lambda: None)
+        with pytest.raises(ValueError, match="XAGENT_TRIGGER_CALLBACK_BASE_URL"):
+            resolver()
+
     def test_gmail_callback_preserves_legacy_base_url_fallback(self, monkeypatch):
         monkeypatch.delenv("XAGENT_S2S_API_BASE_URL", raising=False)
         monkeypatch.setenv(

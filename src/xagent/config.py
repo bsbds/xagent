@@ -374,10 +374,15 @@ def _normalized_http_env_url(env_var: str) -> str | None:
     if value is None:
         return None
     parts = urlsplit(value)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.netloc
+        or parts.query
+        or parts.fragment
+    ):
         raise ValueError(
             f"Invalid {env_var} value: {value!r}. "
-            "Expected an absolute http:// or https:// URL."
+            "Expected an absolute http:// or https:// URL without a query or fragment."
         )
     return value
 
@@ -1056,7 +1061,7 @@ def get_public_api_base_url() -> str | None:
     can override this via XAGENT_S2S_API_BASE_URL (see
     get_s2s_api_base_url).
     """
-    return _normalized_env_url(PUBLIC_API_BASE_URL)
+    return _normalized_http_env_url(PUBLIC_API_BASE_URL)
 
 
 def get_s2s_api_base_url() -> str | None:
@@ -1093,7 +1098,7 @@ def get_gmail_callback_base_url() -> str | None:
     """
     return (
         _normalized_http_env_url(S2S_API_BASE_URL)
-        or _normalized_env_url(TRIGGER_CALLBACK_BASE_URL)
+        or _normalized_http_env_url(TRIGGER_CALLBACK_BASE_URL)
         or get_public_api_base_url()
     )
 
