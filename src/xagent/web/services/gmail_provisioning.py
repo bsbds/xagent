@@ -113,6 +113,7 @@ def _gmail_watch_transition_lock(
             )
             lock_connection.commit()
 
+
 @dataclass(frozen=True)
 class GmailPushEndpointReconciliation:
     """Outcome of auditing or applying regional Gmail push endpoints."""
@@ -589,6 +590,7 @@ def _reconcile_gmail_push_endpoint(
             transition_values: dict[Any, Any] = {
                 GmailWatchState.push_audience: expected_audience,
             }
+            grace_deadline = _now() + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
             previous_audience = str(raw_push_audience or "").strip()
             if not database_is_current:
                 transition_values.update(
@@ -597,10 +599,7 @@ def _reconcile_gmail_push_endpoint(
                             previous_audience or None
                         ),
                         GmailWatchState.previous_push_audience_expires_at: (
-                            datetime.now(timezone.utc)
-                            + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
-                            if previous_audience
-                            else None
+                            grace_deadline if previous_audience else None
                         ),
                     }
                 )
@@ -613,10 +612,7 @@ def _reconcile_gmail_push_endpoint(
                     transition_values.update(
                         {
                             GmailWatchState.previous_push_audience: durable_previous,
-                            GmailWatchState.previous_push_audience_expires_at: (
-                                datetime.now(timezone.utc)
-                                + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
-                            ),
+                            GmailWatchState.previous_push_audience_expires_at: grace_deadline,
                         }
                     )
 
@@ -870,7 +866,7 @@ def _ensure_gmail_mailbox_provisioned_locked(
             setattr(
                 state,
                 "previous_push_audience_expires_at",
-                datetime.now(timezone.utc) + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
+                _now() + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
             )
         setattr(state, "push_audience", push_audience)
 
