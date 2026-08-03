@@ -927,7 +927,7 @@ def test_existing_subscription_endpoint_resyncs_after_base_url_change(
     assert stored["push_config"]["oidc_token"]["audience"] == new_audience
 
 
-def test_provisioning_persists_audience_transition_before_mutating_pubsub(
+def test_provisioning_keeps_stored_audience_until_pubsub_accepts_transition(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -969,10 +969,6 @@ def test_provisioning_persists_audience_transition_before_mutating_pubsub(
     subscriber.watch_id = int(first.id)
     previous_audience = str(first.push_audience)
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
-    expected_audience = gmail_provisioning.gmail_callback_url(
-        "https://sg-origin.cloud.xagent.co",
-        str(first.callback_id),
-    )
 
     ensure_gmail_mailbox_provisioned(
         db_session,
@@ -982,9 +978,9 @@ def test_provisioning_persists_audience_transition_before_mutating_pubsub(
         subscriber_factory=lambda: subscriber,
     )
 
-    assert observed["push_audience"] == expected_audience
-    assert observed["previous_push_audience"] == previous_audience
-    assert observed["previous_push_audience_expires_at"] is not None
+    assert observed["push_audience"] == previous_audience
+    assert observed["previous_push_audience"] is None
+    assert observed["previous_push_audience_expires_at"] is None
 
 
 def test_existing_subscription_resyncs_a_stale_oidc_audience(
@@ -1110,7 +1106,7 @@ def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
     assert len(subscriber.modify_calls) == 1
 
 
-def test_reconcile_persists_audience_transition_before_mutating_pubsub(
+def test_reconcile_keeps_stored_audience_until_pubsub_accepts_transition(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1152,10 +1148,6 @@ def test_reconcile_persists_audience_transition_before_mutating_pubsub(
     )
     subscriber.watch_id = int(state.id)
     previous_audience = str(state.push_audience)
-    expected_audience = gmail_provisioning.gmail_callback_url(
-        "https://sg-origin.cloud.xagent.co",
-        str(state.callback_id),
-    )
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
 
     result = reconcile_gmail_push_endpoints(
@@ -1165,9 +1157,9 @@ def test_reconcile_persists_audience_transition_before_mutating_pubsub(
     )
 
     assert result.changed == 1
-    assert observed["push_audience"] == expected_audience
-    assert observed["previous_push_audience"] == previous_audience
-    assert observed["previous_push_audience_expires_at"] is not None
+    assert observed["push_audience"] == previous_audience
+    assert observed["previous_push_audience"] is None
+    assert observed["previous_push_audience_expires_at"] is None
 
 
 def test_reconcile_unchanged_outcome_releases_the_row_lock_transaction(
@@ -1853,8 +1845,9 @@ def test_patch_failure_marks_failed_not_active(
     old_audience = str(first.push_audience)
 
     # A base-URL change forces a resync, and the patch itself fails. The watch
-    # must land FAILED, while the pre-cloud audience transition remains durable
-    # so both the old cloud audience and the intended retry target are accepted.
+    # must land FAILED without starting a bounded grace period for a cloud
+    # transition that never happened. Callback verification independently
+    # accepts the configured retry target alongside this stored cloud audience.
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://api-v2.example.com")
     second = ensure_gmail_mailbox_provisioned(
         db_session,
@@ -1866,12 +1859,9 @@ def test_patch_failure_marks_failed_not_active(
 
     assert second.status == TriggerProvisioningStatus.FAILED.value
     assert "pubsub modify_push_config unavailable" in str(second.last_error)
-    assert second.push_audience == gmail_provisioning.gmail_callback_url(
-        "https://api-v2.example.com",
-        str(second.callback_id),
-    )
-    assert second.previous_push_audience == old_audience
-    assert second.previous_push_audience_expires_at is not None
+    assert second.push_audience == old_audience
+    assert second.previous_push_audience is None
+    assert second.previous_push_audience_expires_at is None
 
 
 class GetIamPolicyFailsFakePublisher(FakePublisher):

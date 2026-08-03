@@ -542,6 +542,7 @@ def _reconcile_gmail_push_endpoint(
                     GmailWatchState.callback_id,
                     GmailWatchState.subscription_name,
                     GmailWatchState.push_audience,
+                    GmailWatchState.previous_push_audience,
                 )
                 .filter(
                     GmailWatchState.id == int(state_id),
@@ -561,7 +562,10 @@ def _reconcile_gmail_push_endpoint(
                 raw_callback_id,
                 raw_subscription_name,
                 raw_push_audience,
+                raw_previous_push_audience,
             ) = current_row
+        else:
+            raw_previous_push_audience = None
 
         callback_id = str(raw_callback_id or "").strip()
         subscription_path = str(raw_subscription_name or "").strip()
@@ -594,61 +598,6 @@ def _reconcile_gmail_push_endpoint(
             return "unchanged"
 
         if execute:
-            if not database_is_current:
-                # Persist both sides of the accepted-audience transition before
-                # changing Pub/Sub. If the cloud call succeeds but this process
-                # dies afterwards, callback workers can still authenticate the
-                # new target from durable state without relying on matching
-                # live environment variables.
-                updated = (
-                    transition_db.query(GmailWatchState)
-                    .filter(
-                        GmailWatchState.id == int(state_id),
-                        GmailWatchState.oauth_account_id == int(oauth_account_id),
-                        GmailWatchState.status
-                        == TriggerProvisioningStatus.ACTIVE.value,
-                    )
-                    .update(
-                        {
-                            GmailWatchState.push_audience: expected_audience,
-                            GmailWatchState.previous_push_audience: (
-                                str(raw_push_audience or "").strip() or None
-                            ),
-                            GmailWatchState.previous_push_audience_expires_at: (
-                                datetime.now(timezone.utc)
-                                + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
-                            ),
-                        },
-                        synchronize_session=False,
-                    )
-                )
-                if updated == 0:
-                    raise GmailProvisioningError(
-                        f"Active Gmail watch {state_id} disappeared before "
-                        "the callback audience transition could be persisted"
-                    )
-                transition_db.commit()
-
-                # Reacquire the row lock after the durability boundary. A
-                # concurrent teardown may have removed or deactivated the watch
-                # while the lock was released; in that case Pub/Sub must remain
-                # untouched.
-                transitioned_row = (
-                    transition_db.query(GmailWatchState.id)
-                    .filter(
-                        GmailWatchState.id == int(state_id),
-                        GmailWatchState.oauth_account_id == int(oauth_account_id),
-                        GmailWatchState.status
-                        == TriggerProvisioningStatus.ACTIVE.value,
-                        GmailWatchState.push_audience == expected_audience,
-                    )
-                    .with_for_update()
-                    .one_or_none()
-                )
-                if transitioned_row is None:
-                    transition_db.rollback()
-                    return "skipped"
-
             if not cloud_is_current:
                 subscriber.modify_push_config(
                     request={
@@ -656,7 +605,46 @@ def _reconcile_gmail_push_endpoint(
                         "push_config": expected_push_config,
                     }
                 )
-            # Besides releasing the row lock, this guarded no-op detects a
+
+            # Keep the stored cloud audience authoritative until Pub/Sub has
+            # accepted the new endpoint. Callback verification also derives
+            # the configured audience, so both sides remain valid if the
+            # process stops after the cloud call but before this commit.
+            transition_values: dict[Any, Any] = {
+                GmailWatchState.push_audience: expected_audience,
+            }
+            previous_audience = str(raw_push_audience or "").strip()
+            if not database_is_current:
+                transition_values.update(
+                    {
+                        GmailWatchState.previous_push_audience: (
+                            previous_audience or None
+                        ),
+                        GmailWatchState.previous_push_audience_expires_at: (
+                            datetime.now(timezone.utc)
+                            + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+                            if previous_audience
+                            else None
+                        ),
+                    }
+                )
+            elif not cloud_is_current:
+                # Older releases could persist the new audience before a
+                # failed cloud patch. Start a fresh grace window only after a
+                # later retry actually moves Pub/Sub.
+                durable_previous = str(raw_previous_push_audience or "").strip()
+                if durable_previous:
+                    transition_values.update(
+                        {
+                            GmailWatchState.previous_push_audience: durable_previous,
+                            GmailWatchState.previous_push_audience_expires_at: (
+                                datetime.now(timezone.utc)
+                                + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+                            ),
+                        }
+                    )
+
+            # Besides releasing the row lock, this guarded update detects a
             # concurrent SQLite teardown after the cloud call (PostgreSQL's
             # FOR UPDATE lock prevents that race directly).
             updated = (
@@ -665,10 +653,9 @@ def _reconcile_gmail_push_endpoint(
                     GmailWatchState.id == int(state_id),
                     GmailWatchState.oauth_account_id == int(oauth_account_id),
                     GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
-                    GmailWatchState.push_audience == expected_audience,
                 )
                 .update(
-                    {GmailWatchState.push_audience: expected_audience},
+                    transition_values,
                     synchronize_session=False,
                 )
             )
@@ -691,11 +678,11 @@ def reconcile_gmail_push_endpoints(
     """Audit or migrate active Gmail subscriptions to the configured S2S URL.
 
     Only active watch states still referenced by an enabled Gmail trigger are
-    candidates. Applying a change first persists the new and previous accepted
-    audiences, then modifies the Pub/Sub push endpoint and OIDC audience. This
-    durability boundary keeps callbacks verifiable if the process stops after
-    the cloud update. Reconciliation deliberately does not call ``users.watch``
-    or alter the callback identifier, history cursor, watch expiration,
+    candidates. Applying a change first modifies the Pub/Sub push endpoint and
+    OIDC audience, then persists the new and previous accepted audiences. The
+    configured and stored audiences keep callbacks verifiable across that
+    transition. Reconciliation deliberately does not call ``users.watch`` or
+    alter the callback identifier, history cursor, watch expiration,
     provisioning status, or error state.
 
     The default is a dry run. Re-running after a partial failure is safe:
@@ -878,23 +865,6 @@ def _ensure_gmail_mailbox_provisioned_locked(
         push_audience = gmail_callback_url(base_url, str(state.callback_id))
 
         previous_audience = str(state.push_audience or "").strip()
-        if previous_audience != push_audience:
-            # Make the verifier's accepted-audience transition durable before
-            # any Pub/Sub create/update can begin delivering tokens for the new
-            # audience. A failed cloud operation leaves the watch retryable
-            # while callbacks from either side of an in-flight transition stay
-            # authenticatable during the grace window.
-            if previous_audience:
-                setattr(state, "previous_push_audience", previous_audience)
-                setattr(
-                    state,
-                    "previous_push_audience_expires_at",
-                    datetime.now(timezone.utc) + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
-                )
-            setattr(state, "push_audience", push_audience)
-            db.add(state)
-            db.commit()
-            db.refresh(state)
 
         publisher = publisher_factory()
         _ensure_topic(publisher, topic_path)
@@ -917,6 +887,16 @@ def _ensure_gmail_mailbox_provisioned_locked(
         db.refresh(state)
         logger.warning("Gmail provisioning failed for %s: %s", email, exc)
         return state
+
+    if previous_audience != push_audience:
+        if previous_audience:
+            setattr(state, "previous_push_audience", previous_audience)
+            setattr(
+                state,
+                "previous_push_audience_expires_at",
+                datetime.now(timezone.utc) + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
+            )
+        setattr(state, "push_audience", push_audience)
 
     setattr(state, "topic_name", topic_path)
     setattr(state, "subscription_name", subscription_path)
