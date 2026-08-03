@@ -182,6 +182,6 @@ export function buildDeploymentShareUrl(
 function appendDeploymentPath(baseUrl: string, path: string): URL {
   const url = new URL(baseUrl)
   const basePath = url.pathname.replace(/\/+$/, "")
-  url.pathname = `${basePath}/${path.replace(/^\/+/, "")}`
+  url.pathname = `${basePath}/${path}`
   return url
 }
