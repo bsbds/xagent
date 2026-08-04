@@ -111,7 +111,7 @@ describe("DeployAgentDialog regional targets", () => {
     cleanup()
   })
 
-  it("falls back to the browser API target after config loading fails", async () => {
+  it("keeps API copy disabled until config retry succeeds", async () => {
     deploymentConfigFails = true
 
     render(
@@ -124,11 +124,14 @@ describe("DeployAgentDialog regional targets", () => {
 
     fireEvent.click(screen.getByText("deploy_agent.options.rest_api.title"))
 
+    expect(await screen.findByText("deployment_config.messages.load_failed")).toBeInTheDocument()
+    const copyButton = screen.getByTitle("deploy_agent.api_panel.copy_btn")
+    expect(copyButton).toBeDisabled()
     expect(
-      await screen.findByText((content) =>
+      screen.queryByText((content) =>
         content.includes("https://cloud.example.test/v1/chat/tasks"),
       ),
-    ).toBeInTheDocument()
+    ).not.toBeInTheDocument()
     expect(toastErrorMock).toHaveBeenCalledWith(
       "deployment_config.messages.load_failed",
     )
@@ -149,6 +152,7 @@ describe("DeployAgentDialog regional targets", () => {
     expect(
       screen.queryByText("deployment_config.messages.load_failed"),
     ).not.toBeInTheDocument()
+    expect(copyButton).toBeEnabled()
   })
 
   it("uses the deployment origin for API and SDK snippets", async () => {

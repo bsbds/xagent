@@ -112,21 +112,6 @@ export function __resetDeploymentConfigCache(): void {
 }
 
 /**
- * Represent the known-safe local target after configuration loading failed.
- *
- * Callers keep `null` while loading so regional deployments cannot briefly
- * expose the canonical routing edge. Only a completed failure should use this
- * standalone-shaped value to restore the pre-configuration browser fallback.
- */
-export function browserDeploymentConfig(): DeploymentConfig {
-  return {
-    deployment_origin: null,
-    app_origin: null,
-    region: null,
-  }
-}
-
-/**
  * Resolve an external-client origin only after deployment configuration has
  * loaded. A configured object with no override represents standalone XAgent,
  * where the browser origin remains the correct target.

@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useState } from "react"
-import { DeploymentConfigFallbackAlert } from "@/components/deployment/deployment-config-fallback-alert"
+import { DeploymentConfigErrorAlert } from "@/components/deployment/deployment-config-error-alert"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
@@ -20,7 +20,6 @@ import { formatAgentApiSnippets, type ApiSnippetTab } from "@/lib/api-snippet-fo
 import type { ApiSnippetTarget } from "@/lib/api-snippet-target"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
 import {
-  browserDeploymentConfig,
   buildDeploymentShareUrl,
   fetchDeploymentConfig,
   resolveDeploymentOrigin,
@@ -113,12 +112,12 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
       .catch((error) => {
         if (cancelled) return
         console.error("Failed to load deployment configuration", error)
-        setDeploymentConfig(browserDeploymentConfig())
-        setApiSnippetTarget(getApiSnippetTarget(browserOrigin))
+        setDeploymentConfig(null)
+        setApiSnippetTarget({ baseUrl: "" })
         setDeploymentConfigFailed(true)
         toast.error(
           t("deployment_config.messages.load_failed")
-          || "Failed to load deployment configuration; using this browser's origin.",
+          || "Failed to load deployment configuration. Retry before copying deployment details.",
         )
       })
 
@@ -137,7 +136,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
       console.error("Failed to load deployment configuration", error)
       toast.error(
         t("deployment_config.messages.load_failed")
-        || "Failed to load deployment configuration; using this browser's origin.",
+        || "Failed to load deployment configuration. Retry before copying deployment details.",
       )
     }
   }
@@ -235,6 +234,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
   }
 
   const handleCopyApiSnippet = async () => {
+    if (!apiSnippetTarget.baseUrl) return
     if (await copyToClipboard(apiSnippets[apiTab])) {
       setCopiedSnippet(true)
       toast.success(t("deploy_agent.messages.copied") || "Copied to clipboard")
@@ -479,7 +479,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
         </DialogHeader>
 
         {deploymentConfigFailed && (
-          <DeploymentConfigFallbackAlert onRetry={retryDeploymentConfig} />
+          <DeploymentConfigErrorAlert onRetry={retryDeploymentConfig} />
         )}
 
         {activeView === "options" ? (
@@ -537,13 +537,14 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
 
             <div className="bg-muted p-4 rounded-md text-xs font-mono relative overflow-hidden group">
               <pre className="whitespace-pre-wrap break-all text-muted-foreground max-h-80 overflow-auto">
-                {apiSnippets[apiTab]}
+                {apiSnippetTarget.baseUrl ? apiSnippets[apiTab] : "…"}
               </pre>
               <Button
                 variant="secondary"
                 size="icon"
                 className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
                 onClick={handleCopyApiSnippet}
+                disabled={!apiSnippetTarget.baseUrl}
                 title={t("deploy_agent.api_panel.copy_btn") || "Copy"}
               >
                 {copiedSnippet ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
@@ -691,7 +692,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
                     <Label className="text-sm">{t("deploy_agent.share_link.public_url") || "Public URL"}</Label>
                     <div className="flex gap-2">
                       <Input readOnly value={shareUrl} className="flex-1" />
-                      <Button variant="secondary" onClick={() => void handleCopyShareLink()} disabled={isUpdatingShare}>
+                      <Button variant="secondary" onClick={() => void handleCopyShareLink()} disabled={isUpdatingShare || !shareUrl}>
                         {copiedShareLink ? <Check className="h-4 w-4 mr-1 text-green-500" /> : <Copy className="h-4 w-4 mr-1" />}
                         {t("common.copy") || "Copy"}
                       </Button>
