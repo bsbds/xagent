@@ -686,7 +686,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
                 <div className="pt-2 text-sm text-muted-foreground">
                   {t("common.loading") || "Loading..."}
                 </div>
-              ) : shareEnabled && shareUrl ? (
+              ) : shareEnabled ? (
                 <div className="space-y-4 pt-2">
                   <div className="space-y-2">
                     <Label className="text-sm">{t("deploy_agent.share_link.public_url") || "Public URL"}</Label>
@@ -700,20 +700,6 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {t("deploy_agent.share_link.anyone_access") || "Anyone with this link can start a public chat with this agent."}
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="outline" onClick={handleRotateShare} disabled={isUpdatingShare}>
-                      {t("deploy_agent.share_link.rotate_btn") || "Reset Link"}
-                    </Button>
-                    <Button variant="outline" onClick={handleDisableShare} disabled={isUpdatingShare}>
-                      {t("deploy_agent.share_link.disable_btn") || "Disable Link"}
-                    </Button>
-                  </div>
-                </div>
-              ) : shareEnabled ? (
-                <div className="space-y-4 pt-2">
-                  <div className="text-sm text-muted-foreground">
-                    {t("deploy_agent.messages.share_failed") || "Share link action failed"}
                   </div>
                   <div className="flex gap-2">
                     <Button variant="outline" onClick={handleRotateShare} disabled={isUpdatingShare}>

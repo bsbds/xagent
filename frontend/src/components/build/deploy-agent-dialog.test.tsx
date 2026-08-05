@@ -155,6 +155,29 @@ describe("DeployAgentDialog regional targets", () => {
     expect(copyButton).toBeEnabled()
   })
 
+  it("keeps the share panel available when deployment configuration fails", async () => {
+    deploymentConfigFails = true
+
+    render(
+      <DeployAgentDialog
+        deployAgent={AGENT}
+        onClose={vi.fn()}
+        onUpdate={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("deploy_agent.options.shareable_link.title"))
+
+    expect(
+      await screen.findByText("deployment_config.messages.load_failed"),
+    ).toBeInTheDocument()
+    expect(await screen.findByRole("textbox")).toHaveValue("")
+    expect(screen.getByRole("button", { name: "common.copy" })).toBeDisabled()
+    expect(
+      screen.queryByText("deploy_agent.messages.share_failed"),
+    ).not.toBeInTheDocument()
+  })
+
   it("uses the deployment origin for API and SDK snippets", async () => {
     render(
       <DeployAgentDialog
