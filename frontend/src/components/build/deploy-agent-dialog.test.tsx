@@ -225,6 +225,35 @@ describe("DeployAgentDialog regional targets", () => {
     })
   })
 
+  it("keeps widget copy disabled when deployment configuration fails", async () => {
+    deploymentConfigFails = true
+
+    render(
+      <DeployAgentDialog
+        deployAgent={AGENT}
+        onClose={vi.fn()}
+        onUpdate={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("deploy_agent.options.embed.title"))
+
+    expect(
+      await screen.findByText("deployment_config.messages.load_failed"),
+    ).toBeInTheDocument()
+    const copyButton = await screen.findByTitle(
+      "deploy_agent.embed_snippet.copy_btn",
+    )
+    await waitFor(() => {
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        "https://configured-api.example.test/api/agents/7/widget-key",
+      )
+    })
+    expect(screen.getByText("…")).toBeInTheDocument()
+    expect(copyButton).toBeDisabled()
+    expect(copyToClipboardMock).not.toHaveBeenCalled()
+  })
+
   it("bootstraps the region for public share links", async () => {
     render(
       <DeployAgentDialog
