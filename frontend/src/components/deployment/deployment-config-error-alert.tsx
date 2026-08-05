@@ -33,6 +33,9 @@ export function DeploymentConfigErrorAlert({
     setIsRetrying(true)
     try {
       await onRetry()
+    } catch {
+      // The owner reports the request error and keeps the failure state set.
+      // This alert only restores its retry control after the request settles.
     } finally {
       setIsRetrying(false)
     }
