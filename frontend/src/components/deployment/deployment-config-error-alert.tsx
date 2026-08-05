@@ -19,10 +19,9 @@ interface DeploymentConfigErrorAlertProps {
 /**
  * Persistent warning for deployment dialogs whose public target is unavailable.
  *
- * A toast is easy to miss and can leave a user copying a target that is wrong
- * for a regional deployment. This shared alert keeps that state visible and
- * gives every deployment surface the same explicit recovery action. Callers
- * keep copy controls disabled until the retry supplies a verified target.
+ * A toast is easy to miss. This alert keeps the unavailable target visible.
+ * It also gives each deployment surface the same recovery action. Callers keep
+ * copy controls disabled until the retry supplies a verified target.
  */
 export function DeploymentConfigErrorAlert({
   onRetry,
