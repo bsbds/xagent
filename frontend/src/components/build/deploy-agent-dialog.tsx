@@ -20,6 +20,7 @@ import { formatAgentApiSnippets, type ApiSnippetTab } from "@/lib/api-snippet-fo
 import type { ApiSnippetTarget } from "@/lib/api-snippet-target"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
 import {
+  DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
   buildDeploymentShareUrl,
   fetchDeploymentConfig,
   resolveDeploymentOrigin,
@@ -117,7 +118,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
         setDeploymentConfigFailed(true)
         toast.error(
           t("deployment_config.messages.load_failed")
-          || "Failed to load deployment configuration. Retry before copying deployment details.",
+          || DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
         )
       })
 
@@ -136,7 +137,7 @@ export function DeployAgentDialog({ deployAgent, onClose, onUpdate, onManageApiK
       console.error("Failed to load deployment configuration", error)
       toast.error(
         t("deployment_config.messages.load_failed")
-        || "Failed to load deployment configuration. Retry before copying deployment details.",
+        || DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
       )
     }
   }

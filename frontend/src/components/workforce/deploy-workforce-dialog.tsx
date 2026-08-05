@@ -16,7 +16,10 @@ import { Input } from "@/components/ui/input"
 import { toast } from "@/components/ui/sonner"
 import { useI18n } from "@/contexts/i18n-context"
 import { copyToClipboard } from "@/lib/clipboard"
-import { fetchDeploymentConfig } from "@/lib/deployment-config"
+import {
+  DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
+  fetchDeploymentConfig,
+} from "@/lib/deployment-config"
 import { getApiSnippetTarget } from "@/lib/api-snippet-base-url"
 import {
   formatWorkforceApiSnippets,
@@ -85,7 +88,7 @@ export function DeployWorkforceDialog({
           setDeploymentConfigFailed(true)
           toast.error(
             t("deployment_config.messages.load_failed")
-            || "Failed to load deployment configuration. Retry before copying deployment details.",
+            || DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
           )
         }
       })
@@ -102,7 +105,7 @@ export function DeployWorkforceDialog({
     } catch {
       toast.error(
         t("deployment_config.messages.load_failed")
-        || "Failed to load deployment configuration. Retry before copying deployment details.",
+        || DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
       )
     }
   }

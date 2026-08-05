@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { readFileSync } from "node:fs"
 
 const apiRequestMock = vi.hoisted(() => vi.fn())
 const getApiUrlMock = vi.hoisted(() => vi.fn())
@@ -43,6 +44,30 @@ describe("deployment config", () => {
     await fetchDeploymentConfig()
 
     expect(apiRequestMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps deployment failure fallback copy in one module", () => {
+    const fallback =
+      "Failed to load deployment configuration. Retry before copying deployment details."
+    const componentPaths = [
+      "src/components/build/deploy-agent-dialog.tsx",
+      "src/components/deployment/deployment-config-error-alert.tsx",
+      "src/components/workforce/deploy-workforce-dialog.tsx",
+      "src/components/workforce/workforce-share-dialog.tsx",
+      "src/components/workforce/workforce-widget-dialog.tsx",
+    ]
+
+    for (const path of componentPaths) {
+      expect(readFileSync(`${process.cwd()}/${path}`, "utf8")).not.toContain(
+        fallback,
+      )
+    }
+    expect(
+      readFileSync(
+        `${process.cwd()}/src/lib/deployment-config.ts`,
+        "utf8",
+      ).match(new RegExp(fallback.replaceAll(".", String.raw`\.`), "g")),
+    ).toHaveLength(1)
   })
 
   it("retries a failed request and caches the successful deployment targets", async () => {

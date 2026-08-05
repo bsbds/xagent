@@ -2,6 +2,9 @@ import { apiRequest } from "@/lib/api-wrapper"
 import { resolveApiSnippetBaseUrl } from "@/lib/api-snippet-target"
 import { getApiUrl } from "@/lib/utils"
 
+export const DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK =
+  "Failed to load deployment configuration. Retry before copying deployment details."
+
 export interface DeploymentConfig {
   /**
    * Origin external API and widget clients should call. Hosting layers may

@@ -6,6 +6,7 @@ import { AlertTriangle, Loader2 } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { useI18n } from "@/contexts/i18n-context"
+import { DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK } from "@/lib/deployment-config"
 
 interface DeploymentConfigErrorAlertProps {
   /**
@@ -47,7 +48,7 @@ export function DeploymentConfigErrorAlert({
       <AlertDescription className="flex w-full items-center gap-3 text-amber-800">
         <span className="flex-1">
           {t("deployment_config.messages.load_failed")
-            || "Failed to load deployment configuration. Retry before copying deployment details."}
+            || DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK}
         </span>
         <Button
           type="button"

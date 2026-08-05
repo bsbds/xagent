@@ -14,6 +14,7 @@ import { toast } from "@/components/ui/sonner"
 import { copyToClipboard } from "@/lib/clipboard"
 import { getBrowserLocationOrigin } from "@/lib/browser-location"
 import {
+  DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
   fetchDeploymentConfig,
   resolveDeploymentOrigin,
   type DeploymentConfig,
@@ -78,7 +79,7 @@ export function WorkforceWidgetDialog({ workforce, open, onClose }: WorkforceWid
           setDeploymentConfigFailed(true)
           toast.error(
             t("deployment_config.messages.load_failed")
-            || "Failed to load deployment configuration. Retry before copying deployment details.",
+            || DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
           )
         }
 
@@ -110,7 +111,7 @@ export function WorkforceWidgetDialog({ workforce, open, onClose }: WorkforceWid
       console.error(error)
       toast.error(
         t("deployment_config.messages.load_failed")
-        || "Failed to load deployment configuration. Retry before copying deployment details.",
+        || DEPLOYMENT_CONFIG_LOAD_FAILED_FALLBACK,
       )
     }
   }
