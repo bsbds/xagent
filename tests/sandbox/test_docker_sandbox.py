@@ -154,6 +154,7 @@ def _labeled_container(
     labels: dict,
     name: str = "user::1",
     on_remove: callable | None = None,
+    on_stop: callable | None = None,
 ):
     """Minimal container stub exposing the attrs/labels the service reads."""
     return SimpleNamespace(
@@ -177,6 +178,7 @@ def _labeled_container(
             "Created": "2026-01-01T00:00:00Z",
         },
         reload=lambda: None,
+        stop=lambda timeout=None: (on_stop() if on_stop is not None else None),
         remove=lambda force=False: (on_remove() if on_remove is not None else None),
     )
 
@@ -357,6 +359,98 @@ class TestNamespaceIsolation:
             assert captured["labels"]["xagent.sandbox.namespace"] == "alpha"
             assert captured["labels"]["xagent.sandbox.name"] == "user::1"
             assert captured["name"].startswith("xagent_sandbox_")
+
+class TestManagerPathsRespectNamespace:
+    """Manager destructive paths (cleanup/quiesce, idle sweep) operate only
+    on this service's namespace: foreign and legacy containers survive."""
+
+    @staticmethod
+    def _services(collection):
+        alpha = DockerSandboxService(
+            MemDockerStore(),
+            namespace="alpha",
+            client=_ClientWithCollection(collection),
+        )
+        beta = DockerSandboxService(
+            MemDockerStore(),
+            namespace="beta",
+            client=_ClientWithCollection(collection),
+        )
+        return alpha, beta
+
+    @pytest.mark.asyncio
+    async def test_cleanup_quiesces_only_own_namespace(self):
+        stopped: list[str] = []
+        alpha_cont = _labeled_container(
+            {
+                "xagent.managed": "v2",
+                "xagent.sandbox.namespace": "alpha",
+                "xagent.sandbox.name": "user::1",
+            },
+            name="alpha-box",
+            on_stop=lambda: stopped.append("alpha"),
+        )
+        beta_cont = _labeled_container(
+            {
+                "xagent.managed": "v2",
+                "xagent.sandbox.namespace": "beta",
+                "xagent.sandbox.name": "user::1",
+            },
+            name="beta-box",
+            on_stop=lambda: stopped.append("beta"),
+        )
+        legacy_cont = _labeled_container(
+            {"xagent.managed": "true", "xagent.sandbox.name": "user::1"},
+            name="legacy-box",
+            on_stop=lambda: stopped.append("legacy"),
+        )
+        collection = _LabelFilteredCollection([alpha_cont, beta_cont, legacy_cont])
+        alpha, beta = self._services(collection)
+
+        from xagent.web.sandbox_manager import SandboxManager
+
+        await SandboxManager(alpha).cleanup()
+
+        assert stopped == ["alpha"], "quiesce must stop only own-namespace containers"
+        assert await beta.inspect("user::1") is not None
+
+    @pytest.mark.asyncio
+    async def test_idle_sweep_reclaims_only_own_namespace(self):
+        alpha_cont = _labeled_container(
+            {
+                "xagent.managed": "v2",
+                "xagent.sandbox.namespace": "alpha",
+                "xagent.sandbox.name": "user::1",
+            },
+            name="alpha-box",
+        )
+        beta_cont = _labeled_container(
+            {
+                "xagent.managed": "v2",
+                "xagent.sandbox.namespace": "beta",
+                "xagent.sandbox.name": "user::1",
+            },
+            name="beta-box",
+        )
+        legacy_cont = _labeled_container(
+            {"xagent.managed": "true", "xagent.sandbox.name": "user::1"},
+            name="legacy-box",
+        )
+        collection = _LabelFilteredCollection([alpha_cont, beta_cont, legacy_cont])
+        alpha, beta = self._services(collection)
+
+        # Wire the removal side effect now that the collection exists.
+        alpha_cont.remove = lambda force=False: collection._containers.remove(
+            alpha_cont
+        )
+
+        from xagent.web.sandbox_manager import SandboxManager
+
+        reclaimed = await SandboxManager(alpha).sweep_idle_sandboxes(idle_ttl=0)
+
+        assert reclaimed == ["user::1"]
+        assert [c.name for c in collection._containers] == ["beta-box", "legacy-box"]
+        assert await beta.inspect("user::1") is not None
 
 
 @requires_docker
