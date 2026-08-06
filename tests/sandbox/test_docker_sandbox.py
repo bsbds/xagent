@@ -336,19 +336,27 @@ class TestNamespaceIsolation:
             return None
 
         monkeypatch.setattr(docker_sandbox_module, "_ensure_image", _noop_ensure_image)
-        client, captured = _capture_create_client()
-        await docker_sandbox_module._create_container(
-            client,
-            "user::1",
-            "alpha",
-            "img",
+
+        for template in (
             SandboxTemplate(type="image", image="img"),
-            SandboxConfig(),
-        )
-        assert captured["labels"]["xagent.managed"] == "v2"
-        assert captured["labels"]["xagent.sandbox.namespace"] == "alpha"
-        assert captured["labels"]["xagent.sandbox.name"] == "user::1"
-        assert captured["name"].startswith("xagent_sandbox_")
+            # A snapshot-derived container must inherit nothing from the
+            # source image's owner labels: the image may carry a foreign
+            # deployment's xagent.managed/xagent.sandbox.namespace.
+            SandboxTemplate(type="snapshot", snapshot_id="snap-1"),
+        ):
+            client, captured = _capture_create_client()
+            await docker_sandbox_module._create_container(
+                client,
+                "user::1",
+                "alpha",
+                "img",
+                template,
+                SandboxConfig(),
+            )
+            assert captured["labels"]["xagent.managed"] == "v2"
+            assert captured["labels"]["xagent.sandbox.namespace"] == "alpha"
+            assert captured["labels"]["xagent.sandbox.name"] == "user::1"
+            assert captured["name"].startswith("xagent_sandbox_")
 
 
 @requires_docker
