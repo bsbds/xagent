@@ -333,6 +333,38 @@ class TestNamespaceIsolation:
         assert await beta.inspect("user::1") is None
 
     @pytest.mark.asyncio
+    async def test_start_stop_never_touch_foreign_namespace(self):
+        stopped: list[str] = []
+        foreign = _labeled_container(
+            {
+                "xagent.managed": "v2",
+                "xagent.sandbox.namespace": "beta",
+                "xagent.sandbox.name": "user::1",
+            },
+            on_stop=lambda: stopped.append("beta"),
+        )
+        collection = _LabelFilteredCollection([foreign])
+        alpha = DockerSandboxService(
+            MemDockerStore(),
+            namespace="alpha",
+            client=_ClientWithCollection(collection),
+        )
+        beta = DockerSandboxService(
+            MemDockerStore(),
+            namespace="beta",
+            client=_ClientWithCollection(collection),
+        )
+
+        from xagent.sandbox.base import SandboxNotFoundError
+
+        with pytest.raises(SandboxNotFoundError):
+            await alpha.start_existing("user::1")
+        with pytest.raises(SandboxNotFoundError):
+            await alpha.stop_existing("user::1")
+        assert stopped == [], "foreign container must never be stopped"
+        assert await beta.inspect("user::1") is not None
+
+    @pytest.mark.asyncio
     async def test_create_container_writes_v2_owner_labels(self, monkeypatch):
         async def _noop_ensure_image(_client, _image):
             return None
@@ -477,6 +509,9 @@ class TestTwoNamespaceRealDockerIsolation:
             # The other namespace must neither see nor adopt this container.
             assert await beta.inspect(name) is None
             assert name not in {sb.name for sb in await beta.list_sandboxes()}
+            # The destructive direction: a foreign delete must not touch it.
+            await beta.delete(name)
+            assert await alpha.inspect(name) is not None
             await alpha.delete(name)
             assert await alpha.inspect(name) is None
             assert await beta.inspect(name) is None
