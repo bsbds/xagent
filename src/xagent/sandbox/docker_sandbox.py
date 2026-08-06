@@ -1654,6 +1654,24 @@ class DockerSandboxService(SandboxService):
             result.append(info)
         return result
 
+    def count_legacy_containers(self) -> int:
+        """Count daemon-visible legacy (pre-namespace) managed containers.
+
+        Legacy ``xagent.managed=true`` containers are deliberately invisible
+        to every namespaced operation; this is the discovery aid operators
+        need to complete the documented manual removal after an upgrade.
+        Returns 0 when the listing fails (the warning is best-effort).
+        """
+        try:
+            containers = self._client.containers.list(
+                all=True,
+                filters={"label": f"{LABEL_MANAGED}=true"},
+            )
+            return len(containers)
+        except Exception as exc:
+            logger.warning("Failed to list legacy sandbox containers: %s", exc)
+            return 0
+
     async def delete(self, name: str) -> None:
         """Permanently delete a sandbox container and its metadata."""
         async with self._named_lock(name):

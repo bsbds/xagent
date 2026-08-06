@@ -2545,6 +2545,17 @@ def _create_docker_service() -> Optional[SandboxService]:
     try:
         service = DockerSandboxService(store=store, namespace=namespace)
         logger.info("Created Docker sandbox service (namespace=%s)", namespace)
+        legacy_count = service.count_legacy_containers()
+        if legacy_count:
+            logger.warning(
+                "Found %d legacy xagent.managed=true sandbox container(s) on "
+                "this Docker daemon; they are never listed, reclaimed, or "
+                "counted against XAGENT_SANDBOX_MAX_CONTAINERS by this "
+                "deployment. After all co-located stacks are upgraded and "
+                "drained, remove them manually: "
+                "docker ps -a --filter label=xagent.managed=true",
+                legacy_count,
+            )
     except Exception as e:
         logger.error(f"Failed to create Docker sandbox service: {e}")
 

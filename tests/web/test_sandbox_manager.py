@@ -1,6 +1,7 @@
 """Test sandbox manager functionality."""
 
 import asyncio
+import logging
 import os
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -248,6 +249,27 @@ class TestCreateDockerService:
         monkeypatch.delenv("XAGENT_SANDBOX_NAMESPACE", raising=False)
         with pytest.raises(RuntimeError, match="XAGENT_SANDBOX_NAMESPACE is required"):
             _create_docker_service()
+
+    def test_legacy_container_inventory_is_logged(self, caplog):
+        """Startup must surface leftover legacy containers for manual removal."""
+
+        class _ServiceWithLegacyCount(FakeSandboxService):
+            def count_legacy_containers(self) -> int:
+                return 2
+
+        with (
+            patch("xagent.web.sandbox_store.DBDockerStore", return_value=MagicMock()),
+            patch(
+                "xagent.sandbox.DockerSandboxService",
+                return_value=_ServiceWithLegacyCount(),
+            ),
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = _create_docker_service()
+
+        assert result is not None
+        assert "2 legacy xagent.managed=true sandbox container(s)" in caplog.text
+        assert "xagent.managed=true" in caplog.text
 
 
 class TestSandboxConfigParsing:
