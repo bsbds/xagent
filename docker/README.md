@@ -264,6 +264,13 @@ In Docker sibling mode, `SANDBOX_VOLUMES` sources are host-side paths. Use
 absolute host paths; relative paths and `~` are rejected instead of being
 expanded inside the backend container.
 
+The overlay also sets `XAGENT_SANDBOX_NAMESPACE` to `${COMPOSE_PROJECT_NAME}`.
+Every sandbox container a deployment creates is scoped to that namespace
+(physical name and owner labels), so multiple deployments sharing one Docker
+daemon never discover or manage each other's sandboxes. Co-located stacks
+must use distinct Compose project names and distinct
+`XAGENT_HOST_STORAGE_ROOT` paths.
+
 ## Docker Files
 
 - `Dockerfile.backend` - Backend image (FastAPI, Python, Node.js)

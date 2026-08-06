@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Literal
@@ -78,6 +79,7 @@ SANDBOX_MAX_CONTAINERS = "XAGENT_SANDBOX_MAX_CONTAINERS"
 SANDBOX_ALLOW_LOCAL_FALLBACK_ON_CAPACITY = (
     "XAGENT_SANDBOX_ALLOW_LOCAL_FALLBACK_ON_CAPACITY"
 )
+SANDBOX_NAMESPACE = "XAGENT_SANDBOX_NAMESPACE"
 BOXLITE_HOME_DIR = "BOXLITE_HOME_DIR"
 WEB_SEARCH_PROVIDER = "XAGENT_WEB_SEARCH_PROVIDER"
 WEB_CRAWL_TLS_IMPERSONATE = "XAGENT_WEB_CRAWL_TLS_IMPERSONATE"
@@ -2116,6 +2118,41 @@ def get_sandbox_host_storage_root() -> Path | None:
     if env_str:
         return Path(os.path.expandvars(env_str.strip()))
     return None
+
+
+_SANDBOX_NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def get_sandbox_namespace() -> str | None:
+    """Get the stable per-deployment namespace for sandbox resources.
+
+    The namespace is the ownership boundary between deployments that share one
+    Docker daemon: every sandbox container (physical name and owner labels)
+    a deployment creates is scoped to it, and every lookup/list/cleanup
+    operation is restricted to it. It must be stable across restarts and
+    unique per deployment; the Docker Compose project name
+    (``COMPOSE_PROJECT_NAME``) is the canonical source.
+
+    Accepts the Docker Compose project-name grammar: lowercase letters,
+    decimal digits, dashes and underscores, beginning with a lowercase letter
+    or digit, at most 64 characters.
+
+    Returns:
+        The configured namespace, or None when unset/empty.
+
+    Raises:
+        ValueError: The variable is set but does not match the grammar.
+    """
+    raw = os.getenv(SANDBOX_NAMESPACE, "").strip()
+    if not raw:
+        return None
+    if not _SANDBOX_NAMESPACE_RE.fullmatch(raw):
+        raise ValueError(
+            f"Invalid {SANDBOX_NAMESPACE}={raw!r}: must match the Docker "
+            "Compose project-name grammar (lowercase letters, digits, dashes, "
+            "underscores; start with a letter or digit; max 64 chars)"
+        )
+    return raw
 
 
 def get_boxlite_home_dir() -> Path | None:

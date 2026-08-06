@@ -210,6 +210,11 @@ class TestCreateBoxliteService:
 class TestCreateDockerService:
     """Test _create_docker_service function."""
 
+    @pytest.fixture(autouse=True)
+    def _namespace_env(self, monkeypatch):
+        """A namespace is mandatory for the Docker sandbox implementation."""
+        monkeypatch.setenv("XAGENT_SANDBOX_NAMESPACE", "test")
+
     def test_uses_db_store(self):
         """Test Docker sandbox service is created with persistent store."""
         with (
@@ -223,6 +228,7 @@ class TestCreateDockerService:
 
         mock_store_cls.assert_called_once_with()
         assert mock_service_cls.call_args[1]["store"] is mock_store_cls.return_value
+        assert mock_service_cls.call_args[1]["namespace"] == "test"
 
     def test_creation_failure_returns_none(self):
         """Test that DockerSandboxService construction failure returns None."""
@@ -236,6 +242,12 @@ class TestCreateDockerService:
             result = _create_docker_service()
 
         assert result is None
+
+    def test_missing_namespace_is_fatal(self, monkeypatch):
+        """Missing namespace must fail loudly, never degrade to unscoped mode."""
+        monkeypatch.delenv("XAGENT_SANDBOX_NAMESPACE", raising=False)
+        with pytest.raises(RuntimeError, match="XAGENT_SANDBOX_NAMESPACE is required"):
+            _create_docker_service()
 
 
 class TestSandboxConfigParsing:

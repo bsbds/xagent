@@ -62,6 +62,7 @@ DEFAULT_SANDBOX_IMAGE = get_sandbox_image()
 
 LABEL_MANAGED = "xagent.managed"
 LABEL_SANDBOX_NAME = "xagent.sandbox.name"
+LABEL_NAMESPACE = "xagent.sandbox.namespace"
 LABEL_TEMPLATE_TYPE = "xagent.sandbox.template.type"
 LABEL_SNAPSHOT_ID = "xagent.sandbox.snapshot_id"
 # Written only by create() (the new explicit lifecycle API), never by the
@@ -69,6 +70,13 @@ LABEL_SNAPSHOT_ID = "xagent.sandbox.snapshot_id"
 # spec_matches_inspection() keys off of. Immutable once written.
 LABEL_SPEC_FINGERPRINT = "xagent.sandbox.spec.fingerprint"
 LABEL_SPEC_VERSION = "xagent.sandbox.spec.version"
+# Ownership-scheme version. v2 resources carry ``xagent.managed=v2`` plus an
+# exact ``xagent.sandbox.namespace`` value; legacy resources used
+# ``xagent.managed=true`` with no namespace. The value change (not just a
+# new key) is what keeps a pre-namespace backend -- which lists
+# ``xagent.managed=true`` globally -- from ever adopting v2 containers
+# during a mixed-version rollout.
+MANAGED_LABEL_VALUE = "v2"
 CONTAINER_NAME_PREFIX = "xagent_sandbox_"
 SNAPSHOT_REPOSITORY = "xagent-sandbox-snapshot"
 _CPU_NANOS = 1_000_000_000
@@ -177,9 +185,13 @@ def _make_safe_name(name: str) -> str:
     return f"{base.lower()}-{digest}"
 
 
-def _container_name(name: str) -> str:
-    """Build the managed Docker container name for a sandbox."""
-    return f"{CONTAINER_NAME_PREFIX}{_make_safe_name(name)}"
+def _container_name(name: str, namespace: str) -> str:
+    """Build the managed Docker container name for a sandbox.
+
+    The namespace is part of the hashed identity, so two deployments that
+    use the same logical sandbox name get distinct physical container names
+    on a shared Docker daemon."""
+    return f"{CONTAINER_NAME_PREFIX}{_make_safe_name(f'{namespace}::{name}')}"
 
 
 def _snapshot_tag(snapshot_id: str) -> str:
@@ -984,6 +996,7 @@ async def _ensure_image(client: Any, image: str) -> None:
 async def _create_container(
     client: Any,
     name: str,
+    namespace: str,
     image: str,
     template: SandboxTemplate,
     config: SandboxConfig,
@@ -1011,7 +1024,13 @@ async def _create_container(
     an empty ``labels`` value and a commit-time ``LABEL key=`` land on the
     empty string, also verified on 29.4.0), which is why ``_build_inspection``
     reads blank as absent rather than as a fingerprint that cannot match.
-    """
+
+    The ownership labels (``LABEL_MANAGED``, ``LABEL_NAMESPACE``,
+    ``LABEL_SANDBOX_NAME``) are written unconditionally for the same
+    reason: a snapshot image inherits its source container's labels, so a
+    container created from it would otherwise present the source
+    deployment's owner. This function is the single owner of their value
+    for every container it creates."""
     await _ensure_image(client, image)
 
     volumes: dict[str, dict[str, str]] | None = None
@@ -1026,8 +1045,9 @@ async def _create_container(
         ports = {f"{guest}/tcp": host for host, guest in config.ports}
 
     labels = {
-        LABEL_MANAGED: "true",
+        LABEL_MANAGED: MANAGED_LABEL_VALUE,
         LABEL_SANDBOX_NAME: name,
+        LABEL_NAMESPACE: namespace,
         LABEL_TEMPLATE_TYPE: template.type or "image",
         # Shadow any spec attestation inherited from the base image; see the
         # docstring. Overwritten below when the caller supplies a real one.
@@ -1041,7 +1061,7 @@ async def _create_container(
 
     kwargs: dict[str, Any] = {
         "image": image,
-        "name": _container_name(name),
+        "name": _container_name(name, namespace),
         # Keep the container alive
         "command": ["tail", "-f", "/dev/null"],
         "detach": True,
@@ -1069,9 +1089,21 @@ class DockerSandboxService(SandboxService):
     def __init__(
         self,
         store: DockerStore,
+        namespace: str,
         client: Optional[Any] = None,
     ) -> None:
-        """Initialize the Docker sandbox service and validate daemon access."""
+        """Initialize the Docker sandbox service and validate daemon access.
+
+        Args:
+            store: Storage for persisting sandbox metadata.
+            namespace: Stable per-deployment namespace (e.g. the Docker
+                Compose project name). Every container this service creates
+                is namespaced by it, and every lookup/list operation is
+                restricted to it, so multiple deployments sharing one Docker
+                daemon can never discover or mutate each other's sandboxes.
+            client: Docker SDK client override (tests).
+        """
+        self._namespace = namespace
         self._client = client or _create_docker_client()
         self._client.ping()
         self._store = store
@@ -1184,9 +1216,19 @@ class DockerSandboxService(SandboxService):
         return existing
 
     async def _find_container(self, name: str) -> Optional[Container]:
-        """Find the managed Docker container for a sandbox name."""
+        """Find this service's managed Docker container for a sandbox name.
+
+        The lookup is scoped to the service's deployment namespace: a
+        container must carry the v2 managed marker, this service's exact
+        namespace, and the logical sandbox name. Containers owned by other
+        deployments (or by the legacy pre-namespace scheme) are never
+        visible."""
         filters: dict[str, str | list[str] | bool] = {
-            "label": [f"{LABEL_MANAGED}=true", f"{LABEL_SANDBOX_NAME}={name}"]
+            "label": [
+                f"{LABEL_MANAGED}={MANAGED_LABEL_VALUE}",
+                f"{LABEL_NAMESPACE}={self._namespace}",
+                f"{LABEL_SANDBOX_NAME}={name}",
+            ]
         }
         containers = await asyncio.to_thread(
             self._client.containers.list, all=True, filters=filters
@@ -1235,6 +1277,7 @@ class DockerSandboxService(SandboxService):
             container = await _create_container(
                 self._client,
                 name,
+                self._namespace,
                 image,
                 template,
                 cfg,
@@ -1276,6 +1319,13 @@ class DockerSandboxService(SandboxService):
     # event loop. Two processes pointed at one Docker daemon with an
     # overlapping name space would race each other; the guard against that is
     # deployment topology, not this code.
+    #
+    # The deployment namespace (``XAGENT_SANDBOX_NAMESPACE``) is what makes
+    # that topology real for co-located deployments: every physical name and
+    # every lookup/list filter is scoped to it, so two backend processes
+    # from different Compose projects never operate on the same container.
+    # Two processes that *share* a namespace remain unsupported: within one
+    # namespace the in-process locks above are still the only mutex.
 
     async def supports_runtime_spec(self) -> bool:
         """Docker backs the explicit spec-reconciliation lifecycle."""
@@ -1374,6 +1424,7 @@ class DockerSandboxService(SandboxService):
                 container = await _create_container(
                     self._client,
                     name,
+                    self._namespace,
                     resolved_image,
                     backend_template,
                     backend_config,
@@ -1580,7 +1631,12 @@ class DockerSandboxService(SandboxService):
         containers = await asyncio.to_thread(
             lambda: self._client.containers.list(
                 all=True,
-                filters={"label": f"{LABEL_MANAGED}=true"},
+                filters={
+                    "label": [
+                        f"{LABEL_MANAGED}={MANAGED_LABEL_VALUE}",
+                        f"{LABEL_NAMESPACE}={self._namespace}",
+                    ]
+                },
             )
         )
         result: list[SandboxInfo] = []

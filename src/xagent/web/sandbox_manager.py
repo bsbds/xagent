@@ -26,6 +26,7 @@ from ..config import (
     get_sandbox_max_concurrency,
     get_sandbox_max_containers,
     get_sandbox_memory,
+    get_sandbox_namespace,
     get_sandbox_sweep_interval,
     get_sandbox_volumes,
     get_storage_root,
@@ -2518,6 +2519,18 @@ def _create_boxlite_service() -> Optional[SandboxService]:
 
 def _create_docker_service() -> Optional[SandboxService]:
     """Create Docker sandbox service."""
+    namespace = get_sandbox_namespace()
+    if namespace is None:
+        # Fatal, not a degraded start: without a stable per-deployment
+        # namespace, a backend on a shared Docker daemon can discover and
+        # delete another deployment's sandboxes (and vice versa). Refusing
+        # to start sandboxing is the safe failure mode.
+        raise RuntimeError(
+            "XAGENT_SANDBOX_NAMESPACE is required when the Docker sandbox "
+            "implementation is enabled; set it to the Docker Compose "
+            "project name (COMPOSE_PROJECT_NAME) so each deployment owns a "
+            "disjoint set of sandbox containers on a shared daemon"
+        )
     try:
         from ..sandbox import DockerSandboxService
     except ImportError:
@@ -2530,8 +2543,8 @@ def _create_docker_service() -> Optional[SandboxService]:
 
     service = None
     try:
-        service = DockerSandboxService(store=store)
-        logger.info("Created Docker sandbox service")
+        service = DockerSandboxService(store=store, namespace=namespace)
+        logger.info("Created Docker sandbox service (namespace=%s)", namespace)
     except Exception as e:
         logger.error(f"Failed to create Docker sandbox service: {e}")
 

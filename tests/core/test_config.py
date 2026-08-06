@@ -63,6 +63,7 @@ from xagent.config import (
     SANDBOX_IMAGE,
     SANDBOX_MAX_CONTAINERS,
     SANDBOX_MEMORY,
+    SANDBOX_NAMESPACE,
     SANDBOX_SWEEP_INTERVAL,
     SANDBOX_VOLUMES,
     SLACK_APP_TOKEN,
@@ -153,6 +154,7 @@ from xagent.config import (
     get_sandbox_image,
     get_sandbox_max_containers,
     get_sandbox_memory,
+    get_sandbox_namespace,
     get_sandbox_sweep_interval,
     get_sandbox_volumes,
     get_slack_app_token,
@@ -215,6 +217,9 @@ class TestEnvironmentVariableConstants:
 
     def test_sandbox_host_project_root_constant(self):
         assert SANDBOX_HOST_PROJECT_ROOT == "XAGENT_SANDBOX_HOST_PROJECT_ROOT"
+
+    def test_sandbox_namespace_constant(self):
+        assert SANDBOX_NAMESPACE == "XAGENT_SANDBOX_NAMESPACE"
 
     def test_sandbox_host_storage_root_constant(self):
         assert SANDBOX_HOST_STORAGE_ROOT == "XAGENT_SANDBOX_HOST_STORAGE_ROOT"
@@ -1485,6 +1490,43 @@ class TestGetSandboxHostStorageRoot:
         monkeypatch.setenv(SANDBOX_HOST_STORAGE_ROOT, "$HOST_STORAGE_ROOT/../.xagent")
         result = get_sandbox_host_storage_root()
         assert result == Path("/host/.xagent/../.xagent")
+
+
+class TestGetSandboxNamespace:
+    """Test get_sandbox_namespace() function."""
+
+    def test_no_env_var_returns_none(self, monkeypatch):
+        """Test that a missing namespace returns None."""
+        monkeypatch.delenv(SANDBOX_NAMESPACE, raising=False)
+        result = get_sandbox_namespace()
+        assert result is None
+
+    def test_blank_env_var_returns_none(self, monkeypatch):
+        """Test that a blank namespace returns None."""
+        monkeypatch.setenv(SANDBOX_NAMESPACE, "   ")
+        result = get_sandbox_namespace()
+        assert result is None
+
+    def test_valid_namespace(self, monkeypatch):
+        """Test that a Compose-project-name-shaped namespace is accepted."""
+        monkeypatch.setenv(SANDBOX_NAMESPACE, "my-project-1")
+        result = get_sandbox_namespace()
+        assert result == "my-project-1"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "Upper-Case",
+            "-leading-dash",
+            "has space",
+            "a" * 65,
+        ],
+    )
+    def test_invalid_namespace_raises(self, monkeypatch, value):
+        """Test that malformed namespaces raise instead of silently degrading."""
+        monkeypatch.setenv(SANDBOX_NAMESPACE, value)
+        with pytest.raises(ValueError, match="Invalid XAGENT_SANDBOX_NAMESPACE"):
+            get_sandbox_namespace()
 
 
 class TestGetBoxliteHomeDir:
