@@ -1524,7 +1524,7 @@ class TestGetSandboxNamespace:
     def test_invalid_namespace_raises(self, monkeypatch, value):
         """Test that malformed namespaces raise instead of silently degrading."""
         monkeypatch.setenv(SANDBOX_NAMESPACE, value)
-        with pytest.raises(ValueError, match="Invalid XAGENT_SANDBOX_NAMESPACE"):
+        with pytest.raises(ValueError, match="Invalid sandbox namespace"):
             get_sandbox_namespace()
 
     def test_long_namespace_accepted_like_compose(self, monkeypatch):

@@ -32,7 +32,7 @@ from docker.errors import APIError, ImageNotFound, NotFound
 
 import docker
 
-from ..config import get_sandbox_image
+from ..config import get_sandbox_image, validate_sandbox_namespace
 from .base import (
     SPEC_CONTRACT_VERSION,
     CodeType,
@@ -1104,6 +1104,7 @@ class DockerSandboxService(SandboxService):
             client: Docker SDK client override (tests).
         """
         self._namespace = namespace
+        validate_sandbox_namespace(namespace)
         self._client = client or _create_docker_client()
         self._client.ping()
         self._store = store

@@ -2123,6 +2123,26 @@ def get_sandbox_host_storage_root() -> Path | None:
 _SANDBOX_NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+def validate_sandbox_namespace(namespace: str) -> None:
+    """Validate a sandbox ownership namespace.
+
+    Enforces the Docker Compose project-name grammar (lowercase letters,
+    decimal digits, dashes and underscores, beginning with a lowercase letter
+    or digit). Callers that accept a namespace from outside the environment
+    (e.g. the Docker sandbox service constructor) must run this so a
+    malformed value can never recreate a shared ownership domain.
+
+    Raises:
+        ValueError: The value does not match the grammar.
+    """
+    if not _SANDBOX_NAMESPACE_RE.fullmatch(namespace):
+        raise ValueError(
+            f"Invalid sandbox namespace {namespace!r}: must match the Docker "
+            "Compose project-name grammar (lowercase letters, digits, dashes, "
+            "underscores; start with a letter or digit)"
+        )
+
+
 def get_sandbox_namespace() -> str | None:
     """Get the stable per-deployment namespace for sandbox resources.
 
@@ -2146,12 +2166,7 @@ def get_sandbox_namespace() -> str | None:
     raw = os.getenv(SANDBOX_NAMESPACE, "").strip()
     if not raw:
         return None
-    if not _SANDBOX_NAMESPACE_RE.fullmatch(raw):
-        raise ValueError(
-            f"Invalid {SANDBOX_NAMESPACE}={raw!r}: must match the Docker ",
-            "Compose project-name grammar (lowercase letters, digits, dashes, ",
-            "underscores; start with a letter or digit)"
-        )
+    validate_sandbox_namespace(raw)
     return raw
 
 

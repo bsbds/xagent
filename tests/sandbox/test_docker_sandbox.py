@@ -209,6 +209,23 @@ class TestNamespaceIsolation:
     each other's sandboxes (the co-located-instances fix)."""
 
     @pytest.mark.asyncio
+    async def test_service_constructor_rejects_malformed_namespaces(self):
+        """The service boundary must not accept a namespace that could
+        recreate a shared ownership domain."""
+        with pytest.raises(ValueError, match="Invalid sandbox namespace"):
+            DockerSandboxService(
+                MemDockerStore(),
+                namespace="",
+                client=_FakeDockerClient(),
+            )
+        with pytest.raises(ValueError, match="Invalid sandbox namespace"):
+            DockerSandboxService(
+                MemDockerStore(),
+                namespace="Bad-Name",
+                client=_FakeDockerClient(),
+            )
+
+    @pytest.mark.asyncio
     async def test_physical_names_differ_across_namespaces(self):
         """Equal logical names map to distinct physical container names."""
         assert docker_sandbox_module._container_name(
