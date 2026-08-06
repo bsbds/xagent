@@ -271,6 +271,19 @@ daemon never discover or manage each other's sandboxes. Co-located stacks
 must use distinct Compose project names and distinct
 `XAGENT_HOST_STORAGE_ROOT` paths.
 
+Containers created before this scheme existed carry the legacy
+`xagent.managed=true` label and are ignored by current code: they are never
+listed, reclaimed, or counted against `XAGENT_SANDBOX_MAX_CONTAINERS`, and
+a backend restart recreates their sandboxes fresh (host bind mounts
+survive; container-layer state does not). The backend logs how many such
+containers exist at startup. After upgrading all co-located stacks, stop
+and drain old stacks, then remove the legacy containers manually once no
+old backend or task uses them:
+
+```bash
+docker ps -a --filter label=xagent.managed=true
+```
+
 ## Docker Files
 
 - `Dockerfile.backend` - Backend image (FastAPI, Python, Node.js)
