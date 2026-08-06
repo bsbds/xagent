@@ -2120,7 +2120,7 @@ def get_sandbox_host_storage_root() -> Path | None:
     return None
 
 
-_SANDBOX_NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_SANDBOX_NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def get_sandbox_namespace() -> str | None:
@@ -2135,7 +2135,7 @@ def get_sandbox_namespace() -> str | None:
 
     Accepts the Docker Compose project-name grammar: lowercase letters,
     decimal digits, dashes and underscores, beginning with a lowercase letter
-    or digit, at most 64 characters.
+    or digit.
 
     Returns:
         The configured namespace, or None when unset/empty.
@@ -2148,9 +2148,9 @@ def get_sandbox_namespace() -> str | None:
         return None
     if not _SANDBOX_NAMESPACE_RE.fullmatch(raw):
         raise ValueError(
-            f"Invalid {SANDBOX_NAMESPACE}={raw!r}: must match the Docker "
-            "Compose project-name grammar (lowercase letters, digits, dashes, "
-            "underscores; start with a letter or digit; max 64 chars)"
+            f"Invalid {SANDBOX_NAMESPACE}={raw!r}: must match the Docker ",
+            "Compose project-name grammar (lowercase letters, digits, dashes, ",
+            "underscores; start with a letter or digit)"
         )
     return raw
 

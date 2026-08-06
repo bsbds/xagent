@@ -1519,7 +1519,6 @@ class TestGetSandboxNamespace:
             "Upper-Case",
             "-leading-dash",
             "has space",
-            "a" * 65,
         ],
     )
     def test_invalid_namespace_raises(self, monkeypatch, value):
@@ -1527,6 +1526,15 @@ class TestGetSandboxNamespace:
         monkeypatch.setenv(SANDBOX_NAMESPACE, value)
         with pytest.raises(ValueError, match="Invalid XAGENT_SANDBOX_NAMESPACE"):
             get_sandbox_namespace()
+
+    def test_long_namespace_accepted_like_compose(self, monkeypatch):
+        """Compose accepts arbitrary-length project names; so must we.
+
+        The namespace only feeds hashed container names and label values, so
+        length carries no backend constraint (verified against compose 5.1.4).
+        """
+        monkeypatch.setenv(SANDBOX_NAMESPACE, "a" * 100)
+        assert get_sandbox_namespace() == "a" * 100
 
 
 class TestGetBoxliteHomeDir:
