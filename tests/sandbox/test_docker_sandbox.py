@@ -233,6 +233,16 @@ class TestNamespaceIsolation:
         ) != docker_sandbox_module._container_name("user::1", "beta")
 
     @pytest.mark.asyncio
+    async def test_snapshot_tags_differ_across_namespaces(self):
+        """Equal snapshot ids map to distinct images on a shared daemon."""
+        assert docker_sandbox_module._snapshot_tag(
+            "snap-1", "alpha"
+        ) != docker_sandbox_module._snapshot_tag("snap-1", "beta")
+        assert docker_sandbox_module._snapshot_tag(
+            "snap-1", "alpha"
+        ).startswith("xagent-sandbox-snapshot-alpha:")
+
+    @pytest.mark.asyncio
     async def test_find_container_is_scoped_to_owner_labels(self):
         collection = _LabelFilteredCollection()
         service = DockerSandboxService(

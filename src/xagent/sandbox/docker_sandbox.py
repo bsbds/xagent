@@ -194,10 +194,16 @@ def _container_name(name: str, namespace: str) -> str:
     return f"{CONTAINER_NAME_PREFIX}{_make_safe_name(f'{namespace}::{name}')}"
 
 
-def _snapshot_tag(snapshot_id: str) -> str:
-    """Build the managed Docker image tag for a snapshot."""
+def _snapshot_tag(snapshot_id: str, namespace: str) -> str:
+    """Build the managed Docker image tag for a snapshot.
+
+    The namespace is part of the repository name so two deployments that
+    use the same snapshot id get distinct images on a shared Docker daemon:
+    a sibling deployment can neither retag, consume, nor delete this
+    deployment's snapshot image. The namespace is grammar-validated, so it
+    is safe in a repository name."""
     safe = _make_safe_name(snapshot_id)
-    return f"{SNAPSHOT_REPOSITORY}:{safe}"
+    return f"{SNAPSHOT_REPOSITORY}-{namespace}:{safe}"
 
 
 def _get_state(status: str | None) -> str:
@@ -1675,11 +1681,12 @@ class DockerSandboxService(SandboxService):
                 if self._store.get_snapshot(snapshot_id) is not None:
                     raise FileExistsError(f"Snapshot already exists: {snapshot_id}")
 
-                tag = _snapshot_tag(snapshot_id)
+                tag = _snapshot_tag(snapshot_id, self._namespace)
+                repository, _, tag_part = tag.partition(":")
                 await asyncio.to_thread(
                     container.commit,
-                    repository=SNAPSHOT_REPOSITORY,
-                    tag=tag.split(":", 1)[1],
+                    repository=repository,
+                    tag=tag_part,
                     changes=None,
                 )
                 image_info = await asyncio.to_thread(self._client.images.get, tag)
