@@ -97,7 +97,9 @@ class TestDockerSandboxServiceFailures:
         monkeypatch.setattr(
             docker_sandbox_module, "_create_container", fake_create_container
         )
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
 
         with pytest.raises(RuntimeError, match="port conflict"):
             await service.get_or_create(
@@ -240,9 +242,9 @@ class TestNamespaceIsolation:
         assert docker_sandbox_module._snapshot_tag(
             "snap-1", "alpha"
         ) != docker_sandbox_module._snapshot_tag("snap-1", "beta")
-        assert docker_sandbox_module._snapshot_tag(
-            "snap-1", "alpha"
-        ).startswith("xagent-sandbox-snapshot-alpha:")
+        assert docker_sandbox_module._snapshot_tag("snap-1", "alpha").startswith(
+            "xagent-sandbox-snapshot-alpha:"
+        )
 
     @pytest.mark.asyncio
     async def test_find_container_is_scoped_to_owner_labels(self):
@@ -392,6 +394,7 @@ class TestNamespaceIsolation:
             assert captured["labels"]["xagent.sandbox.name"] == "user::1"
             assert captured["name"].startswith("xagent_sandbox_")
 
+
 class TestManagerPathsRespectNamespace:
     """Manager destructive paths (cleanup/quiesce, idle sweep) operate only
     on this service's namespace: foreign and legacy containers survive."""
@@ -502,9 +505,7 @@ class TestTwoNamespaceRealDockerIsolation:
             except Exception:
                 pass
         try:
-            sandbox = await alpha.get_or_create(
-                name, template=template, config=config
-            )
+            sandbox = await alpha.get_or_create(name, template=template, config=config)
             assert sandbox.name == name
             # The other namespace must neither see nor adopt this container.
             assert await beta.inspect(name) is None

@@ -216,7 +216,9 @@ class TestCheckNoConflictingVolumes:
 class TestSupportsRuntimeSpec:
     @pytest.mark.asyncio
     async def test_docker_supports_runtime_spec(self):
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         assert await service.supports_runtime_spec() is True
 
     @pytest.mark.asyncio
@@ -245,7 +247,9 @@ class TestCreateStartFailureCompensation:
             docker_sandbox_module, "_create_container", fake_create_container
         )
 
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
 
         async def delete_must_not_be_called(name):
             raise AssertionError(
@@ -307,7 +311,9 @@ class TestCreateCompensationHoldsLockUnderRepeatedCancellation:
             docker_sandbox_module, "_create_container", fake_create_container
         )
 
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         name = "slow-remove-compensation"
 
         task = asyncio.ensure_future(
@@ -393,7 +399,9 @@ class TestCreatePublishVerification:
             docker_sandbox_module, "_build_inspection", fake_build_inspection
         )
 
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
 
         async def delete_must_not_be_called(name):
             raise AssertionError(
@@ -443,7 +451,9 @@ class TestCreatePublishVerification:
             lambda container: _observed_inspection(volumes=(("/x", "/y", "rw"),)),
         )
 
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
 
         with pytest.raises(SandboxRuntimeConflictError, match="volumes"):
             await service.create(
@@ -502,7 +512,9 @@ class TestCreatePersistsCanonicalDesiredState:
             ),
         )
 
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         await service.create(
             "canonical-row",
             SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
@@ -563,7 +575,9 @@ class TestCreatePersistsCanonicalDesiredState:
             docker_sandbox_module, "_create_container", fake_create_container
         )
 
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         raw_config = SandboxConfig(working_dir="/home/")
         await service.get_or_create(
             "legacy-row",
@@ -1720,21 +1734,27 @@ class TestLifecycleDoesNotLeakControlEntries:
 
     @pytest.mark.asyncio
     async def test_start_existing_on_a_missing_sandbox_installs_no_control(self):
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         with pytest.raises(SandboxNotFoundError):
             await service.start_existing("never-existed")
         assert service._controls == {}
 
     @pytest.mark.asyncio
     async def test_stop_existing_on_a_missing_sandbox_installs_no_control(self):
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         with pytest.raises(SandboxNotFoundError):
             await service.stop_existing("never-existed")
         assert service._controls == {}
 
     @pytest.mark.asyncio
     async def test_repeated_probes_of_distinct_missing_names_stay_bounded(self):
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         for i in range(25):
             with pytest.raises(SandboxNotFoundError):
                 await service.stop_existing(f"ssh::task-{i}")
@@ -1743,7 +1763,9 @@ class TestLifecycleDoesNotLeakControlEntries:
 
     @pytest.mark.asyncio
     async def test_inspect_of_a_missing_sandbox_installs_no_control(self):
-        service = DockerSandboxService(MemDockerStore(), namespace="test", client=_FakeDockerClient())
+        service = DockerSandboxService(
+            MemDockerStore(), namespace="test", client=_FakeDockerClient()
+        )
         assert await service.inspect("never-existed") is None
         assert service._controls == {}
 
