@@ -2527,9 +2527,12 @@ def _create_docker_service() -> Optional[SandboxService]:
         # to start sandboxing is the safe failure mode.
         raise RuntimeError(
             "XAGENT_SANDBOX_NAMESPACE is required when the Docker sandbox "
-            "implementation is enabled; set it to the Docker Compose "
-            "project name (COMPOSE_PROJECT_NAME) so each deployment owns a "
-            "disjoint set of sandbox containers on a shared daemon"
+            "implementation is enabled; set it to a stable, unique per-"
+            "deployment identifier. Under Docker Compose use the Compose "
+            "project name (COMPOSE_PROJECT_NAME); other deployment modes "
+            "(pip/systemd) must pick their own stable value (see "
+            "docker/README.md 'Co-locating multiple deployments on one host' "
+            "and .env.example)"
         )
     try:
         from ..sandbox import DockerSandboxService
