@@ -5,6 +5,7 @@ DockerSandbox tests
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import socket
@@ -143,6 +144,8 @@ class _LabelFilteredCollection(_FakeContainerCollection):
         filters = kwargs.get("filters") or {}
         self.filter_calls.append(filters)
         label_filters = filters.get("label") or []
+        if isinstance(label_filters, str):
+            label_filters = [label_filters]
         return [
             container
             for container in self._containers
@@ -229,6 +232,46 @@ class TestNamespaceIsolation:
                 namespace="Bad-Name",
                 client=_FakeDockerClient(),
             )
+
+    def test_count_legacy_containers_uses_exact_legacy_filter(self):
+        collection = _LabelFilteredCollection(
+            [
+                _labeled_container({"xagent.managed": "true"}),
+                _labeled_container({"xagent.managed": "true"}),
+                _labeled_container(
+                    {
+                        "xagent.managed": "v2",
+                        "xagent.sandbox.namespace": "alpha",
+                    }
+                ),
+            ]
+        )
+        service = DockerSandboxService(
+            MemDockerStore(),
+            namespace="alpha",
+            client=_ClientWithCollection(collection),
+        )
+
+        assert service.count_legacy_containers() == 2
+        assert collection.filter_calls[-1] == {"label": "xagent.managed=true"}
+
+    def test_count_legacy_containers_returns_zero_when_listing_fails(self, caplog):
+        class _FailingCollection:
+            @staticmethod
+            def list(*args, **kwargs):
+                raise RuntimeError("legacy inventory unavailable")
+
+        client = _FakeDockerClient()
+        client.containers = _FailingCollection()
+        service = DockerSandboxService(
+            MemDockerStore(),
+            namespace="alpha",
+            client=client,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert service.count_legacy_containers() == 0
+        assert "Failed to list legacy sandbox containers" in caplog.text
 
     @pytest.mark.asyncio
     async def test_physical_names_differ_across_namespaces(self):
