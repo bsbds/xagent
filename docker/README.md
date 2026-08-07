@@ -280,6 +280,11 @@ name and owner labels), so multiple deployments sharing one Docker daemon
 never discover or manage each other's sandboxes. Co-located stacks must use
 distinct Compose project names and distinct `XAGENT_HOST_STORAGE_ROOT` paths.
 
+`XAGENT_SANDBOX_MAX_CONTAINERS` applies independently to each deployment
+namespace, not globally to the shared daemon. Size the daemon for up to the
+per-deployment limit multiplied by the number of co-located stacks, plus any
+legacy containers awaiting removal.
+
 Containers created before this scheme existed carry the legacy
 `xagent.managed=true` label and are ignored by current code: they are never
 listed, reclaimed, or counted against `XAGENT_SANDBOX_MAX_CONTAINERS`, and
