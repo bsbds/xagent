@@ -2551,20 +2551,30 @@ def _create_docker_service() -> Optional[SandboxService]:
 
     logger.info("Created Docker sandbox service (namespace=%s)", namespace)
     try:
-        legacy_count = service.count_legacy_containers()
+        running_legacy_count, inactive_legacy_count = (
+            service.count_legacy_containers()
+        )
     except Exception as exc:
         logger.warning("Failed to inventory legacy sandbox containers: %s", exc)
         return service
 
-    if legacy_count:
+    if running_legacy_count:
+        logger.error(
+            "Found %d running legacy xagent.managed=true sandbox container(s) "
+            "on this Docker daemon. Stop them before starting v2 sandbox "
+            "workloads that use the same host workspace: "
+            "docker ps --filter label=xagent.managed=true",
+            running_legacy_count,
+        )
+
+    if inactive_legacy_count:
         logger.warning(
-            "Found %d legacy xagent.managed=true sandbox container(s) on "
-            "this Docker daemon; they are never listed, reclaimed, or "
-            "counted against XAGENT_SANDBOX_MAX_CONTAINERS by this "
-            "deployment. After all co-located stacks are upgraded and "
-            "drained, remove them manually: "
-            "docker ps -a --filter label=xagent.managed=true",
-            legacy_count,
+            "Found %d inactive legacy xagent.managed=true sandbox container(s) "
+            "on this Docker daemon; they are never listed, reclaimed, or "
+            "counted against XAGENT_SANDBOX_MAX_CONTAINERS by this deployment. "
+            "After all co-located stacks are upgraded and drained, remove them "
+            "manually: docker ps -a --filter label=xagent.managed=true",
+            inactive_legacy_count,
         )
 
     return service

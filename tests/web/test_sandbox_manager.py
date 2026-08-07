@@ -251,11 +251,11 @@ class TestCreateDockerService:
             _create_docker_service()
 
     def test_legacy_container_inventory_is_logged(self, caplog):
-        """Startup must surface leftover legacy containers for manual removal."""
+        """Startup must surface inactive legacy containers for removal."""
 
         class _ServiceWithLegacyCount(FakeSandboxService):
-            def count_legacy_containers(self) -> int:
-                return 2
+            def count_legacy_containers(self) -> tuple[int, int]:
+                return 0, 2
 
         with (
             patch("xagent.web.sandbox_store.DBDockerStore", return_value=MagicMock()),
@@ -268,12 +268,31 @@ class TestCreateDockerService:
                 result = _create_docker_service()
 
         assert result is not None
-        assert "2 legacy xagent.managed=true sandbox container(s)" in caplog.text
+        assert "2 inactive legacy xagent.managed=true sandbox container(s)" in caplog.text
         assert "xagent.managed=true" in caplog.text
+
+    def test_running_legacy_containers_are_logged_as_errors(self, caplog):
+        class _ServiceWithLegacyCount(FakeSandboxService):
+            def count_legacy_containers(self) -> tuple[int, int]:
+                return 1, 2
+
+        with (
+            patch("xagent.web.sandbox_store.DBDockerStore", return_value=MagicMock()),
+            patch(
+                "xagent.sandbox.DockerSandboxService",
+                return_value=_ServiceWithLegacyCount(),
+            ),
+            caplog.at_level(logging.ERROR),
+        ):
+            result = _create_docker_service()
+
+        assert result is not None
+        assert "1 running legacy xagent.managed=true sandbox container(s)" in caplog.text
+        assert "Stop them before starting v2 sandbox workloads" in caplog.text
 
     def test_legacy_inventory_failure_does_not_misreport_creation(self, caplog):
         class _ServiceWithFailingLegacyCount(FakeSandboxService):
-            def count_legacy_containers(self) -> int:
+            def count_legacy_containers(self) -> tuple[int, int]:
                 raise RuntimeError("legacy inventory unavailable")
 
         service = _ServiceWithFailingLegacyCount()

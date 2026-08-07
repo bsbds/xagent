@@ -159,12 +159,14 @@ class _LabelFilteredCollection(_FakeContainerCollection):
 def _labeled_container(
     labels: dict,
     name: str = "user::1",
+    status: str = "running",
     on_remove: callable | None = None,
     on_stop: callable | None = None,
 ):
     """Minimal container stub exposing the attrs/labels the service reads."""
     return SimpleNamespace(
         name=name,
+        status=status,
         labels=labels,
         attrs={
             "Config": {
@@ -179,7 +181,7 @@ def _labeled_container(
                 "Memory": 512 * 1024 * 1024,
                 "NetworkMode": "default",
             },
-            "State": {"Status": "running"},
+            "State": {"Status": status},
             "NetworkSettings": {"Networks": {"bridge": {}}},
             "Created": "2026-01-01T00:00:00Z",
         },
@@ -263,7 +265,10 @@ class TestNamespaceIsolation:
         collection = _LabelFilteredCollection(
             [
                 _labeled_container({"xagent.managed": "true"}),
-                _labeled_container({"xagent.managed": "true"}),
+                _labeled_container(
+                    {"xagent.managed": "true"},
+                    status="exited",
+                ),
                 _labeled_container(
                     {
                         "xagent.managed": "v2",
@@ -278,7 +283,7 @@ class TestNamespaceIsolation:
             client=_ClientWithCollection(collection),
         )
 
-        assert service.count_legacy_containers() == 2
+        assert service.count_legacy_containers() == (1, 1)
         assert collection.filter_calls[-1] == {"label": "xagent.managed=true"}
 
     def test_count_legacy_containers_returns_zero_when_listing_fails(self, caplog):
@@ -296,7 +301,7 @@ class TestNamespaceIsolation:
         )
 
         with caplog.at_level(logging.WARNING):
-            assert service.count_legacy_containers() == 0
+            assert service.count_legacy_containers() == (0, 0)
         assert "Failed to list legacy sandbox containers" in caplog.text
 
     @pytest.mark.asyncio
