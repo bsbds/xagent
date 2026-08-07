@@ -185,6 +185,7 @@ from xagent.config import (
     get_web_crawl_tls_impersonate,
     get_web_dir,
     get_web_search_provider,
+    validate_sandbox_namespace,
 )
 
 
@@ -1519,6 +1520,11 @@ class TestGetSandboxNamespace:
             "Upper-Case",
             "-leading-dash",
             "has space",
+            ":",
+            "a::b",
+            "a/b",
+            "a.b",
+            "café",
         ],
     )
     def test_invalid_namespace_raises(self, monkeypatch, value):
@@ -1526,6 +1532,11 @@ class TestGetSandboxNamespace:
         monkeypatch.setenv(SANDBOX_NAMESPACE, value)
         with pytest.raises(ValueError, match="Invalid sandbox namespace"):
             get_sandbox_namespace()
+
+    def test_validation_helper_rejects_empty_namespace(self):
+        """Direct callers must not bypass the getter's blank-to-None policy."""
+        with pytest.raises(ValueError, match="Invalid sandbox namespace"):
+            validate_sandbox_namespace("")
 
     def test_long_namespace_accepted_like_compose(self, monkeypatch):
         """Compose accepts arbitrary-length project names; so must we.
