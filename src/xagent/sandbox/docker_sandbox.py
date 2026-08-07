@@ -1666,7 +1666,12 @@ class DockerSandboxService(SandboxService):
         self._store.add_info(name, info)
 
     async def list_sandboxes(self) -> list[SandboxInfo]:
-        """List all managed Docker sandboxes."""
+        """List v2 sandboxes owned by this deployment namespace.
+
+        Containers owned by other deployments and legacy pre-namespace
+        containers are deliberately invisible, so callers such as capacity
+        accounting, idle sweep, and quiesce act only on this owner domain.
+        """
         containers = await asyncio.to_thread(
             lambda: self._client.containers.list(
                 all=True,
