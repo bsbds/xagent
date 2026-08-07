@@ -32,7 +32,11 @@ from docker.errors import APIError, ImageNotFound, NotFound
 
 import docker
 
-from ..config import get_sandbox_image, validate_sandbox_namespace
+from ..config import (
+    get_sandbox_image,
+    get_sandbox_namespace,
+    validate_sandbox_namespace,
+)
 from .base import (
     SPEC_CONTRACT_VERSION,
     CodeType,
@@ -1134,22 +1138,34 @@ class DockerSandboxService(SandboxService):
     def __init__(
         self,
         store: DockerStore,
-        namespace: str,
         client: Optional[Any] = None,
+        *,
+        namespace: Optional[str] = None,
     ) -> None:
         """Initialize the Docker sandbox service and validate daemon access.
 
         Args:
             store: Storage for persisting sandbox metadata.
+            client: Docker SDK client override (tests). Its position is retained
+                for compatibility with existing direct service callers.
             namespace: Stable per-deployment namespace (e.g. the Docker
-                Compose project name). Every container this service creates
-                is namespaced by it, and every lookup/list operation is
-                restricted to it, so multiple deployments sharing one Docker
-                daemon can never discover or mutate each other's sandboxes.
-            client: Docker SDK client override (tests).
+                Compose project name). When omitted, resolve it from
+                ``XAGENT_SANDBOX_NAMESPACE``. Every container this service
+                creates is namespaced by it, and every lookup/list operation
+                is restricted to it, so multiple deployments sharing one
+                Docker daemon can never discover or mutate each other's
+                sandboxes.
         """
-        validate_sandbox_namespace(namespace)
-        self._namespace = namespace
+        resolved_namespace = (
+            namespace if namespace is not None else get_sandbox_namespace()
+        )
+        if resolved_namespace is None:
+            raise RuntimeError(
+                "XAGENT_SANDBOX_NAMESPACE is required when constructing "
+                "DockerSandboxService without an explicit namespace"
+            )
+        validate_sandbox_namespace(resolved_namespace)
+        self._namespace = resolved_namespace
         self._client = client or _create_docker_client()
         self._client.ping()
         self._store = store

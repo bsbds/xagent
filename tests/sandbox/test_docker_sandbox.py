@@ -233,6 +233,32 @@ class TestNamespaceIsolation:
                 client=_FakeDockerClient(),
             )
 
+    def test_constructor_preserves_client_position_and_reads_namespace_env(
+        self, monkeypatch
+    ):
+        """Existing direct callers keep the client argument while the required
+        namespace comes from the documented environment variable."""
+        monkeypatch.setenv("XAGENT_SANDBOX_NAMESPACE", "alpha")
+
+        positional_client = _FakeDockerClient()
+        positional = DockerSandboxService(MemDockerStore(), positional_client)
+        assert positional._client is positional_client
+        assert positional._namespace == "alpha"
+
+        keyword_client = _FakeDockerClient()
+        keyword = DockerSandboxService(
+            MemDockerStore(),
+            client=keyword_client,
+        )
+        assert keyword._client is keyword_client
+        assert keyword._namespace == "alpha"
+
+    def test_constructor_without_namespace_env_fails_closed(self, monkeypatch):
+        """Compatibility must never fall back to daemon-global ownership."""
+        monkeypatch.delenv("XAGENT_SANDBOX_NAMESPACE", raising=False)
+        with pytest.raises(RuntimeError, match="XAGENT_SANDBOX_NAMESPACE is required"):
+            DockerSandboxService(MemDockerStore(), _FakeDockerClient())
+
     def test_count_legacy_containers_uses_exact_legacy_filter(self):
         collection = _LabelFilteredCollection(
             [
