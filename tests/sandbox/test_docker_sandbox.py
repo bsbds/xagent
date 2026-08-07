@@ -287,7 +287,7 @@ class TestNamespaceIsolation:
             "snap-1", "alpha"
         ) != docker_sandbox_module._snapshot_tag("snap-1", "beta")
         assert docker_sandbox_module._snapshot_tag("snap-1", "alpha").startswith(
-            "xagent-sandbox-snapshot-alpha:"
+            "xagent-sandbox-snapshot-alpha-"
         )
 
     @pytest.mark.asyncio
@@ -316,14 +316,13 @@ class TestNamespaceIsolation:
             assert len(repo) <= 255, f"{ns!r} -> repo too long: {len(repo)}"
             tag = docker_sandbox_module._snapshot_tag("snap-1", ns)
             assert len(tag) <= 255, f"{ns!r} -> full reference too long"
-        # A namespace that is already a valid repository token keeps its name;
-        # one that sanitizes to the same token gets the digest, so the two
-        # never collide.
+        # Every mapping includes the raw namespace digest. This prevents a safe
+        # namespace from impersonating another namespace's encoded token.
         assert docker_sandbox_module._snapshot_repository("a-b") != (
             docker_sandbox_module._snapshot_repository("a_-b")
         )
-        assert docker_sandbox_module._snapshot_repository("a_-b") == (
-            docker_sandbox_module._snapshot_repository("a_-b")
+        assert docker_sandbox_module._snapshot_repository("a_b") != (
+            docker_sandbox_module._snapshot_repository("a-b-eb2980a5a2")
         )
 
     @pytest.mark.asyncio

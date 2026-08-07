@@ -202,11 +202,15 @@ def _container_name(name: str, namespace: str) -> str:
     return f"{CONTAINER_NAME_PREFIX}{_make_safe_name(f'{namespace}::{name}')}"
 
 
-#: Max length of the namespace token embedded in the snapshot repository name.
-#: The full Docker reference (repository:tag) must stay under 255 characters:
-#: the fixed prefix (24 chars) plus the token plus the tag (<= 128 chars) must
-#: fit, so the token is capped well below that.
+#: Max length of the complete namespace token embedded in the snapshot repository
+#: name, including the separator and 10-character digest. The full Docker
+#: reference (repository:tag) must stay under 255 characters: the fixed prefix
+#: (24 chars) plus this token plus the tag (<= 128 chars) must fit.
 _SNAPSHOT_NAMESPACE_TOKEN_MAX = 100
+_SNAPSHOT_NAMESPACE_DIGEST_LENGTH = 10
+_SNAPSHOT_NAMESPACE_PREFIX_MAX = (
+    _SNAPSHOT_NAMESPACE_TOKEN_MAX - _SNAPSHOT_NAMESPACE_DIGEST_LENGTH - 1
+)
 
 
 def _snapshot_repository(namespace: str) -> str:
@@ -216,14 +220,16 @@ def _snapshot_repository(namespace: str) -> str:
     is not the Docker reference grammar: namespaces may end in ``-``/``_``,
     mix separators (``a_-b``), and be arbitrarily long, all of which produce
     invalid or overlong repository names. Separator runs are collapsed to a
-    single ``-`` and the token is length-capped with a SHA-1 digest of the raw
-    namespace, so distinct namespaces that sanitize to the same token still
-    get distinct repositories."""
-    token = re.sub(r"[-_]+", "-", namespace).strip("-")
-    if token != namespace or len(token) > _SNAPSHOT_NAMESPACE_TOKEN_MAX:
-        digest = sha1(namespace.encode("utf-8")).hexdigest()[:10]
-        token = f"{token[:_SNAPSHOT_NAMESPACE_TOKEN_MAX].strip('-')}-{digest}"
-    return f"{SNAPSHOT_REPOSITORY}-{token}"
+    single ``-`` and the readable prefix is length-capped. Every mapping
+    appends a SHA-1 digest of the raw namespace, including already-safe names,
+    so no valid namespace can impersonate another namespace's encoded token.
+    """
+    prefix = re.sub(r"[-_]+", "-", namespace).strip("-")
+    prefix = prefix[:_SNAPSHOT_NAMESPACE_PREFIX_MAX].strip("-")
+    digest = sha1(namespace.encode("utf-8")).hexdigest()[
+        :_SNAPSHOT_NAMESPACE_DIGEST_LENGTH
+    ]
+    return f"{SNAPSHOT_REPOSITORY}-{prefix}-{digest}"
 
 
 def _snapshot_tag(snapshot_id: str, namespace: str) -> str:
