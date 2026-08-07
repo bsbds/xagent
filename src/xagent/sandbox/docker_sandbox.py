@@ -194,16 +194,41 @@ def _container_name(name: str, namespace: str) -> str:
     return f"{CONTAINER_NAME_PREFIX}{_make_safe_name(f'{namespace}::{name}')}"
 
 
+#: Max length of the namespace token embedded in the snapshot repository name.
+#: The full Docker reference (repository:tag) must stay under 255 characters:
+#: the fixed prefix (24 chars) plus the token plus the tag (<= 128 chars) must
+#: fit, so the token is capped well below that.
+_SNAPSHOT_NAMESPACE_TOKEN_MAX = 100
+
+
+def _snapshot_repository(namespace: str) -> str:
+    """Map a deployment namespace to a Docker-repository-safe repository name.
+
+    The Compose project-name grammar enforced by ``validate_sandbox_namespace``
+    is not the Docker reference grammar: namespaces may end in ``-``/``_``,
+    mix separators (``a_-b``), and be arbitrarily long, all of which produce
+    invalid or overlong repository names. Separator runs are collapsed to a
+    single ``-`` and the token is length-capped with a SHA-1 digest of the raw
+    namespace, so distinct namespaces that sanitize to the same token still
+    get distinct repositories."""
+    token = re.sub(r"[-_]+", "-", namespace).strip("-")
+    if token != namespace or len(token) > _SNAPSHOT_NAMESPACE_TOKEN_MAX:
+        digest = sha1(namespace.encode("utf-8")).hexdigest()[:10]
+        token = f"{token[:_SNAPSHOT_NAMESPACE_TOKEN_MAX].strip('-')}-{digest}"
+    return f"{SNAPSHOT_REPOSITORY}-{token}"
+
+
 def _snapshot_tag(snapshot_id: str, namespace: str) -> str:
     """Build the managed Docker image tag for a snapshot.
 
     The namespace is part of the repository name so two deployments that
     use the same snapshot id get distinct images on a shared Docker daemon:
     a sibling deployment can neither retag, consume, nor delete this
-    deployment's snapshot image. The namespace is grammar-validated, so it
-    is safe in a repository name."""
+    deployment's snapshot image. The namespace is mapped through
+    ``_snapshot_repository`` because the Compose grammar is not a valid
+    Docker repository grammar."""
     safe = _make_safe_name(snapshot_id)
-    return f"{SNAPSHOT_REPOSITORY}-{namespace}:{safe}"
+    return f"{_snapshot_repository(namespace)}:{safe}"
 
 
 def _get_state(status: str | None) -> str:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import socket
 import tempfile
 import uuid
@@ -244,6 +245,44 @@ class TestNamespaceIsolation:
         ) != docker_sandbox_module._snapshot_tag("snap-1", "beta")
         assert docker_sandbox_module._snapshot_tag("snap-1", "alpha").startswith(
             "xagent-sandbox-snapshot-alpha:"
+        )
+
+    @pytest.mark.asyncio
+    async def test_snapshot_repository_is_docker_safe(self):
+        """Every validator-accepted namespace must map to a valid Docker
+        repository name, even when the namespace itself is not one.
+
+        The Docker reference grammar allows lowercase alphanumeric segments
+        separated by ``[._]``, ``__``, or ``-+`` runs; trailing separators,
+        mixed runs like ``a_-b``, and names over 255 characters are invalid.
+        """
+        docker_ref_re = re.compile(
+            r"^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$"
+        )
+        namespaces = [
+            "alpha",
+            "foo-",
+            "foo_",
+            "a_-b",
+            "a--b",
+            "a__b",
+            "a---b",
+            "a" * 240,
+        ]
+        for ns in namespaces:
+            repo = docker_sandbox_module._snapshot_repository(ns)
+            assert docker_ref_re.fullmatch(repo), f"{ns!r} -> {repo}"
+            assert len(repo) <= 255, f"{ns!r} -> repo too long: {len(repo)}"
+            tag = docker_sandbox_module._snapshot_tag("snap-1", ns)
+            assert len(tag) <= 255, f"{ns!r} -> full reference too long"
+        # A namespace that is already a valid repository token keeps its name;
+        # one that sanitizes to the same token gets the digest, so the two
+        # never collide.
+        assert docker_sandbox_module._snapshot_repository("a-b") != (
+            docker_sandbox_module._snapshot_repository("a_-b")
+        )
+        assert docker_sandbox_module._snapshot_repository("a_-b") == (
+            docker_sandbox_module._snapshot_repository("a_-b")
         )
 
     @pytest.mark.asyncio
@@ -988,6 +1027,41 @@ class TestDockerSandboxService:
                     await service.delete(sandbox_name)
                 except Exception:
                     pass
+
+    @pytest.mark.asyncio(loop_scope="module")
+    async def test_snapshot_lifecycle_with_trailing_dash_namespace(self):
+        """Snapshot round-trip works with a Compose-legal namespace that is
+        not a valid Docker repository component on its own.
+
+        Regression for the raw-namespace repository embedding: a trailing-dash
+        project name previously produced an invalid reference format error at
+        container.commit."""
+        name = "test_snapshot_trailing_dash_ns"
+        snapshot_id = "trailing-dash-snap"
+        service = DockerSandboxService(
+            MemDockerStore(),
+            namespace="deployment-",
+        )
+        try:
+            await service.delete(name)
+        except Exception:
+            pass
+        try:
+            sandbox = await service.get_or_create(
+                name,
+                template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
+                config=SandboxConfig(cpus=1, memory=512),
+            )
+            snapshot = await service.create_snapshot(name, snapshot_id)
+            assert snapshot.snapshot_id == snapshot_id
+            assert await service.list_snapshots() != []
+            await service.delete_snapshot(snapshot_id)
+            assert await service.list_snapshots() == []
+        finally:
+            try:
+                await service.delete(name)
+            except Exception:
+                pass
 
 
 class TestSandboxControl:
