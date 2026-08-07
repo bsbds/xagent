@@ -560,6 +560,36 @@ class TestManagerPathsRespectNamespace:
         assert await beta.inspect("user::1") is not None
 
     @pytest.mark.asyncio
+    async def test_capacity_counts_only_own_namespace(self):
+        removed: list[str] = []
+        foreign = _labeled_container(
+            {
+                "xagent.managed": "v2",
+                "xagent.sandbox.namespace": "beta",
+                "xagent.sandbox.name": "user::1",
+            },
+            name="beta-box",
+            on_remove=lambda: removed.append("beta"),
+        )
+        legacy = _labeled_container(
+            {"xagent.managed": "true", "xagent.sandbox.name": "user::1"},
+            name="legacy-box",
+            on_remove=lambda: removed.append("legacy"),
+        )
+        collection = _LabelFilteredCollection([foreign, legacy])
+        alpha, _ = self._services(collection)
+
+        from xagent.web.sandbox_manager import SandboxManager
+
+        await SandboxManager(alpha)._ensure_capacity_for("user::2", cap=1)
+
+        assert removed == []
+        assert collection.filter_calls[-1]["label"] == [
+            "xagent.managed=v2",
+            "xagent.sandbox.namespace=alpha",
+        ]
+
+    @pytest.mark.asyncio
     async def test_idle_sweep_reclaims_only_own_namespace(self):
         alpha_cont = _labeled_container(
             {
