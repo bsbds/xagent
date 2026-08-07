@@ -2551,9 +2551,7 @@ def _create_docker_service() -> Optional[SandboxService]:
 
     logger.info("Created Docker sandbox service (namespace=%s)", namespace)
     try:
-        running_legacy_count, inactive_legacy_count = (
-            service.count_legacy_containers()
-        )
+        running_legacy_count, inactive_legacy_count = service.count_legacy_containers()
     except Exception as exc:
         logger.warning("Failed to inventory legacy sandbox containers: %s", exc)
         return service

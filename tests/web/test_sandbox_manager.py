@@ -268,7 +268,9 @@ class TestCreateDockerService:
                 result = _create_docker_service()
 
         assert result is not None
-        assert "2 inactive legacy xagent.managed=true sandbox container(s)" in caplog.text
+        assert (
+            "2 inactive legacy xagent.managed=true sandbox container(s)" in caplog.text
+        )
         assert "xagent.managed=true" in caplog.text
 
     def test_running_legacy_containers_are_logged_as_errors(self, caplog):
@@ -287,7 +289,9 @@ class TestCreateDockerService:
             result = _create_docker_service()
 
         assert result is not None
-        assert "1 running legacy xagent.managed=true sandbox container(s)" in caplog.text
+        assert (
+            "1 running legacy xagent.managed=true sandbox container(s)" in caplog.text
+        )
         assert "Stop them before starting v2 sandbox workloads" in caplog.text
 
     def test_legacy_inventory_failure_does_not_misreport_creation(self, caplog):
