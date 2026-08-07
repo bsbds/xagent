@@ -271,12 +271,14 @@ expanded inside the backend container.
 > deployment identifier (see `example.env`). Missing values stop backend
 > startup rather than falling back to unsafe daemon-global ownership.
 
-The overlay also sets `XAGENT_SANDBOX_NAMESPACE` to `${COMPOSE_PROJECT_NAME}`.
-Every sandbox container a deployment creates is scoped to that namespace
-(physical name and owner labels), so multiple deployments sharing one Docker
-daemon never discover or manage each other's sandboxes. Co-located stacks
-must use distinct Compose project names and distinct
-`XAGENT_HOST_STORAGE_ROOT` paths.
+The overlay sets `XAGENT_SANDBOX_NAMESPACE` on `backend`, `worker`, and
+`scheduler` from the resolved `${COMPOSE_PROJECT_NAME}`. Docker sibling mode
+treats that Compose project name as authoritative and overrides any namespace
+from `example.env`; a missing value fails during Compose interpolation. Every
+sandbox container a deployment creates is scoped to that namespace (physical
+name and owner labels), so multiple deployments sharing one Docker daemon
+never discover or manage each other's sandboxes. Co-located stacks must use
+distinct Compose project names and distinct `XAGENT_HOST_STORAGE_ROOT` paths.
 
 Containers created before this scheme existed carry the legacy
 `xagent.managed=true` label and are ignored by current code: they are never
