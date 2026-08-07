@@ -82,6 +82,14 @@ SNAPSHOT_REPOSITORY = "xagent-sandbox-snapshot"
 _CPU_NANOS = 1_000_000_000
 
 
+def _ownership_label_filters(namespace: str) -> list[str]:
+    """Return the load-bearing ownership filters for one deployment."""
+    return [
+        f"{LABEL_MANAGED}={MANAGED_LABEL_VALUE}",
+        f"{LABEL_NAMESPACE}={namespace}",
+    ]
+
+
 class DockerStore(abc.ABC):
     """Store for persisting Docker sandbox metadata."""
 
@@ -1257,8 +1265,7 @@ class DockerSandboxService(SandboxService):
         visible."""
         filters: dict[str, str | list[str] | bool] = {
             "label": [
-                f"{LABEL_MANAGED}={MANAGED_LABEL_VALUE}",
-                f"{LABEL_NAMESPACE}={self._namespace}",
+                *_ownership_label_filters(self._namespace),
                 f"{LABEL_SANDBOX_NAME}={name}",
             ]
         }
@@ -1663,12 +1670,7 @@ class DockerSandboxService(SandboxService):
         containers = await asyncio.to_thread(
             lambda: self._client.containers.list(
                 all=True,
-                filters={
-                    "label": [
-                        f"{LABEL_MANAGED}={MANAGED_LABEL_VALUE}",
-                        f"{LABEL_NAMESPACE}={self._namespace}",
-                    ]
-                },
+                filters={"label": _ownership_label_filters(self._namespace)},
             )
         )
         result: list[SandboxInfo] = []
