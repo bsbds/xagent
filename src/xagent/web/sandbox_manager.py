@@ -2531,8 +2531,7 @@ def _create_docker_service() -> Optional[SandboxService]:
             "deployment identifier. Under Docker Compose use the Compose "
             "project name (COMPOSE_PROJECT_NAME); other deployment modes "
             "(pip/systemd) must pick their own stable value (see "
-            "docker/README.md 'Co-locating multiple deployments on one host' "
-            "and .env.example)"
+            "docker/README.md 'Sandbox Runtime Overlays' and example.env)"
         )
     try:
         from ..sandbox import DockerSandboxService
