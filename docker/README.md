@@ -264,6 +264,13 @@ In Docker sibling mode, `SANDBOX_VOLUMES` sources are host-side paths. Use
 absolute host paths; relative paths and `~` are rejected instead of being
 expanded inside the backend container.
 
+> **Required action on upgrade:** Every existing deployment with
+> `SANDBOX_ENABLED=true` and `SANDBOX_IMPLEMENTATION=docker` must provide
+> `XAGENT_SANDBOX_NAMESPACE` before upgrading. The Compose overlay below sets
+> it automatically; pip/systemd deployments must set their own stable, unique
+> deployment identifier (see `example.env`). Missing values stop backend
+> startup rather than falling back to unsafe daemon-global ownership.
+
 The overlay also sets `XAGENT_SANDBOX_NAMESPACE` to `${COMPOSE_PROJECT_NAME}`.
 Every sandbox container a deployment creates is scoped to that namespace
 (physical name and owner labels), so multiple deployments sharing one Docker
