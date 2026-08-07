@@ -271,6 +271,23 @@ class TestCreateDockerService:
         assert "2 legacy xagent.managed=true sandbox container(s)" in caplog.text
         assert "xagent.managed=true" in caplog.text
 
+    def test_legacy_inventory_failure_does_not_misreport_creation(self, caplog):
+        class _ServiceWithFailingLegacyCount(FakeSandboxService):
+            def count_legacy_containers(self) -> int:
+                raise RuntimeError("legacy inventory unavailable")
+
+        service = _ServiceWithFailingLegacyCount()
+        with (
+            patch("xagent.web.sandbox_store.DBDockerStore", return_value=MagicMock()),
+            patch("xagent.sandbox.DockerSandboxService", return_value=service),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = _create_docker_service()
+
+        assert result is service
+        assert "Failed to inventory legacy sandbox containers" in caplog.text
+        assert "Failed to create Docker sandbox service" not in caplog.text
+
 
 class TestSandboxConfigParsing:
     """Test sandbox config parsing from environment variables."""
