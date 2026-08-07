@@ -1530,8 +1530,9 @@ class TestGetSandboxNamespace:
     def test_long_namespace_accepted_like_compose(self, monkeypatch):
         """Compose accepts arbitrary-length project names; so must we.
 
-        The namespace only feeds hashed container names and label values, so
-        length carries no backend constraint (verified against compose 5.1.4).
+        Container identities hash the full namespace, label values preserve
+        it, and snapshot repository names use a bounded sanitized token plus
+        a digest, so backend identifiers do not impose a namespace length cap.
         """
         monkeypatch.setenv(SANDBOX_NAMESPACE, "a" * 100)
         assert get_sandbox_namespace() == "a" * 100
