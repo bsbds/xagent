@@ -19,3 +19,11 @@ services:
         target: /var/run/docker.sock
         bind:
           create_host_path: false
+
+  worker:
+    environment:
+      - XAGENT_SANDBOX_NAMESPACE=${COMPOSE_PROJECT_NAME}
+
+  scheduler:
+    environment:
+      - XAGENT_SANDBOX_NAMESPACE=${COMPOSE_PROJECT_NAME}
