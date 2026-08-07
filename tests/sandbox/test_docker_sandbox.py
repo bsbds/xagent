@@ -299,9 +299,7 @@ class TestNamespaceIsolation:
         separated by ``[._]``, ``__``, or ``-+`` runs; trailing separators,
         mixed runs like ``a_-b``, and names over 255 characters are invalid.
         """
-        docker_ref_re = re.compile(
-            r"^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$"
-        )
+        docker_ref_re = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*$")
         namespaces = [
             "alpha",
             "foo-",
@@ -1090,7 +1088,7 @@ class TestDockerSandboxService:
         except Exception:
             pass
         try:
-            sandbox = await service.get_or_create(
+            await service.get_or_create(
                 name,
                 template=SandboxTemplate(type="image", image=DEFAULT_SANDBOX_IMAGE),
                 config=SandboxConfig(cpus=1, memory=512),
