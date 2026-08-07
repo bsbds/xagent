@@ -1142,8 +1142,8 @@ class DockerSandboxService(SandboxService):
                 daemon can never discover or mutate each other's sandboxes.
             client: Docker SDK client override (tests).
         """
-        self._namespace = namespace
         validate_sandbox_namespace(namespace)
+        self._namespace = namespace
         self._client = client or _create_docker_client()
         self._client.ping()
         self._store = store
