@@ -2958,14 +2958,16 @@ def test_kb_ingest_cloud_denied_request_does_not_persist_collection_config(
     metadata_store.save_collection_config.assert_not_awaited()
 
 
-def test_kb_ingest_cloud_exports_native_google_slides_as_pptx(test_env, temp_uploads):
-    """Native Google Slides should use Drive export and the PPTX parser path."""
+def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(test_env, temp_uploads):
+    """Native Google Slides should use the Drive LRO and the PPTX parser path."""
     from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
 
     app, headers, user, TestingSessionLocal = test_env
     client = TestClient(app)
+    credentials = object()
+    drive_service = MagicMock()
     metadata_calls: list[dict[str, object]] = []
-    export_calls: list[dict[str, str]] = []
+    lro_calls: list[dict[str, object]] = []
     captured_source_paths: list[str] = []
 
     class _FakeMetadataRequest:
@@ -2974,6 +2976,7 @@ def test_kb_ingest_cloud_exports_native_google_slides_as_pptx(test_env, temp_upl
                 "id": "drive-slides-1",
                 "name": "Quarterly.review",
                 "mimeType": "application/vnd.google-apps.presentation",
+                "resourceKey": "shared-resource-key",
             }
 
     class _FakeFilesService:
@@ -2981,26 +2984,19 @@ def test_kb_ingest_cloud_exports_native_google_slides_as_pptx(test_env, temp_upl
             metadata_calls.append(kwargs)
             return _FakeMetadataRequest()
 
-        def export_media(self, **kwargs):
-            export_calls.append(kwargs)
-            return kwargs
+        def export_media(self, **_kwargs):
+            raise AssertionError("native Google Slides must not use export_media")
 
-        def get_media(self, **kwargs):
-            raise AssertionError("native Google Slides must use export_media")
+        def get_media(self, **_kwargs):
+            raise AssertionError("native Google Slides must not use get_media")
 
-    class _FakeDriveService:
-        def files(self):
-            return _FakeFilesService()
+    drive_service.files.return_value = _FakeFilesService()
 
-    class _FakeDownloader:
-        def __init__(self, fh, request_file):
-            self._fh = fh
+    def _download_with_lro(**kwargs):
+        lro_calls.append(kwargs)
+        Path(kwargs["destination"]).write_bytes(b"downloaded-pptx")
 
-        def next_chunk(self):
-            self._fh.write(b"exported-pptx")
-            return None, True
-
-    def _capture_ingest(*, source_path=None, **kwargs):
+    def _capture_ingest(*, source_path=None, **_kwargs):
         assert source_path is not None
         captured_source_paths.append(str(source_path))
         return IngestionResult(
@@ -3012,9 +3008,12 @@ def test_kb_ingest_cloud_exports_native_google_slides_as_pptx(test_env, temp_upl
         )
 
     with (
-        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
-        patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
-        patch("xagent.web.api.kb.MediaIoBaseDownload", _FakeDownloader),
+        patch("xagent.web.api.kb.get_google_credentials", return_value=credentials),
+        patch("xagent.web.api.kb.build", return_value=drive_service),
+        patch(
+            "xagent.web.api.kb.download_google_workspace_file",
+            side_effect=_download_with_lro,
+        ),
         patch("xagent.web.api.kb.run_document_ingestion", side_effect=_capture_ingest),
     ):
         response = client.post(
@@ -3037,14 +3036,19 @@ def test_kb_ingest_cloud_exports_native_google_slides_as_pptx(test_env, temp_upl
     assert metadata_calls == [
         {
             "fileId": "drive-slides-1",
-            "fields": "id,name,mimeType",
+            "fields": "id,name,mimeType,resourceKey",
             "supportsAllDrives": True,
         }
     ]
-    assert export_calls == [
+    assert lro_calls == [
         {
-            "fileId": "drive-slides-1",
-            "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "service": drive_service,
+            "credentials": credentials,
+            "file_id": "drive-slides-1",
+            "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "destination": Path(captured_source_paths[0]),
+            "timeout_seconds": 600,
+            "resource_key": "shared-resource-key",
         }
     ]
     assert len(captured_source_paths) == 1
@@ -3140,7 +3144,7 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
     assert metadata_calls == [
         {
             "fileId": "drive-pptx-1",
-            "fields": "id,name,mimeType",
+            "fields": "id,name,mimeType,resourceKey",
             "supportsAllDrives": True,
         }
     ]
@@ -3266,8 +3270,8 @@ def test_kb_ingest_cloud_rejects_extensionless_binary_file(test_env, temp_upload
     assert not [path for path in temp_uploads.rglob("*") if path.is_file()]
 
 
-def test_kb_ingest_cloud_export_failure_removes_partial_file(test_env, temp_uploads):
-    """Failed native Slides exports should remove partial local state."""
+def test_kb_ingest_cloud_download_failure_removes_partial_file(test_env, temp_uploads):
+    """Failed native Slides downloads should remove partial local state."""
     app, headers, _user, TestingSessionLocal = test_env
     client = TestClient(app)
 
@@ -3279,35 +3283,27 @@ def test_kb_ingest_cloud_export_failure_removes_partial_file(test_env, temp_uplo
                 "application/vnd.google-apps.presentation",
             )
 
-        def export_media(self, **kwargs):
-            return kwargs
-
     class _FakeDriveService:
         def files(self):
             return _FakeFilesService()
 
-    class _FailingDownloader:
-        def __init__(self, fh, request_file):
-            self._fh = fh
-            self._calls = 0
-
-        def next_chunk(self):
-            self._calls += 1
-            if self._calls == 1:
-                self._fh.write(b"partial-pptx")
-                return None, False
-            raise RuntimeError("export interrupted")
+    def _fail_download(**kwargs):
+        Path(kwargs["destination"]).write_bytes(b"partial-pptx")
+        raise RuntimeError("download interrupted")
 
     with (
         patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
         patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
-        patch("xagent.web.api.kb.MediaIoBaseDownload", _FailingDownloader),
+        patch(
+            "xagent.web.api.kb.download_google_workspace_file",
+            side_effect=_fail_download,
+        ),
         patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
     ):
         response = client.post(
             "/api/kb/ingest-cloud",
             json={
-                "collection": "cloud_export_failure",
+                "collection": "cloud_download_failure",
                 "files": [
                     {
                         "provider": "google-drive",
@@ -3320,7 +3316,7 @@ def test_kb_ingest_cloud_export_failure_removes_partial_file(test_env, temp_uplo
         )
 
     assert response.status_code == 200
-    assert response.json()[0]["message"] == "Export failed: export interrupted"
+    assert response.json()[0]["message"] == "Download failed: download interrupted"
     run_ingestion.assert_not_called()
     assert not [path for path in temp_uploads.rglob("*") if path.is_file()]
 
@@ -3331,7 +3327,9 @@ def test_kb_ingest_cloud_export_failure_removes_partial_file(test_env, temp_uplo
         session.close()
 
 
-def test_kb_ingest_cloud_export_failure_restores_existing_file(test_env, temp_uploads):
+def test_kb_ingest_cloud_download_failure_restores_existing_file(
+    test_env, temp_uploads
+):
     """A failed native Slides refresh should restore the previous local file."""
     from xagent.web.api.kb import _build_cloud_storage_filename
 
@@ -3353,31 +3351,27 @@ def test_kb_ingest_cloud_export_failure_restores_existing_file(test_env, temp_up
                 "application/vnd.google-apps.presentation",
             )
 
-        def export_media(self, **kwargs):
-            return kwargs
-
     class _FakeDriveService:
         def files(self):
             return _FakeFilesService()
 
-    class _FailingDownloader:
-        def __init__(self, fh, request_file):
-            self._fh = fh
-
-        def next_chunk(self):
-            self._fh.write(b"replacement-partial")
-            raise RuntimeError("export interrupted")
+    def _fail_download(**kwargs):
+        Path(kwargs["destination"]).write_bytes(b"replacement-partial")
+        raise RuntimeError("download interrupted")
 
     with (
         patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
         patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
-        patch("xagent.web.api.kb.MediaIoBaseDownload", _FailingDownloader),
+        patch(
+            "xagent.web.api.kb.download_google_workspace_file",
+            side_effect=_fail_download,
+        ),
         patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
     ):
         response = client.post(
             "/api/kb/ingest-cloud",
             json={
-                "collection": "cloud_export_restore",
+                "collection": "cloud_download_restore",
                 "files": [
                     {
                         "provider": "google-drive",
@@ -3390,7 +3384,7 @@ def test_kb_ingest_cloud_export_failure_restores_existing_file(test_env, temp_up
         )
 
     assert response.status_code == 200
-    assert response.json()[0]["message"] == "Export failed: export interrupted"
+    assert response.json()[0]["message"] == "Download failed: download interrupted"
     run_ingestion.assert_not_called()
     assert file_path.read_bytes() == b"previous-pptx"
     assert list(file_path.parent.glob("*.rollback-*")) == []

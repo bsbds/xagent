@@ -1,0 +1,354 @@
+"""Tests for Google Drive long-running Workspace downloads."""
+
+from __future__ import annotations
+
+import importlib
+import logging
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+
+class _Request:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.headers: dict[str, str] = {}
+
+    def execute(self) -> dict[str, Any]:
+        return self.response
+
+
+class _FilesResource:
+    def __init__(self, operation: dict[str, Any]) -> None:
+        self.request = _Request(operation)
+        self.download_calls: list[dict[str, str]] = []
+
+    def download(self, **kwargs: str) -> _Request:
+        self.download_calls.append(kwargs)
+        return self.request
+
+
+class _OperationsResource:
+    def __init__(self, responses: list[dict[str, Any]] | None = None) -> None:
+        self.responses = list(responses or [])
+        self.get_calls: list[str] = []
+        self.requests: list[_Request] = []
+
+    def get(self, *, name: str) -> _Request:
+        self.get_calls.append(name)
+        if not self.responses:
+            raise AssertionError(f"Unexpected poll for operation {name}")
+        request = _Request(self.responses.pop(0))
+        self.requests.append(request)
+        return request
+
+
+class _DriveService:
+    def __init__(
+        self,
+        operation: dict[str, Any],
+        *,
+        poll_responses: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.files_resource = _FilesResource(operation)
+        self.operations_resource = _OperationsResource(poll_responses)
+
+    def files(self) -> _FilesResource:
+        return self.files_resource
+
+    def operations(self) -> _OperationsResource:
+        return self.operations_resource
+
+
+class _Response:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        error: Exception | None = None,
+        status_code: int = 200,
+    ) -> None:
+        self.chunks = chunks
+        self.error = error
+        self.status_code = status_code
+        self.raise_for_status_called = False
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        self.raise_for_status_called = True
+        if self.error is not None:
+            raise self.error
+
+    def iter_content(self, *, chunk_size: int) -> list[bytes]:
+        assert chunk_size == 1024 * 1024
+        return self.chunks
+
+
+class _AuthorizedSession:
+    def __init__(self, response: _Response) -> None:
+        self.response = response
+        self.get_calls: list[dict[str, Any]] = []
+
+    def __enter__(self) -> _AuthorizedSession:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def get(self, url: str, **kwargs: Any) -> _Response:
+        self.get_calls.append({"url": url, **kwargs})
+        return self.response
+
+
+def _module() -> Any:
+    return importlib.import_module("xagent.web.services.google_drive_download")
+
+
+def test_download_google_workspace_file_writes_completed_operation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {
+            "name": "operations/download-1",
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/1"},
+        }
+    )
+    response = _Response([b"first", b"", b"second"])
+    session = _AuthorizedSession(response)
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    destination = tmp_path / "slides.pptx"
+
+    module.download_google_workspace_file(
+        service=service,
+        credentials=object(),
+        file_id="slides-1",
+        mime_type="application/vnd.test.presentation",
+        destination=destination,
+        timeout_seconds=600,
+    )
+
+    assert destination.read_bytes() == b"firstsecond"
+    assert service.files_resource.download_calls == [
+        {
+            "fileId": "slides-1",
+            "mimeType": "application/vnd.test.presentation",
+        }
+    ]
+    assert response.raise_for_status_called is True
+    assert session.get_calls == [
+        {
+            "url": "https://drive.example/download/1",
+            "stream": True,
+            "timeout": 60,
+            "headers": {},
+        }
+    ]
+
+
+def test_download_google_workspace_file_polls_pending_operation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {"name": "operations/download-2"},
+        poll_responses=[
+            {
+                "name": "operations/download-2",
+                "done": True,
+                "response": {"downloadUri": "https://drive.example/download/2"},
+            }
+        ],
+    )
+    session = _AuthorizedSession(_Response([b"complete"]))
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    monkeypatch.setattr(module, "sleep", sleep_calls.append)
+    destination = tmp_path / "slides.pptx"
+
+    module.download_google_workspace_file(
+        service=service,
+        credentials=object(),
+        file_id="slides-2",
+        mime_type="application/vnd.test.presentation",
+        destination=destination,
+        timeout_seconds=600,
+    )
+
+    assert destination.read_bytes() == b"complete"
+    assert service.operations_resource.get_calls == ["operations/download-2"]
+    assert sleep_calls == [10]
+
+
+def test_download_google_workspace_file_raises_completed_operation_error(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {
+            "name": "operations/download-3",
+            "done": True,
+            "error": {"code": 13, "message": "Drive could not create the export"},
+        }
+    )
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match=r"Drive operation failed \(13\): Drive could not create the export",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-3",
+            mime_type="application/vnd.test.presentation",
+            destination=tmp_path / "slides.pptx",
+            timeout_seconds=600,
+        )
+
+    assert not (tmp_path / "slides.pptx").exists()
+
+
+def test_download_google_workspace_file_stops_at_operation_timeout(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {"name": "operations/download-4"},
+        poll_responses=[{"name": "operations/download-4"}],
+    )
+    times = iter([0.0, 0.0, 10.0])
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(module, "monotonic", lambda: next(times), raising=False)
+    monkeypatch.setattr(module, "sleep", sleep_calls.append)
+
+    with pytest.raises(
+        module.GoogleDriveDownloadTimeout,
+        match="Drive download for slides-4 did not finish within 10 seconds",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-4",
+            mime_type="application/vnd.test.presentation",
+            destination=tmp_path / "slides.pptx",
+            timeout_seconds=10,
+        )
+
+    assert service.operations_resource.get_calls == ["operations/download-4"]
+    assert sleep_calls == [10]
+    assert not (tmp_path / "slides.pptx").exists()
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_message"),
+    [
+        ({}, "Drive returned a pending operation without a name"),
+        ({"done": True}, "Drive completed the operation without a response"),
+        (
+            {"done": True, "response": {}},
+            "Drive completed the operation without a download URI",
+        ),
+    ],
+)
+def test_download_google_workspace_file_rejects_malformed_operation(
+    operation: dict[str, Any],
+    expected_message: str,
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(operation)
+    monkeypatch.setattr(module, "sleep", lambda _seconds: None)
+
+    with pytest.raises(module.GoogleDriveDownloadError, match=expected_message):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-invalid",
+            mime_type="application/vnd.test.presentation",
+            destination=tmp_path / "slides.pptx",
+            timeout_seconds=600,
+        )
+
+
+def test_download_google_workspace_file_sends_resource_key_without_logging_secrets(
+    tmp_path: Path,
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {"name": "operations/download-shared"},
+        poll_responses=[
+            {
+                "name": "operations/download-shared",
+                "done": True,
+                "response": {"downloadUri": "https://drive.example/download/shared"},
+            }
+        ],
+    )
+    session = _AuthorizedSession(_Response([b"shared"]))
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    monkeypatch.setattr(module, "sleep", lambda _seconds: None)
+    caplog.set_level(logging.INFO, logger=module.__name__)
+
+    module.download_google_workspace_file(
+        service=service,
+        credentials=object(),
+        file_id="slides-shared",
+        mime_type="application/vnd.test.presentation",
+        destination=tmp_path / "slides.pptx",
+        timeout_seconds=600,
+        resource_key="resource-secret",
+    )
+
+    expected_headers = {"X-Goog-Drive-Resource-Keys": "slides-shared/resource-secret"}
+    assert service.files_resource.request.headers == expected_headers
+    assert service.operations_resource.requests[0].headers == expected_headers
+    assert session.get_calls[0]["headers"] == expected_headers
+    assert "Drive download operation started file_id=slides-shared" in caplog.text
+    assert "Drive download operation completed file_id=slides-shared" in caplog.text
+    assert "resource-secret" not in caplog.text
+    assert "drive.example" not in caplog.text
+
+
+def test_download_google_workspace_file_wraps_final_http_failure(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/failure"},
+        }
+    )
+    response = _Response([], error=RuntimeError("signed URI"), status_code=503)
+    session = _AuthorizedSession(response)
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    destination = tmp_path / "slides.pptx"
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match="Final Drive download failed with HTTP status 503",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-failure",
+            mime_type="application/vnd.test.presentation",
+            destination=destination,
+            timeout_seconds=600,
+        )
+
+    assert not destination.exists()

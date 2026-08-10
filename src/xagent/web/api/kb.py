@@ -46,7 +46,10 @@ from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from ...config import get_kb_collections_timeout_seconds
+from ...config import (
+    get_google_drive_download_timeout_seconds,
+    get_kb_collections_timeout_seconds,
+)
 from ...core.file_storage.keys import build_upload_storage_key
 from ...core.tools.core.RAG_tools.core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ...core.tools.core.RAG_tools.core.parser_registry import (
@@ -113,6 +116,7 @@ from ..services.background_jobs import (
     is_background_job_enqueue_available,
     mark_job_failed,
 )
+from ..services.google_drive_download import download_google_workspace_file
 from ..services.kb_collection_service import (
     delete_collection_physical_dir,
     delete_collection_uploaded_files,
@@ -4619,7 +4623,9 @@ async def ingest_cloud(
                 mimetypes.guess_type(safe_filename)[0] or "application/octet-stream"
             )
             is_native_google_slides = False
+            drive_resource_key: str | None = None
             service: Any = None
+            creds: Any = None
 
             if file_info.provider == "google-drive":
                 try:
@@ -4651,7 +4657,7 @@ async def ingest_cloud(
                             service.files()
                             .get(
                                 fileId=file_info.fileId,
-                                fields="id,name,mimeType",
+                                fields="id,name,mimeType,resourceKey",
                                 supportsAllDrives=True,
                             )
                             .execute(),
@@ -4670,6 +4676,10 @@ async def ingest_cloud(
                         raise ValueError("Google Drive returned an invalid file name")
 
                     drive_mime_type = str(metadata_mime_type)
+                    metadata_resource_key = metadata.get("resourceKey")
+                    drive_resource_key = (
+                        str(metadata_resource_key) if metadata_resource_key else None
+                    )
                     is_native_google_slides = (
                         drive_mime_type == _GOOGLE_SLIDES_MIME_TYPE
                     )
@@ -4732,24 +4742,30 @@ async def ingest_cloud(
 
                         def _download_file() -> None:
                             if is_native_google_slides:
-                                request_file = service.files().export_media(
-                                    fileId=file_info.fileId,
-                                    mimeType=_POWERPOINT_EXPORT_MIME_TYPE,
+                                download_google_workspace_file(
+                                    service=service,
+                                    credentials=creds,
+                                    file_id=file_info.fileId,
+                                    mime_type=_POWERPOINT_EXPORT_MIME_TYPE,
+                                    destination=file_path,
+                                    timeout_seconds=get_google_drive_download_timeout_seconds(),
+                                    resource_key=drive_resource_key,
                                 )
-                            else:
-                                request_file = service.files().get_media(
-                                    fileId=file_info.fileId,
-                                    supportsAllDrives=True,
-                                )
+                                return
+
+                            request_file = service.files().get_media(
+                                fileId=file_info.fileId,
+                                supportsAllDrives=True,
+                            )
                             with open(file_path, "wb") as fh:
                                 downloader = MediaIoBaseDownload(fh, request_file)
                                 done = False
                                 while done is False:
-                                    status, done = downloader.next_chunk()
+                                    _status, done = downloader.next_chunk()
 
                         if is_native_google_slides:
                             logger.info(
-                                "Exporting native Google Slides file_id=%s user_id=%s mime_type=%s",
+                                "Downloading native Google Slides file_id=%s user_id=%s mime_type=%s",
                                 file_info.fileId,
                                 int(actor_user.id),
                                 _POWERPOINT_EXPORT_MIME_TYPE,
@@ -4757,9 +4773,7 @@ async def ingest_cloud(
                         await asyncio.to_thread(_download_file)
 
                     except Exception as e:
-                        transfer_action = (
-                            "Export" if is_native_google_slides else "Download"
-                        )
+                        transfer_action = "Download"
                         logger.warning(
                             "Google Drive %s failed for file_id=%s user_id=%s: %s",
                             transfer_action.lower(),
