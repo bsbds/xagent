@@ -4623,7 +4623,6 @@ async def ingest_cloud(
                 mimetypes.guess_type(safe_filename)[0] or "application/octet-stream"
             )
             is_native_google_slides = False
-            drive_resource_key: str | None = None
             service: Any = None
             creds: Any = None
 
@@ -4657,7 +4656,7 @@ async def ingest_cloud(
                             service.files()
                             .get(
                                 fileId=file_info.fileId,
-                                fields="id,name,mimeType,resourceKey",
+                                fields="id,name,mimeType",
                                 supportsAllDrives=True,
                             )
                             .execute(),
@@ -4676,10 +4675,6 @@ async def ingest_cloud(
                         raise ValueError("Google Drive returned an invalid file name")
 
                     drive_mime_type = str(metadata_mime_type)
-                    metadata_resource_key = metadata.get("resourceKey")
-                    drive_resource_key = (
-                        str(metadata_resource_key) if metadata_resource_key else None
-                    )
                     is_native_google_slides = (
                         drive_mime_type == _GOOGLE_SLIDES_MIME_TYPE
                     )
@@ -4749,7 +4744,6 @@ async def ingest_cloud(
                                     mime_type=_POWERPOINT_EXPORT_MIME_TYPE,
                                     destination=file_path,
                                     timeout_seconds=get_google_drive_download_timeout_seconds(),
-                                    resource_key=drive_resource_key,
                                 )
                                 return
 

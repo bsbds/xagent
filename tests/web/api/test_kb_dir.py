@@ -2976,7 +2976,6 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(test_env, temp_u
                 "id": "drive-slides-1",
                 "name": "Quarterly.review",
                 "mimeType": "application/vnd.google-apps.presentation",
-                "resourceKey": "shared-resource-key",
             }
 
     class _FakeFilesService:
@@ -3036,7 +3035,7 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(test_env, temp_u
     assert metadata_calls == [
         {
             "fileId": "drive-slides-1",
-            "fields": "id,name,mimeType,resourceKey",
+            "fields": "id,name,mimeType",
             "supportsAllDrives": True,
         }
     ]
@@ -3048,7 +3047,6 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(test_env, temp_u
             "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             "destination": Path(captured_source_paths[0]),
             "timeout_seconds": 600,
-            "resource_key": "shared-resource-key",
         }
     ]
     assert len(captured_source_paths) == 1
@@ -3144,7 +3142,7 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
     assert metadata_calls == [
         {
             "fileId": "drive-pptx-1",
-            "fields": "id,name,mimeType,resourceKey",
+            "fields": "id,name,mimeType",
             "supportsAllDrives": True,
         }
     ]

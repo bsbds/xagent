@@ -290,7 +290,10 @@ def test_download_google_workspace_file_sends_resource_key_without_logging_secre
 ) -> None:
     module = _module()
     service = _DriveService(
-        {"name": "operations/download-shared"},
+        {
+            "name": "operations/download-shared",
+            "metadata": {"resourceKey": "resource-secret"},
+        },
         poll_responses=[
             {
                 "name": "operations/download-shared",
@@ -311,11 +314,10 @@ def test_download_google_workspace_file_sends_resource_key_without_logging_secre
         mime_type="application/vnd.test.presentation",
         destination=tmp_path / "slides.pptx",
         timeout_seconds=600,
-        resource_key="resource-secret",
     )
 
     expected_headers = {"X-Goog-Drive-Resource-Keys": "slides-shared/resource-secret"}
-    assert service.files_resource.request.headers == expected_headers
+    assert service.files_resource.request.headers == {}
     assert service.operations_resource.requests[0].headers == expected_headers
     assert session.get_calls[0]["headers"] == expected_headers
     assert "Drive download operation started file_id=slides-shared" in caplog.text

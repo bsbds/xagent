@@ -24,6 +24,21 @@ class GoogleDriveDownloadTimeout(GoogleDriveDownloadError):
     """Report a Drive operation that exceeded the caller's wait limit."""
 
 
+def _update_resource_key_header(
+    headers: dict[str, str],
+    *,
+    file_id: str,
+    operation: dict[str, Any],
+) -> None:
+    """Apply the resource key returned in Drive operation metadata."""
+    metadata = operation.get("metadata")
+    if not isinstance(metadata, dict):
+        return
+    resource_key = metadata.get("resourceKey")
+    if resource_key:
+        headers["X-Goog-Drive-Resource-Keys"] = f"{file_id}/{resource_key}"
+
+
 def download_google_workspace_file(
     *,
     service: Any,
@@ -32,7 +47,6 @@ def download_google_workspace_file(
     mime_type: str,
     destination: Path,
     timeout_seconds: float,
-    resource_key: str | None = None,
 ) -> None:
     """Export a Google Workspace file and stream it to ``destination``.
 
@@ -41,12 +55,11 @@ def download_google_workspace_file(
     worker thread.
     """
     headers: dict[str, str] = {}
-    if resource_key:
-        headers["X-Goog-Drive-Resource-Keys"] = f"{file_id}/{resource_key}"
 
     request = service.files().download(fileId=file_id, mimeType=mime_type)
     request.headers.update(headers)
     operation = cast(dict[str, Any], request.execute())
+    _update_resource_key_header(headers, file_id=file_id, operation=operation)
     started_at = monotonic()
     deadline = started_at + timeout_seconds
     logger.info(
@@ -71,6 +84,7 @@ def download_google_workspace_file(
         poll_request = service.operations().get(name=str(operation_name))
         poll_request.headers.update(headers)
         operation = cast(dict[str, Any], poll_request.execute())
+        _update_resource_key_header(headers, file_id=file_id, operation=operation)
         poll_delay_seconds = min(poll_delay_seconds * 2, 60.0)
 
     if "error" in operation:
