@@ -2958,11 +2958,16 @@ def test_kb_ingest_cloud_denied_request_does_not_persist_collection_config(
     metadata_store.save_collection_config.assert_not_awaited()
 
 
-def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(test_env, temp_uploads):
+def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
+    test_env,
+    temp_uploads,
+    monkeypatch,
+):
     """Native Google Slides should use the Drive LRO and the PPTX parser path."""
     from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
 
     app, headers, user, TestingSessionLocal = test_env
+    monkeypatch.delenv("XAGENT_GOOGLE_DRIVE_DOWNLOAD_TIMEOUT_SECONDS", raising=False)
     client = TestClient(app)
     credentials = object()
     drive_service = MagicMock()
