@@ -4773,10 +4773,8 @@ async def ingest_cloud(
                         await asyncio.to_thread(_download_file)
 
                     except Exception as e:
-                        transfer_action = "Download"
                         logger.warning(
-                            "Google Drive %s failed for file_id=%s user_id=%s: %s",
-                            transfer_action.lower(),
+                            "Google Drive download failed for file_id=%s user_id=%s: %s",
                             file_info.fileId,
                             int(actor_user.id),
                             e,
@@ -4784,7 +4782,7 @@ async def ingest_cloud(
                         rollback_api_result = KBApiOperationResult(
                             result=IngestionResult(
                                 status="error",
-                                message=f"{transfer_action} failed: {str(e)}",
+                                message=f"Download failed: {str(e)}",
                                 doc_id=source_filename,
                             )
                         )
