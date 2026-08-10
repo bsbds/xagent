@@ -3360,6 +3360,7 @@ class CloudFile(BaseModel):
     provider: str
     fileId: str
     fileName: str
+    resourceKey: Optional[str] = None
 
 
 class CloudIngestRequest(BaseModel):
@@ -4651,16 +4652,20 @@ async def ingest_cloud(
 
                     def _get_file_metadata() -> dict[str, Any]:
                         """Read current metadata before deriving the local file format."""
-                        return cast(
-                            dict[str, Any],
-                            service.files()
-                            .get(
-                                fileId=file_info.fileId,
-                                fields="id,name,mimeType",
-                                supportsAllDrives=True,
-                            )
-                            .execute(),
+                        metadata_request = service.files().get(
+                            fileId=file_info.fileId,
+                            fields="id,name,mimeType",
+                            supportsAllDrives=True,
                         )
+                        if file_info.resourceKey:
+                            metadata_request.headers.update(
+                                {
+                                    "X-Goog-Drive-Resource-Keys": (
+                                        f"{file_info.fileId}/{file_info.resourceKey}"
+                                    )
+                                }
+                            )
+                        return cast(dict[str, Any], metadata_request.execute())
 
                     metadata = await asyncio.to_thread(_get_file_metadata)
                     metadata_name = metadata.get("name")
@@ -4744,6 +4749,7 @@ async def ingest_cloud(
                                     mime_type=_POWERPOINT_EXPORT_MIME_TYPE,
                                     destination=file_path,
                                     timeout_seconds=get_google_drive_download_timeout_seconds(),
+                                    resource_key=file_info.resourceKey,
                                 )
                                 return
 

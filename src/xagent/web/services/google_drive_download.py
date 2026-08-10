@@ -47,6 +47,7 @@ def download_google_workspace_file(
     mime_type: str,
     destination: Path,
     timeout_seconds: float,
+    resource_key: str | None = None,
 ) -> None:
     """Export a Google Workspace file and stream it to ``destination``.
 
@@ -55,6 +56,8 @@ def download_google_workspace_file(
     worker thread.
     """
     headers: dict[str, str] = {}
+    if resource_key:
+        headers["X-Goog-Drive-Resource-Keys"] = f"{file_id}/{resource_key}"
 
     request = service.files().download(fileId=file_id, mimeType=mime_type)
     request.headers.update(headers)

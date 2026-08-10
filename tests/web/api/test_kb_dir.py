@@ -2972,10 +2972,14 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
     credentials = object()
     drive_service = MagicMock()
     metadata_calls: list[dict[str, object]] = []
+    metadata_requests: list[object] = []
     lro_calls: list[dict[str, object]] = []
     captured_source_paths: list[str] = []
 
     class _FakeMetadataRequest:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
         def execute(self):
             return {
                 "id": "drive-slides-1",
@@ -2986,7 +2990,9 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
     class _FakeFilesService:
         def get(self, **kwargs):
             metadata_calls.append(kwargs)
-            return _FakeMetadataRequest()
+            request = _FakeMetadataRequest()
+            metadata_requests.append(request)
+            return request
 
         def export_media(self, **_kwargs):
             raise AssertionError("native Google Slides must not use export_media")
@@ -3029,6 +3035,7 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
                         "provider": "google-drive",
                         "fileId": "drive-slides-1",
                         "fileName": "Quarterly Review",
+                        "resourceKey": "link-resource-key",
                     }
                 ],
             },
@@ -3044,6 +3051,9 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
             "supportsAllDrives": True,
         }
     ]
+    assert metadata_requests[0].headers == {
+        "X-Goog-Drive-Resource-Keys": "drive-slides-1/link-resource-key"
+    }
     assert lro_calls == [
         {
             "service": drive_service,
@@ -3052,6 +3062,7 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
             "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             "destination": Path(captured_source_paths[0]),
             "timeout_seconds": 600,
+            "resource_key": "link-resource-key",
         }
     ]
     assert len(captured_source_paths) == 1

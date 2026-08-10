@@ -283,6 +283,35 @@ def test_download_google_workspace_file_rejects_malformed_operation(
         )
 
 
+def test_download_google_workspace_file_sends_supplied_resource_key_on_start(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/linked"},
+        }
+    )
+    session = _AuthorizedSession(_Response([b"linked"]))
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+
+    module.download_google_workspace_file(
+        service=service,
+        credentials=object(),
+        file_id="slides-linked",
+        mime_type="application/vnd.test.presentation",
+        destination=tmp_path / "slides.pptx",
+        timeout_seconds=600,
+        resource_key="link-resource-key",
+    )
+
+    expected_headers = {"X-Goog-Drive-Resource-Keys": "slides-linked/link-resource-key"}
+    assert service.files_resource.request.headers == expected_headers
+    assert session.get_calls[0]["headers"] == expected_headers
+
+
 def test_download_google_workspace_file_sends_resource_key_without_logging_secrets(
     tmp_path: Path,
     monkeypatch: Any,

@@ -140,12 +140,17 @@ vi.mock("./cloud-connect-dialog", () => ({
   }: {
     open: boolean
     provider: { id: string } | null
-    onConfirm: (files: Array<{ id: string; name: string; size?: string }>) => void
+    onConfirm: (files: Array<{ id: string; name: string; size?: string; resourceKey?: string }>) => void
   }) => (
     open && provider ? (
       <button
         data-testid="mock-cloud-confirm"
-        onClick={() => onConfirm([{ id: `${provider.id}-file-1`, name: "alpha.pdf", size: "1 KB" }])}
+        onClick={() => onConfirm([{
+          id: `${provider.id}-file-1`,
+          name: "alpha.pdf",
+          size: "1 KB",
+          resourceKey: "resource-secret",
+        }])}
       >
         mock cloud confirm
       </button>
@@ -541,6 +546,18 @@ describe("KnowledgeBaseCreationDialog collection naming", () => {
           })
         )
       })
+
+      const cloudCall = apiRequestMock.mock.calls.find(
+        ([url]) => url === "http://api.local/api/kb/ingest-cloud"
+      )
+      expect(JSON.parse(cloudCall?.[1]?.body as string).files).toEqual([
+        {
+          provider: "google-drive",
+          fileId: "google-drive-file-1",
+          fileName: "alpha.pdf",
+          resourceKey: "resource-secret",
+        },
+      ])
 
       expect(toastSuccessMock).not.toHaveBeenCalled()
       expect(onOpenChange).not.toHaveBeenCalledWith(false)

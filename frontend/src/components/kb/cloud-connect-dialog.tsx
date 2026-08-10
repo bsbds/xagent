@@ -28,6 +28,7 @@ export interface CloudFile {
   type: 'file' | 'folder'
   size?: string
   updatedAt?: string
+  resourceKey?: string
 }
 
 interface ConnectedAccount {
