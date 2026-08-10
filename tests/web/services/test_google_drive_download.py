@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from google.auth.credentials import AnonymousCredentials
+from googleapiclient.discovery import build
 
 
 class _Request:
@@ -320,6 +322,99 @@ def test_download_google_workspace_file_sends_resource_key_without_logging_secre
     assert "Drive download operation completed file_id=slides-shared" in caplog.text
     assert "resource-secret" not in caplog.text
     assert "drive.example" not in caplog.text
+
+
+def test_drive_discovery_exposes_long_running_download_contract() -> None:
+    """The minimum client contract includes Drive download and polling methods."""
+    service = build(
+        "drive",
+        "v3",
+        credentials=AnonymousCredentials(),
+        cache_discovery=False,
+    )
+
+    download_request = service.files().download(
+        fileId="slides-contract",
+        mimeType="application/vnd.test.presentation",
+    )
+    poll_request = service.operations().get(name="download-contract")
+
+    assert isinstance(download_request.headers, dict)
+    assert isinstance(poll_request.headers, dict)
+
+
+def test_download_google_workspace_file_caps_poll_backoff(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {"name": "operations/download-backoff"},
+        poll_responses=[
+            {"name": "operations/download-backoff"},
+            {"name": "operations/download-backoff", "done": False},
+            {"name": "operations/download-backoff"},
+            {"name": "operations/download-backoff", "done": False},
+            {
+                "name": "operations/download-backoff",
+                "done": True,
+                "response": {"downloadUri": "https://drive.example/download/backoff"},
+            },
+        ],
+    )
+    session = _AuthorizedSession(_Response([b"complete"]))
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    monkeypatch.setattr(module, "sleep", sleep_calls.append)
+
+    module.download_google_workspace_file(
+        service=service,
+        credentials=object(),
+        file_id="slides-backoff",
+        mime_type="application/vnd.test.presentation",
+        destination=tmp_path / "slides.pptx",
+        timeout_seconds=600,
+    )
+
+    assert sleep_calls == [10, 20, 40, 60, 60]
+
+
+def test_download_google_workspace_file_preserves_partial_file_on_stream_failure(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/partial"},
+        }
+    )
+
+    class _MidstreamFailureResponse(_Response):
+        def iter_content(self, *, chunk_size: int):
+            assert chunk_size == 1024 * 1024
+            yield b"partial"
+            raise RuntimeError("connection reset")
+
+    session = _AuthorizedSession(_MidstreamFailureResponse([]))
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    destination = tmp_path / "slides.pptx"
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match="Final Drive download request failed",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-partial",
+            mime_type="application/vnd.test.presentation",
+            destination=destination,
+            timeout_seconds=600,
+        )
+
+    assert destination.read_bytes() == b"partial"
 
 
 def test_download_google_workspace_file_wraps_final_http_failure(
