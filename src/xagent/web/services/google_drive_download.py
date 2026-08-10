@@ -111,10 +111,25 @@ def download_google_workspace_file(
                     raise GoogleDriveDownloadError(
                         f"Final Drive download failed with HTTP status {status_code}"
                     ) from exc
-                with destination.open("wb") as output:
+                try:
+                    output_file = destination.open("wb")
+                except OSError as exc:
+                    reason = exc.strerror or "local filesystem error"
+                    raise GoogleDriveDownloadError(
+                        f"Failed to write Drive download: {reason}"
+                    ) from exc
+
+                with output_file as output:
                     for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_SIZE):
-                        if chunk:
+                        if not chunk:
+                            continue
+                        try:
                             output.write(chunk)
+                        except OSError as exc:
+                            reason = exc.strerror or "local filesystem error"
+                            raise GoogleDriveDownloadError(
+                                f"Failed to write Drive download: {reason}"
+                            ) from exc
     except GoogleDriveDownloadError:
         raise
     except Exception as exc:

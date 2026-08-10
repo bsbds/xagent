@@ -417,6 +417,34 @@ def test_download_google_workspace_file_preserves_partial_file_on_stream_failure
     assert destination.read_bytes() == b"partial"
 
 
+def test_download_google_workspace_file_reports_local_write_failure(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService(
+        {
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/write"},
+        }
+    )
+    session = _AuthorizedSession(_Response([b"content"]))
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match="Failed to write Drive download: No such file or directory",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-write-failure",
+            mime_type="application/vnd.test.presentation",
+            destination=tmp_path / "missing" / "slides.pptx",
+            timeout_seconds=600,
+        )
+
+
 def test_download_google_workspace_file_wraps_final_http_failure(
     tmp_path: Path,
     monkeypatch: Any,
