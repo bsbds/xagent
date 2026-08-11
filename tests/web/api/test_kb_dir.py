@@ -3319,6 +3319,77 @@ def test_kb_ingest_cloud_reports_unsupported_drive_shortcut(
     assert list(temp_uploads.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("metadata_updates", "expected_message", "expected_doc_id"),
+    [
+        (
+            {"mimeType": None},
+            "Google Drive returned incomplete file metadata",
+            "current.pdf",
+        ),
+        (
+            {"name": "/"},
+            "Google Drive returned an invalid file name",
+            "",
+        ),
+    ],
+)
+def test_kb_ingest_cloud_rejects_invalid_drive_metadata(
+    metadata_updates,
+    expected_message,
+    expected_doc_id,
+    test_env,
+    temp_uploads,
+):
+    """Untrusted Drive metadata must fail before download or ingestion."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+    metadata_request = _fake_drive_metadata_request(
+        "drive-invalid-metadata",
+        "current.pdf",
+        "application/pdf",
+    )
+    metadata_request.execute.return_value.update(metadata_updates)
+
+    class _FakeFilesService:
+        def get(self, **_kwargs):
+            return metadata_request
+
+    class _FakeDriveService:
+        def files(self):
+            return _FakeFilesService()
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
+        patch("xagent.web.api.kb.MediaIoBaseDownload") as downloader,
+        patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_invalid_metadata",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-invalid-metadata",
+                        "fileName": "stale.pdf",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    result = response.json()[0]
+    assert result["status"] == "error"
+    assert result["doc_id"] == expected_doc_id
+    assert result["message"] == f"Metadata lookup failed: {expected_message}"
+    downloader.assert_not_called()
+    run_ingestion.assert_not_called()
+    assert list(temp_uploads.iterdir()) == []
+
+
 def test_kb_ingest_cloud_metadata_validation_uses_current_drive_filename(
     test_env,
     temp_uploads,
