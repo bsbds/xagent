@@ -53,7 +53,8 @@ def download_google_workspace_file(
 
     Drive returns an operation instead of file bytes. This synchronous helper
     owns that protocol so callers can move the complete blocking operation to a
-    worker thread.
+    worker thread. On mid-stream failure, ``destination`` may contain a partial
+    write; callers are responsible for cleanup.
     """
     headers: dict[str, str] = {}
     if resource_key:
