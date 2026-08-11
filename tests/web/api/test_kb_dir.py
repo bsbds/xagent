@@ -3264,6 +3264,61 @@ def test_kb_ingest_cloud_rejects_oversized_drive_file_before_download(
         session.close()
 
 
+def test_kb_ingest_cloud_reports_unsupported_drive_shortcut(
+    test_env,
+    temp_uploads,
+):
+    """Drive shortcuts should fail with a specific unsupported-type message."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+    metadata_request = _fake_drive_metadata_request(
+        "drive-shortcut-1",
+        "Linked presentation",
+        "application/vnd.google-apps.shortcut",
+    )
+    metadata_request.execute.return_value.pop("size")
+
+    class _FakeFilesService:
+        def get(self, **_kwargs):
+            return metadata_request
+
+    class _FakeDriveService:
+        def files(self):
+            return _FakeFilesService()
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
+        patch("xagent.web.api.kb.MediaIoBaseDownload") as downloader,
+        patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_shortcut",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-shortcut-1",
+                        "fileName": "stale-name",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    result = response.json()[0]
+    assert result["status"] == "error"
+    assert result["doc_id"] == "Linked presentation"
+    assert result["message"] == (
+        "Metadata lookup failed: Google Drive shortcuts are not supported"
+    )
+    downloader.assert_not_called()
+    run_ingestion.assert_not_called()
+    assert list(temp_uploads.iterdir()) == []
+
+
 def test_kb_ingest_cloud_metadata_validation_uses_current_drive_filename(
     test_env,
     temp_uploads,

@@ -180,6 +180,7 @@ T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
 
 _GOOGLE_SLIDES_MIME_TYPE = "application/vnd.google-apps.presentation"
+_GOOGLE_DRIVE_SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut"
 _POWERPOINT_EXPORT_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
@@ -4673,6 +4674,10 @@ async def ingest_cloud(
                     metadata_name = metadata.get("name")
                     metadata_mime_type = metadata.get("mimeType")
                     metadata_size = metadata.get("size")
+                    if metadata_name:
+                        source_filename = Path(str(metadata_name)).name
+                    if metadata_mime_type == _GOOGLE_DRIVE_SHORTCUT_MIME_TYPE:
+                        raise ValueError("Google Drive shortcuts are not supported")
                     if (
                         not metadata_name
                         or not metadata_mime_type
@@ -4682,7 +4687,6 @@ async def ingest_cloud(
                             "Google Drive returned incomplete file metadata"
                         )
 
-                    source_filename = Path(str(metadata_name)).name
                     if not source_filename:
                         raise ValueError("Google Drive returned an invalid file name")
                     if int(str(metadata_size)) > MAX_FILE_SIZE:
