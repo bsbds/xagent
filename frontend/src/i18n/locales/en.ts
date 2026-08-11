@@ -772,10 +772,10 @@ Build when you need.`,
     list: {
       title: "User List",
       description: "View and manage all users",
-      search_placeholder: "Search username...",
+      search_placeholder: "Search email...",
       table: {
         id: "ID",
-        username: "Username",
+        email: "Email",
         role: "Role",
         created_at: "Created At",
         updated_at: "Last Updated",

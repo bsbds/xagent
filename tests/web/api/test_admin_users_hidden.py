@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
-
 from xagent.core.task_runtime import TaskRuntimeContribution
 from xagent.web.api.admin_users import delete_user, get_users
 from xagent.web.models.task import DAGExecution, DAGExecutionPhase, Task
@@ -82,6 +81,27 @@ async def test_hidden_users_excluded_from_admin_list_and_delete():
             await delete_user(ghost_id, admin, db)
         assert exc.value.status_code == 404
         assert db.query(User).filter(User.id == ghost_id).count() == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_users_include_email_and_support_email_search():
+    _admin_headers()
+    opaque_username = "acct_0123456789abcdef0123456789abcdef"
+    _register_second_user(opaque_username, "opaque-password")
+    db = _direct_db_session()
+    try:
+        admin = db.query(User).filter(User.username == "admin").one()
+        target = db.query(User).filter(User.username == opaque_username).one()
+        target.email = "display@example.com"
+        db.commit()
+
+        result = await get_users(1, 100, "display@example.com", admin, db)
+
+        assert len(result.users) == 1
+        assert result.users[0].username == opaque_username
+        assert result.users[0].email == "display@example.com"
     finally:
         db.close()
 

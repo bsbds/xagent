@@ -772,10 +772,10 @@ const zh = {
     list: {
       title: "用户列表",
       description: "查看和管理系统中的所有用户",
-      search_placeholder: "搜索用户名...",
+      search_placeholder: "搜索邮箱...",
       table: {
         id: "ID",
-        username: "用户名",
+        email: "邮箱",
         role: "角色",
         created_at: "创建时间",
         updated_at: "最后更新",
