@@ -3090,21 +3090,29 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
     app, headers, _user, TestingSessionLocal = test_env
     client = TestClient(app)
     metadata_calls: list[dict[str, object]] = []
+    metadata_requests: list[MagicMock] = []
     download_calls: list[dict[str, object]] = []
+    download_requests: list[MagicMock] = []
     captured_source_paths: list[str] = []
 
     class _FakeFilesService:
         def get(self, **kwargs):
             metadata_calls.append(kwargs)
-            return _fake_drive_metadata_request(
+            request = _fake_drive_metadata_request(
                 "drive-pptx-1",
                 "Current Deck.pptx",
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             )
+            request.headers = {}
+            metadata_requests.append(request)
+            return request
 
         def get_media(self, **kwargs):
             download_calls.append(kwargs)
-            return kwargs
+            request = MagicMock()
+            request.headers = {}
+            download_requests.append(request)
+            return request
 
         def export_media(self, **_kwargs):
             raise AssertionError("binary PPTX files must use get_media")
@@ -3147,6 +3155,7 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
                         "provider": "google-drive",
                         "fileId": "drive-pptx-1",
                         "fileName": "stale-name.txt",
+                        "resourceKey": "binary-resource-key",
                     }
                 ],
             },
@@ -3162,7 +3171,12 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
             "supportsAllDrives": True,
         }
     ]
+    expected_resource_key_headers = {
+        "X-Goog-Drive-Resource-Keys": "drive-pptx-1/binary-resource-key"
+    }
+    assert metadata_requests[0].headers == expected_resource_key_headers
     assert download_calls == [{"fileId": "drive-pptx-1", "supportsAllDrives": True}]
+    assert download_requests[0].headers == expected_resource_key_headers
     assert len(captured_source_paths) == 1
     assert Path(captured_source_paths[0]).suffix == ".pptx"
 

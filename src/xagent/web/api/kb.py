@@ -4626,8 +4626,13 @@ async def ingest_cloud(
             is_native_google_slides = False
             service: Any = None
             creds: Any = None
+            drive_request_headers: dict[str, str] = {}
 
             if file_info.provider == "google-drive":
+                if file_info.resourceKey:
+                    drive_request_headers["X-Goog-Drive-Resource-Keys"] = (
+                        f"{file_info.fileId}/{file_info.resourceKey}"
+                    )
                 try:
                     creds = await asyncio.to_thread(
                         get_google_credentials, int(actor_user.id), db
@@ -4657,14 +4662,8 @@ async def ingest_cloud(
                             fields="id,name,mimeType",
                             supportsAllDrives=True,
                         )
-                        if file_info.resourceKey:
-                            metadata_request.headers.update(
-                                {
-                                    "X-Goog-Drive-Resource-Keys": (
-                                        f"{file_info.fileId}/{file_info.resourceKey}"
-                                    )
-                                }
-                            )
+                        if drive_request_headers:
+                            metadata_request.headers.update(drive_request_headers)
                         return cast(dict[str, Any], metadata_request.execute())
 
                     metadata = await asyncio.to_thread(_get_file_metadata)
@@ -4757,6 +4756,8 @@ async def ingest_cloud(
                                 fileId=file_info.fileId,
                                 supportsAllDrives=True,
                             )
+                            if drive_request_headers:
+                                request_file.headers.update(drive_request_headers)
                             with open(file_path, "wb") as fh:
                                 downloader = MediaIoBaseDownload(fh, request_file)
                                 done = False
