@@ -5511,9 +5511,23 @@ def test_kb_ingest_cloud_config_save_failure_keeps_per_file_results(
     )
     metadata_store.delete_collection_metadata = AsyncMock()
 
+    class _FakeMetadataRequest:
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+        def execute(self):
+            return {
+                "id": "drive-file-1",
+                "name": "doc.txt",
+                "mimeType": "text/plain",
+            }
+
     class _FakeFilesService:
-        def get_media(self, fileId: str):
-            return {"fileId": fileId}
+        def get(self, **_kwargs):
+            return _FakeMetadataRequest()
+
+        def get_media(self, fileId: str, supportsAllDrives: bool):
+            return {"fileId": fileId, "supportsAllDrives": supportsAllDrives}
 
     class _FakeDriveService:
         def files(self):
