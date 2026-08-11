@@ -12,6 +12,8 @@ A mixed-version deployment is unsafe after new public task creation starts. An o
 
 This change has no database migration, backfill, new environment variable, dependency, or infrastructure requirement.
 
+Before deployment, inspect existing `Task.agent_config` values for `__xagent_file_operation_access_version`. If any existing task contains this key, stop the deployment. Select an unused internal key before you continue.
+
 ### Deployment and migration steps
 
 1. Gate new widget and shared-link task creation.

@@ -200,6 +200,19 @@ class WorkspaceFileOperations:
     def __init__(self, workspace: TaskWorkspace):
         self.workspace = workspace
 
+    def _require_workspace_authority(self) -> None:
+        """Fail closed before marked workspace-only reads or writes.
+
+        Unmarked workspaces return immediately without a database query.
+        Marked workspaces revalidate their persisted task, owner, and explicit
+        database task identity before File Operation performs filesystem effects.
+        """
+
+        try:
+            self.workspace.requires_exact_file_operation_scope()
+        except Exception as exc:
+            raise ValueError("File Operation unavailable") from exc
+
     def read_file(
         self,
         file_path: str,
@@ -499,6 +512,7 @@ class WorkspaceFileOperations:
         recursive: bool = False,
     ) -> Dict[str, Any]:
         """List files in workspace directory (default: list all directories)"""
+        self._require_workspace_authority()
         # If no directory path specified, return all directories' files
         if directory_path == ".":
             return self.workspace.get_all_files()
@@ -650,6 +664,7 @@ class WorkspaceFileOperations:
     def get_workspace_output_files(self) -> Dict[str, Any]:
         """Get output file list from current workspace"""
         try:
+            self._require_workspace_authority()
             output_files = self.workspace.get_output_files()
 
             return {
@@ -771,6 +786,7 @@ class WorkspaceFileOperations:
 
     def _resolve_path(self, file_path: str, default_dir: str = "output") -> Path:
         """Resolve file path within workspace"""
+        self._require_workspace_authority()
         logger.debug(
             "_resolve_path called with file_path: %s, default_dir: %s",
             file_path,

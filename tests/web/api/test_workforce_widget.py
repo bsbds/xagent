@@ -579,7 +579,7 @@ def test_widget_task_create_starts_workforce_run(
         assert int(task.user_id) == _user_id()
         assert task.channel_id is None
         assert task.agent_config.get("auth_mode") == "widget"
-        assert task.agent_config.get("file_operation_access_version") == 1
+        assert task.agent_config.get("__xagent_file_operation_access_version") == 1
         assert int(task.agent_config.get("widget_workforce_id")) == workforce_id
         assert task.agent_config.get("guest_id") == "guest_test"
         # The server-observed creator IP is stamped on the workforce path too

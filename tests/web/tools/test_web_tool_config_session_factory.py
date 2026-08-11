@@ -386,19 +386,60 @@ async def test_create_default_tools_uses_worker_session_factory_without_live_db(
     monkeypatch.setattr("xagent.web.tools.config.WebToolConfig", _FakeToolConfig)
     monkeypatch.setattr(ToolFactory, "create_all_tools", create_tools)
 
-    assert "db_task_id" in inspect.signature(create_default_tools).parameters
+    parameters = inspect.signature(create_default_tools).parameters
+    assert "db_task_id" in parameters
+    assert "file_operation_access_version" in parameters
 
     tools, config = await create_default_tools(
         None,
         user=SimpleNamespace(id=7, is_admin=False),
         task_id="web_task_11",
         db_task_id=11,
+        file_operation_access_version=1,
     )
 
     assert tools == ["prepared-tool"]
     assert captured["db"] is None
     assert captured["db_factory"] is session_factory
     assert captured["workspace_config"]["db_task_id"] == 11
+    assert captured["workspace_config"]["__xagent_file_operation_access_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_default_tools_preserves_legacy_positional_owner(
+    monkeypatch,
+):
+    from xagent.web.api.chat import create_default_tools
+
+    captured: dict[str, object] = {}
+
+    class _FakeToolConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def set_task_runtime_contribution(self, contribution) -> None:
+            self.task_runtime_contribution = contribution
+
+    async def create_tools(_config):
+        return []
+
+    monkeypatch.setattr(
+        "xagent.web.models.database.get_session_local",
+        lambda: object(),
+    )
+    monkeypatch.setattr("xagent.web.tools.config.WebToolConfig", _FakeToolConfig)
+    monkeypatch.setattr(ToolFactory, "create_all_tools", create_tools)
+
+    await create_default_tools(
+        None,
+        None,
+        SimpleNamespace(id=8, is_admin=False),
+        "web_task_11",
+        7,
+    )
+
+    assert captured["workspace_config"]["user_id"] == 7
+    assert captured["workspace_config"]["db_task_id"] is None
 
 
 @pytest.mark.asyncio

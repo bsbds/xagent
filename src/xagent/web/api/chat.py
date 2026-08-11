@@ -116,6 +116,7 @@ from ..services.task_lease_service import (
     stop_task_lease_heartbeat,
 )
 from ..services.task_runtime import (
+    FILE_OPERATION_ACCESS_VERSION_KEY,
     SELECTED_FILE_IDS_AGENT_CONFIG_KEY,
     TaskRuntimeExtensionError,
     agent_config_with_task_extension_bindings,
@@ -571,7 +572,6 @@ async def create_default_tools(
     request: Any = None,
     user: Optional[Union[User, RuntimeUserFields]] = None,
     task_id: Optional[str] = None,
-    db_task_id: Optional[int] = None,
     workspace_owner_id: Optional[int] = None,
     allowed_collections: Optional[List[str]] = None,
     allowed_skills: Optional[List[str]] = None,
@@ -594,6 +594,8 @@ async def create_default_tools(
     mcp_load_summary_tracer: Optional[Any] = None,
     mcp_load_summary_trace_task_id: Optional[str] = None,
     connector_team_id: Optional[int] = None,
+    db_task_id: Optional[int] = None,
+    file_operation_access_version: Any = None,
 ) -> tuple[list[Any], Any]:
     """Create default tools and tool_config for AgentService using ToolFactory.
 
@@ -607,6 +609,11 @@ async def create_default_tools(
     calling user's own team membership. It threads into ``WebToolConfig`` so
     the connector-visibility team-scope hook (when installed) resolves that
     team's connectors instead of the run owner's personal set only.
+
+    ``db_task_id`` and ``file_operation_access_version`` are appended to the
+    historical positional signature. Runtime callers pass them by keyword so
+    File Operation receives trusted task and rollout authority without shifting
+    existing positional integrations.
     """
     if not user:
         raise ValueError("User is required for tool creation")
@@ -645,6 +652,7 @@ async def create_default_tools(
             "db_task_id": db_task_id
             if db_task_id is not None
             else _int_id_or_none(task_id),
+            FILE_OPERATION_ACCESS_VERSION_KEY: file_operation_access_version,
             "user_id": owner_id,
             "allowed_external_dirs": allowed_external_dirs,
             "scope_segments": scope_segments,
@@ -1998,6 +2006,9 @@ class AgentServiceManager:
             task_id=f"web_task_{task_id}",
             db_task_id=task_id,
             workspace_owner_id=int(task.user_id),
+            file_operation_access_version=(task.agent_config or {}).get(
+                FILE_OPERATION_ACCESS_VERSION_KEY
+            ),
             scope=scope,
             task_runtime_context=_task_runtime_context_for_tool_build(
                 task_id=task_id,
@@ -2629,6 +2640,9 @@ class AgentServiceManager:
                     task_id=f"web_task_{task_id}",
                     db_task_id=task_id,
                     workspace_owner_id=workspace_owner_id,
+                    file_operation_access_version=(task.agent_config or {}).get(
+                        FILE_OPERATION_ACCESS_VERSION_KEY
+                    ),
                     scope=scope,
                     task_runtime_context=_task_runtime_context_for_tool_build(
                         task_id=task_id,

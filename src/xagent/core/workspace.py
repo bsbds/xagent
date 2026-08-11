@@ -29,7 +29,7 @@ from typing import (
 )
 from uuid import uuid4
 
-from ..config import get_uploads_dir
+from ..config import get_file_materialize_dir, get_uploads_dir
 from .execution_scope import validate_scope_component
 from .file_ref import parse_file_id_ref
 
@@ -190,6 +190,11 @@ class TaskWorkspace:
         self._recently_registered_files: Dict[str, str] = {}  # path -> file_id mapping
         self._file_id_to_path: Dict[str, Path] = {}  # file_id -> path reverse mapping
         self.owner_user_id: Optional[int] = None
+        # Server-derived rollout policy for File Operation. ``None`` means the
+        # exact upstream legacy path and therefore requires no policy query.
+        # Public runtime construction sets version 1 only after loading a
+        # persisted, server-stamped task marker.
+        self.file_operation_access_version: Any = None
         self.current_task_id: Optional[int] = (
             db_task_id
             if db_task_id is not None
@@ -1033,23 +1038,33 @@ class TaskWorkspace:
     def requires_exact_file_operation_scope(self) -> bool:
         """Return whether File Operation must use exact owner/task authority.
 
-        The task marker is loaded from persisted server state on every decision.
-        Marker absence deliberately preserves upstream behavior for private and
-        historical tasks. A marked task must agree with the workspace's owner
-        and explicit database task identity before any legacy file cache or
+        Runtime construction supplies the server-derived marker. Its absence
+        delegates directly to upstream behavior without a policy database
+        lookup. A marked workspace revalidates the persisted task, owner, and
+        explicit database task identity before any legacy file cache or
         allowlist can be consulted.
         """
 
-        task_id = self.db_task_id or self.current_task_id
-        if task_id is None:
+        marker = self.file_operation_access_version
+        if marker is None:
             return False
 
         from ..web.models.task import Task
         from ..web.services.task_runtime import (
+            FILE_OPERATION_ACCESS_VERSION,
             FileOperationAccessPolicyError,
             requires_exact_file_operation_scope,
         )
         from .storage.manager import create_db_session
+
+        if isinstance(marker, bool) or marker != FILE_OPERATION_ACCESS_VERSION:
+            raise FileOperationAccessPolicyError(
+                "File Operation workspace policy version is unsupported"
+            )
+        if self.db_task_id is None or self.owner_user_id is None:
+            raise FileOperationAccessPolicyError(
+                "Marked File Operation workspace has no authoritative identity"
+            )
 
         if self.db_session is not None:
             db = self.db_session
@@ -1058,13 +1073,17 @@ class TaskWorkspace:
             db = create_db_session()
             should_close = True
         try:
-            task = db.query(Task).filter(Task.id == int(task_id)).first()
-            if task is None or not requires_exact_file_operation_scope(task):
-                return False
+            task = db.query(Task).filter(Task.id == self.db_task_id).first()
+            if task is None:
+                raise FileOperationAccessPolicyError(
+                    "Marked File Operation task no longer exists"
+                )
+            if not requires_exact_file_operation_scope(task):
+                raise FileOperationAccessPolicyError(
+                    "Marked File Operation task lost its persisted policy"
+                )
             if (
-                self.db_task_id is None
-                or int(task.id) != self.db_task_id
-                or self.owner_user_id is None
+                int(task.id) != self.db_task_id
                 or int(task.user_id) != self.owner_user_id
             ):
                 raise FileOperationAccessPolicyError(
@@ -1278,6 +1297,7 @@ class TaskWorkspace:
         roots = [
             self.base_dir.resolve(),
             self.workspace_dir.resolve(),
+            get_file_materialize_dir().expanduser().resolve(),
             *self.allowed_external_dirs,
         ]
         return any(resolved == root or resolved.is_relative_to(root) for root in roots)

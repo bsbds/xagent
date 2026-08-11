@@ -778,6 +778,7 @@ def test_tool_factory_workspace_preserves_db_task_id(tmp_path):
             "base_dir": str(tmp_path / "workspaces"),
             "task_id": "agent_2_abcd1234",
             "db_task_id": 654,
+            "__xagent_file_operation_access_version": 1,
             "user_id": 7,
         }
     )
@@ -787,6 +788,7 @@ def test_tool_factory_workspace_preserves_db_task_id(tmp_path):
     assert workspace.db_task_id == 654
     assert workspace.current_task_id == 654
     assert workspace.owner_user_id == 7
+    assert workspace.file_operation_access_version == 1
 
 
 def test_workspace_manager_updates_cached_workspace_db_task_id(tmp_path):

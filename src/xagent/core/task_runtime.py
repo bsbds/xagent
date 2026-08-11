@@ -13,6 +13,11 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 PREFERRED_INPUT_MODALITIES_METADATA_KEY = "preferred_input_modalities"
+# Server-owned marker and workspace-config key for the minimal new-public-task
+# File Operation rollout. The namespaced spelling reduces collision risk with
+# historical free-form Task.agent_config values.
+FILE_OPERATION_ACCESS_VERSION_KEY = "__xagent_file_operation_access_version"
+FILE_OPERATION_ACCESS_VERSION = 1
 MAX_TASK_RUNTIME_EXTENSIONS = 16
 MAX_TASK_RUNTIME_JSON_BYTES = 64 * 1024
 MAX_TASK_RUNTIME_ENVIRONMENT_BYTES = 64 * 1024

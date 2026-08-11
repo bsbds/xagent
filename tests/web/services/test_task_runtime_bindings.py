@@ -278,7 +278,7 @@ def test_the_reserved_key_set_has_exactly_the_audited_members() -> None:
             "runtime_extension_bindings",
             "execution_scope",
             "selected_file_ids",
-            "file_operation_access_version",
+            "__xagent_file_operation_access_version",
             # Public-channel identity/quota markers (#1108).
             "auth_mode",
             "guest_id",
@@ -299,13 +299,22 @@ def test_file_operation_scope_marker_is_strict_and_new_public_only() -> None:
         source="shared_link",
         agent_config={"auth_mode": "share"},
     )
+    historical_with_old_free_form_key = SimpleNamespace(
+        id=7,
+        user_id=7,
+        source="shared_link",
+        agent_config={
+            "auth_mode": "share",
+            "file_operation_access_version": 1,
+        },
+    )
     marked_share = SimpleNamespace(
         id=2,
         user_id=7,
         source="shared_link",
         agent_config={
             "auth_mode": "share",
-            "file_operation_access_version": 1,
+            "__xagent_file_operation_access_version": 1,
         },
     )
     marked_widget = SimpleNamespace(
@@ -314,11 +323,14 @@ def test_file_operation_scope_marker_is_strict_and_new_public_only() -> None:
         source="widget",
         agent_config={
             "auth_mode": "widget",
-            "file_operation_access_version": 1,
+            "__xagent_file_operation_access_version": 1,
         },
     )
 
     assert requires_exact_file_operation_scope(historical) is False
+    assert (
+        requires_exact_file_operation_scope(historical_with_old_free_form_key) is False
+    )
     assert requires_exact_file_operation_scope(marked_share) is True
     assert requires_exact_file_operation_scope(marked_widget) is True
 
@@ -327,7 +339,7 @@ def test_file_operation_scope_marker_is_strict_and_new_public_only() -> None:
             id=4,
             user_id=7,
             source="internal",
-            agent_config={"file_operation_access_version": 1},
+            agent_config={"__xagent_file_operation_access_version": 1},
         ),
         SimpleNamespace(
             id=5,
@@ -335,7 +347,7 @@ def test_file_operation_scope_marker_is_strict_and_new_public_only() -> None:
             source="shared_link",
             agent_config={
                 "auth_mode": "share",
-                "file_operation_access_version": 2,
+                "__xagent_file_operation_access_version": 2,
             },
         ),
         SimpleNamespace(
@@ -344,7 +356,7 @@ def test_file_operation_scope_marker_is_strict_and_new_public_only() -> None:
             source="shared_link",
             agent_config={
                 "auth_mode": "share",
-                "file_operation_access_version": 1,
+                "__xagent_file_operation_access_version": 1,
             },
         ),
         SimpleNamespace(
@@ -353,7 +365,7 @@ def test_file_operation_scope_marker_is_strict_and_new_public_only() -> None:
             source="shared_link",
             agent_config={
                 "auth_mode": "share",
-                "file_operation_access_version": True,
+                "__xagent_file_operation_access_version": True,
             },
         ),
     ):

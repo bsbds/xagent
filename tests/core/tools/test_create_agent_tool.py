@@ -1,5 +1,6 @@
 """Tests for CreateAgentTool - dynamically creating agents during task execution."""
 
+import inspect
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,9 +17,11 @@ from xagent.core.tools.adapters.vibe.agent_tool import (
     CreateAgentTool,
     ListAgentsTool,
     ListToolCategoriesTool,
+    PublishedAgentToolRecord,
     UpdateAgentTool,
     _coerce_db_task_id,
     _DelegatedAgentWebSocketTraceHandler,
+    build_published_agent_tools_from_records,
     gen_agent_tool_name,
     get_published_agents_tools,
 )
@@ -498,6 +501,51 @@ class TestCreateAgentTool:
                 os.remove(db_path)
             except OSError:
                 pass
+
+    def test_agent_tool_accepts_parent_file_operation_policy(self) -> None:
+        assert (
+            "file_operation_access_version" in inspect.signature(AgentTool).parameters
+        )
+
+        tool = AgentTool(
+            agent_id=1,
+            agent_name="Worker",
+            agent_description="Worker",
+            session_factory=lambda: None,
+            user_id=7,
+            task_id="77",
+            parent_task_id="77",
+            file_operation_access_version=1,
+        )
+
+        assert tool._file_operation_access_version == 1
+
+    def test_published_agent_builder_propagates_file_operation_policy(self) -> None:
+        assert (
+            "file_operation_access_version"
+            in inspect.signature(build_published_agent_tools_from_records).parameters
+        )
+
+        tools = build_published_agent_tools_from_records(
+            [
+                PublishedAgentToolRecord(
+                    id=1,
+                    name="Worker",
+                    description="Worker",
+                    instructions=None,
+                    status="published",
+                )
+            ],
+            session_factory=lambda: None,
+            user_id=7,
+            task_id="77",
+            parent_task_id="77",
+            file_operation_access_version=1,
+        )
+
+        assert len(tools) == 1
+        assert isinstance(tools[0], AgentTool)
+        assert tools[0]._file_operation_access_version == 1
 
     @pytest.mark.asyncio
     async def test_agent_tool_returns_parent_owned_file_refs_for_worker_outputs(

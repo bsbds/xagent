@@ -43,7 +43,7 @@ def public_file_scope_context(tmp_path):
         source="shared_link",
         agent_config={
             "auth_mode": "share",
-            "file_operation_access_version": 1,
+            "__xagent_file_operation_access_version": 1,
         },
     )
     sibling_task = Task(id=802, user_id=owner.id, title="Sibling task")
@@ -131,6 +131,7 @@ def public_file_scope_context(tmp_path):
         db_task_id=int(marked_task.id),
     )
     marked_workspace.owner_user_id = int(owner.id)
+    marked_workspace.file_operation_access_version = 1
     marked_workspace.db_session = db
 
     try:
@@ -519,6 +520,7 @@ class TestWorkspaceFileOperations:
             "base_dir": str(context.external_dir),
             "task_id": "agent_1_delegated",
             "db_task_id": int(context.marked_task.id),
+            "__xagent_file_operation_access_version": 1,
             "scope_segments": (),
         }
         tool_config = WebToolConfig(
@@ -534,6 +536,7 @@ class TestWorkspaceFileOperations:
         workspace.db_session = context.db
         assert workspace.owner_user_id == context.owner.id
         assert workspace.db_task_id == context.marked_task.id
+        assert workspace.file_operation_access_version == 1
         assert workspace.allowed_external_dirs == []
         assert (
             WorkspaceFileOperations(workspace).read_file(context.current_record.file_id)
@@ -688,7 +691,10 @@ class TestWorkspaceFileOperations:
         context.db.add_all([current, sibling, invalid_prefix, pending])
         context.db.commit()
 
-        materialized_path = context.external_dir / "materialized-durable.txt"
+        materialized_root = context.external_dir.parent / "materialized-cache"
+        materialized_root.mkdir()
+        monkeypatch.setenv("XAGENT_FILE_MATERIALIZE_DIR", str(materialized_root))
+        materialized_path = materialized_root / "materialized-durable.txt"
         materialized_path.write_text("durable", encoding="utf-8")
         monkeypatch.setattr(
             ManagedFileRef,
@@ -713,6 +719,58 @@ class TestWorkspaceFileOperations:
             with pytest.raises(FileNotFoundError):
                 context.ops.read_file(denied_file_id)
 
+    @pytest.mark.parametrize(
+        "operation",
+        ["text", "json", "csv", "mkdir", "list"],
+    )
+    def test_marked_public_workspace_operations_revalidate_authority(
+        self, public_file_scope_context, operation
+    ):
+        context = public_file_scope_context
+        context.workspace.owner_user_id = int(context.owner.id) + 1
+
+        with pytest.raises(ValueError, match="File Operation unavailable"):
+            if operation == "text":
+                context.ops.write_file("blocked.txt", "blocked")
+            elif operation == "json":
+                context.ops.write_json_file("blocked.json", {"blocked": True})
+            elif operation == "csv":
+                context.ops.write_csv_file("blocked.csv", [{"blocked": "true"}])
+            elif operation == "mkdir":
+                context.ops.create_directory("blocked")
+            else:
+                context.ops.list_files(".")
+
+    def test_marked_public_missing_task_row_does_not_fall_back_to_legacy_paths(
+        self, public_file_scope_context
+    ):
+        context = public_file_scope_context
+        context.db.query(Task).filter(Task.id == int(context.marked_task.id)).delete(
+            synchronize_session=False
+        )
+        context.db.commit()
+
+        with pytest.raises(FileNotFoundError):
+            context.ops.read_file(str(context.raw_external_path))
+        with pytest.raises(ValueError, match="File Operation unavailable"):
+            context.ops.write_file("blocked-after-delete.txt", "blocked")
+
+    def test_unmarked_local_read_does_not_require_policy_database(self, tmp_path):
+        class FailingSession:
+            def query(self, *_args, **_kwargs):
+                raise OSError("policy database unavailable")
+
+        workspace = TaskWorkspace(
+            id="web_task_803",
+            base_dir=str(tmp_path / "unmarked-local-workspace"),
+            db_task_id=803,
+        )
+        workspace.db_session = FailingSession()
+        local_path = workspace.input_dir / "local.txt"
+        local_path.write_text("local", encoding="utf-8")
+
+        assert WorkspaceFileOperations(workspace).read_file("local.txt") == "local"
+
     def test_marked_public_policy_load_failure_uses_file_not_found_shape(
         self, public_file_scope_context, monkeypatch
     ):
@@ -736,7 +794,7 @@ class TestWorkspaceFileOperations:
         context = public_file_scope_context
         context.marked_task.agent_config = {
             "auth_mode": "share",
-            "file_operation_access_version": 2,
+            "__xagent_file_operation_access_version": 2,
         }
         context.db.commit()
 
@@ -753,6 +811,7 @@ class TestWorkspaceFileOperations:
             allowed_external_dirs=[str(context.external_dir)],
             db_task_id=int(context.marked_task.id),
         )
+        workspace.file_operation_access_version = 1
         workspace.db_session = context.db
         ops = WorkspaceFileOperations(workspace)
 
@@ -769,6 +828,7 @@ class TestWorkspaceFileOperations:
             allowed_external_dirs=[str(context.external_dir)],
         )
         workspace.owner_user_id = int(context.owner.id)
+        workspace.file_operation_access_version = 1
         workspace.db_session = context.db
 
         with pytest.raises(FileNotFoundError):

@@ -25,6 +25,8 @@ from ...config import (
 from ...core.execution_scope import EXECUTION_SCOPE_AGENT_CONFIG_KEY
 from ...core.task_runtime import (
     EMPTY_TASK_RUNTIME_CONTRIBUTION,
+    FILE_OPERATION_ACCESS_VERSION,
+    FILE_OPERATION_ACCESS_VERSION_KEY,
     MAX_TASK_RUNTIME_EXTENSIONS,
     MAX_TASK_RUNTIME_JSON_BYTES,
     MAX_TASK_RUNTIME_PUBLIC_METADATA_BYTES,
@@ -65,11 +67,6 @@ TASK_RUNTIME_BINDINGS_AGENT_CONFIG_KEY = "runtime_extension_bindings"
 # constant names the key so the sanitizer and both boundaries refer to the
 # same string.
 SELECTED_FILE_IDS_AGENT_CONFIG_KEY = "selected_file_ids"
-# New public tasks opt in to exact-task File Operation authorization through
-# this server-owned marker. Historical public tasks intentionally remain
-# unmarked and retain their legacy behavior for the focused #803 rollout.
-FILE_OPERATION_ACCESS_VERSION_KEY = "file_operation_access_version"
-FILE_OPERATION_ACCESS_VERSION = 1
 # Keys in ``tasks.agent_config`` that only the server may write. Task-create
 # request bodies carry a free-form ``agent_config`` dict that endpoints copy
 # wholesale, so anything the server later reads back as authoritative has to

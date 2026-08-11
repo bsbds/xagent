@@ -446,7 +446,7 @@ def test_share_task_create_starts_workforce_run(
         assert task.source == "shared_link"
         assert bool(task.is_visible) is False
         assert int(task.user_id) == _user_id()
-        assert task.agent_config.get("file_operation_access_version") == 1
+        assert task.agent_config.get("__xagent_file_operation_access_version") == 1
 
         run = db.query(WorkforceRun).filter(WorkforceRun.task_id == task_id).one()
         assert int(run.workforce_id) == workforce_id
@@ -600,7 +600,7 @@ def test_workforce_share_first_turn_attachments_reach_run(
         bound = db.query(UploadedFile).filter(UploadedFile.file_id == file_id).one()
         task = db.query(Task).filter(Task.id == task_id).one()
         assert bound.task_id == task_id
-        assert task.agent_config.get("file_operation_access_version") == 1
+        assert task.agent_config.get("__xagent_file_operation_access_version") == 1
 
         workspace = TaskWorkspace(
             id="agent_1_first_turn",
@@ -609,6 +609,7 @@ def test_workforce_share_first_turn_attachments_reach_run(
             db_task_id=task_id,
         )
         workspace.owner_user_id = int(task.user_id)
+        workspace.file_operation_access_version = 1
         workspace.db_session = db
         assert WorkspaceFileOperations(workspace).read_file(file_id) == "trip brief"
     finally:
