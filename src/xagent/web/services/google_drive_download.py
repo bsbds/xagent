@@ -93,9 +93,13 @@ def download_google_workspace_file(
         poll_delay_seconds = min(poll_delay_seconds * 2, 60.0)
 
     if "error" in operation:
-        error = cast(dict[str, Any], operation["error"])
-        code = error.get("code", "unknown")
-        message = error.get("message", "Unknown Drive operation error")
+        error = operation["error"]
+        if not error or not isinstance(error, dict):
+            code = "unknown"
+            message = str(error) if error else "Unknown Drive operation error"
+        else:
+            code = error.get("code", "unknown")
+            message = error.get("message", "Unknown Drive operation error")
         raise GoogleDriveDownloadError(f"Drive operation failed ({code}): {message}")
 
     logger.info(

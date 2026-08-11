@@ -219,6 +219,35 @@ def test_download_google_workspace_file_raises_completed_operation_error(
     assert not (tmp_path / "slides.pptx").exists()
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (None, "Unknown Drive operation error"),
+        ("malformed error", "malformed error"),
+    ],
+)
+def test_download_google_workspace_file_wraps_malformed_operation_error(
+    error: object,
+    expected_message: str,
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    service = _DriveService({"done": True, "error": error})
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match=f"Drive operation failed \\(unknown\\): {expected_message}",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-malformed-error",
+            mime_type="application/vnd.test.presentation",
+            destination=tmp_path / "slides.pptx",
+            timeout_seconds=600,
+        )
+
+
 def test_download_google_workspace_file_stops_at_operation_timeout(
     tmp_path: Path,
     monkeypatch: Any,
