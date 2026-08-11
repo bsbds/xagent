@@ -4664,7 +4664,9 @@ async def ingest_cloud(
                         )
                         if drive_request_headers:
                             metadata_request.headers.update(drive_request_headers)
-                        return cast(dict[str, Any], metadata_request.execute())
+                        return cast(
+                            dict[str, Any], metadata_request.execute(num_retries=3)
+                        )
 
                     metadata = await asyncio.to_thread(_get_file_metadata)
                     metadata_name = metadata.get("name")

@@ -3175,6 +3175,7 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
         "X-Goog-Drive-Resource-Keys": "drive-pptx-1/binary-resource-key"
     }
     assert metadata_requests[0].headers == expected_resource_key_headers
+    metadata_requests[0].execute.assert_called_once_with(num_retries=3)
     assert download_calls == [{"fileId": "drive-pptx-1", "supportsAllDrives": True}]
     assert download_requests[0].headers == expected_resource_key_headers
     assert len(captured_source_paths) == 1
