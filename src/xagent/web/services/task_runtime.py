@@ -65,6 +65,11 @@ TASK_RUNTIME_BINDINGS_AGENT_CONFIG_KEY = "runtime_extension_bindings"
 # constant names the key so the sanitizer and both boundaries refer to the
 # same string.
 SELECTED_FILE_IDS_AGENT_CONFIG_KEY = "selected_file_ids"
+# New public tasks opt in to exact-task File Operation authorization through
+# this server-owned marker. Historical public tasks intentionally remain
+# unmarked and retain their legacy behavior for the focused #803 rollout.
+FILE_OPERATION_ACCESS_VERSION_KEY = "file_operation_access_version"
+FILE_OPERATION_ACCESS_VERSION = 1
 # Keys in ``tasks.agent_config`` that only the server may write. Task-create
 # request bodies carry a free-form ``agent_config`` dict that endpoints copy
 # wholesale, so anything the server later reads back as authoritative has to
@@ -172,6 +177,7 @@ CLIENT_RESERVED_AGENT_CONFIG_KEYS: frozenset[str] = frozenset(
         TASK_RUNTIME_BINDINGS_AGENT_CONFIG_KEY,
         EXECUTION_SCOPE_AGENT_CONFIG_KEY,
         SELECTED_FILE_IDS_AGENT_CONFIG_KEY,
+        FILE_OPERATION_ACCESS_VERSION_KEY,
         "auth_mode",
         "guest_id",
         "widget_agent_id",
@@ -183,6 +189,54 @@ CLIENT_RESERVED_AGENT_CONFIG_KEYS: frozenset[str] = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
+
+
+class FileOperationAccessPolicyError(RuntimeError):
+    """A marked task cannot prove its exact File Operation authority."""
+
+
+def requires_exact_file_operation_scope(task: Any) -> bool:
+    """Return whether one persisted task opts into exact File Operation scope.
+
+    Marker absence deliberately preserves private and historical behavior for
+    the focused #803 rollout. Once a marker exists, every field is strict: an
+    unknown version or inconsistent public identity fails closed instead of
+    falling back to creator-wide access.
+    """
+
+    config = getattr(task, "agent_config", None)
+    if not isinstance(config, Mapping):
+        return False
+    marker = config.get(FILE_OPERATION_ACCESS_VERSION_KEY)
+    if marker is None:
+        return False
+    if isinstance(marker, bool) or marker != FILE_OPERATION_ACCESS_VERSION:
+        raise FileOperationAccessPolicyError(
+            "File Operation access policy version is unsupported"
+        )
+
+    task_id = getattr(task, "id", None)
+    owner_user_id = getattr(task, "user_id", None)
+    if (
+        isinstance(task_id, bool)
+        or not isinstance(task_id, int)
+        or task_id <= 0
+        or isinstance(owner_user_id, bool)
+        or not isinstance(owner_user_id, int)
+        or owner_user_id <= 0
+    ):
+        raise FileOperationAccessPolicyError(
+            "Marked File Operation task has no authoritative identity"
+        )
+
+    source = getattr(task, "source", None)
+    auth_mode = config.get("auth_mode")
+    expected_source = "shared_link" if auth_mode == "share" else "widget"
+    if auth_mode not in {"share", "widget"} or source != expected_source:
+        raise FileOperationAccessPolicyError(
+            "Marked File Operation task has inconsistent public identity"
+        )
+    return True
 
 
 def sanitize_client_agent_config(agent_config: Any) -> dict[str, Any]:

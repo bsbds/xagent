@@ -643,7 +643,9 @@ class TestCreateAgentTool:
                 assert file_record.workspace_category == "output"
 
                 tool_config = mock_agent_service_class.call_args.kwargs["tool_config"]
-                assert tool_config.get_workspace_config()["db_task_id"] == 77
+                workspace_config = tool_config.get_workspace_config()
+                assert workspace_config["db_task_id"] == 77
+                assert workspace_config["user_id"] == user.id
                 assert parent_tracer.events[-1]["data"]["file_outputs"] == file_outputs
 
                 tracer = mock_agent_service_class.call_args.kwargs["tracer"]

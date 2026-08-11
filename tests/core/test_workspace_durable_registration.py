@@ -778,6 +778,7 @@ def test_tool_factory_workspace_preserves_db_task_id(tmp_path):
             "base_dir": str(tmp_path / "workspaces"),
             "task_id": "agent_2_abcd1234",
             "db_task_id": 654,
+            "user_id": 7,
         }
     )
 
@@ -785,6 +786,7 @@ def test_tool_factory_workspace_preserves_db_task_id(tmp_path):
     assert workspace.id == "agent_2_abcd1234"
     assert workspace.db_task_id == 654
     assert workspace.current_task_id == 654
+    assert workspace.owner_user_id == 7
 
 
 def test_workspace_manager_updates_cached_workspace_db_task_id(tmp_path):
@@ -813,6 +815,7 @@ def test_agent_service_workspace_preserves_config_db_task_id(tmp_path):
             "base_dir": str(tmp_path / "workspaces"),
             "task_id": "agent_2_abcd1234",
             "db_task_id": 987,
+            "user_id": 7,
         }
 
         def get_allowed_skills(self):
@@ -829,6 +832,7 @@ def test_agent_service_workspace_preserves_config_db_task_id(tmp_path):
     assert service.workspace.id == "agent_2_abcd1234"
     assert service.workspace.db_task_id == 987
     assert service.workspace.current_task_id == 987
+    assert service.workspace.owner_user_id is None
 
 
 def test_workspace_register_file_stages_then_uses_already_durable_upsert(

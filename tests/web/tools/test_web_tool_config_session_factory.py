@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import inspect
 import logging
 import threading
 from collections.abc import Mapping
@@ -385,15 +386,19 @@ async def test_create_default_tools_uses_worker_session_factory_without_live_db(
     monkeypatch.setattr("xagent.web.tools.config.WebToolConfig", _FakeToolConfig)
     monkeypatch.setattr(ToolFactory, "create_all_tools", create_tools)
 
+    assert "db_task_id" in inspect.signature(create_default_tools).parameters
+
     tools, config = await create_default_tools(
         None,
         user=SimpleNamespace(id=7, is_admin=False),
         task_id="web_task_11",
+        db_task_id=11,
     )
 
     assert tools == ["prepared-tool"]
     assert captured["db"] is None
     assert captured["db_factory"] is session_factory
+    assert captured["workspace_config"]["db_task_id"] == 11
 
 
 @pytest.mark.asyncio

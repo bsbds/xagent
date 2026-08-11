@@ -147,6 +147,7 @@ async def test_live_request_session_releases_clean_read_before_snapshot_worker(
         runtime_user = kwargs["user"]
         assert isinstance(runtime_user, RuntimeUserFields)
         runtime_users.append(runtime_user)
+        assert kwargs["db_task_id"] == task_id
         assert engine.pool.checkedout() == 0
         await asyncio.sleep(0.03)
         assert engine.pool.checkedout() == 0

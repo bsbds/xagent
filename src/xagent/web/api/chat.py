@@ -571,6 +571,7 @@ async def create_default_tools(
     request: Any = None,
     user: Optional[Union[User, RuntimeUserFields]] = None,
     task_id: Optional[str] = None,
+    db_task_id: Optional[int] = None,
     workspace_owner_id: Optional[int] = None,
     allowed_collections: Optional[List[str]] = None,
     allowed_skills: Optional[List[str]] = None,
@@ -641,6 +642,9 @@ async def create_default_tools(
         workspace_config={
             "base_dir": canonical_workspace_base(owner_id, scope_segments),
             "task_id": task_id,
+            "db_task_id": db_task_id
+            if db_task_id is not None
+            else _int_id_or_none(task_id),
             "user_id": owner_id,
             "allowed_external_dirs": allowed_external_dirs,
             "scope_segments": scope_segments,
@@ -1992,6 +1996,7 @@ class AgentServiceManager:
             request=self.request,
             user=user,
             task_id=f"web_task_{task_id}",
+            db_task_id=task_id,
             workspace_owner_id=int(task.user_id),
             scope=scope,
             task_runtime_context=_task_runtime_context_for_tool_build(
@@ -2622,6 +2627,7 @@ class AgentServiceManager:
                     # ``request``'s admin from widening this back.
                     user=runtime_user,
                     task_id=f"web_task_{task_id}",
+                    db_task_id=task_id,
                     workspace_owner_id=workspace_owner_id,
                     scope=scope,
                     task_runtime_context=_task_runtime_context_for_tool_build(
