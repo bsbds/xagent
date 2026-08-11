@@ -4824,7 +4824,7 @@ async def ingest_cloud(
                                         f"{safe_collection}/{file_info.fileName}: "
                                         f"{rollback_execution.error}"
                                     ),
-                                    doc_id=file_info.fileName,
+                                    doc_id=source_filename,
                                 ),
                             )
                         return rollback_execution.operation_result
@@ -4897,7 +4897,7 @@ async def ingest_cloud(
                                     IngestionResult(
                                         status="error",
                                         message=str(rollback_execution.error),
-                                        doc_id=file_info.fileName,
+                                        doc_id=source_filename,
                                     ),
                                 )
                         elif file_backup_path is not None:
@@ -4911,7 +4911,7 @@ async def ingest_cloud(
                             result=IngestionResult(
                                 status="error",
                                 message=str(rollback_exc),
-                                doc_id=file_info.fileName,
+                                doc_id=source_filename,
                             ),
                             operation_outcome=api_result.operation_outcome
                             if "api_result" in locals()
@@ -4921,7 +4921,7 @@ async def ingest_cloud(
                     except Exception as e:
                         rollback_result = IngestionResult(
                             status="error",
-                            doc_id=file_info.fileName,
+                            doc_id=source_filename,
                             message=f"Ingestion failed: {str(e)}",
                         )
                         rollback_api_result = KBApiOperationResult(
@@ -4952,7 +4952,7 @@ async def ingest_cloud(
                                 IngestionResult(
                                     status="error",
                                     message=str(rollback_execution.error),
-                                    doc_id=file_info.fileName,
+                                    doc_id=source_filename,
                                 ),
                             )
                         return rollback_execution.operation_result
@@ -4962,7 +4962,7 @@ async def ingest_cloud(
                         result=IngestionResult(
                             status="error",
                             message=f"Unsupported provider: {file_info.provider}",
-                            doc_id=file_info.fileName,
+                            doc_id=source_filename,
                         )
                     )
 
@@ -4972,7 +4972,7 @@ async def ingest_cloud(
                     result=IngestionResult(
                         status="error",
                         message=str(e),
-                        doc_id=file_info.fileName,
+                        doc_id=source_filename,
                     ),
                     rollback_complete=False,
                 )
@@ -4981,7 +4981,7 @@ async def ingest_cloud(
                     result=IngestionResult(
                         status="error",
                         message=f"Unexpected error: {str(e)}",
-                        doc_id=file_info.fileName,
+                        doc_id=source_filename,
                     )
                 )
                 rollback_execution = await _get_api_compatibility_facade().run_failed_ingest_rollback_async(
@@ -5007,7 +5007,7 @@ async def ingest_cloud(
                                 f"{safe_collection}/{file_info.fileName}: "
                                 f"{rollback_execution.error}"
                             ),
-                            doc_id=file_info.fileName,
+                            doc_id=source_filename,
                         ),
                     )
                 logger.exception(

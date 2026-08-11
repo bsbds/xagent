@@ -3767,7 +3767,7 @@ def test_kb_ingest_cloud_surfaces_restore_failure_on_download_error(
                     {
                         "provider": "google-drive",
                         "fileId": "drive-file-1",
-                        "fileName": "cloud.csv",
+                        "fileName": "stale.csv",
                     }
                 ],
             },
@@ -3777,6 +3777,7 @@ def test_kb_ingest_cloud_surfaces_restore_failure_on_download_error(
     assert response.status_code == 200
     data = response.json()
     assert data[0]["status"] == "error"
+    assert data[0]["doc_id"] == "cloud.csv"
     assert "Failed to fully roll back cloud ingest" in data[0]["message"]
 
 
