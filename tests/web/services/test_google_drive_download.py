@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from google.auth.credentials import AnonymousCredentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 
 class _Request:
@@ -189,6 +190,48 @@ def test_download_google_workspace_file_polls_pending_operation(
     assert destination.read_bytes() == b"complete"
     assert service.operations_resource.get_calls == ["download-2"]
     assert sleep_calls == [10]
+
+
+def test_download_google_workspace_file_wraps_poll_http_error(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    module = _module()
+    service = _DriveService({"name": "operations/download-poll-error"})
+
+    class _HttpResponse(dict):
+        status = 503
+        reason = "Service Unavailable"
+
+    poll_error = HttpError(_HttpResponse(), b"Drive unavailable")
+
+    class _FailingPollRequest:
+        headers: dict[str, str] = {}
+
+        def execute(self) -> dict[str, Any]:
+            raise poll_error
+
+    monkeypatch.setattr(module, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        service.operations_resource,
+        "get",
+        lambda *, name: _FailingPollRequest(),
+    )
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match="Drive operation polling failed",
+    ) as exc_info:
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-poll-error",
+            mime_type="application/vnd.test.presentation",
+            destination=tmp_path / "slides.pptx",
+            timeout_seconds=600,
+        )
+
+    assert exc_info.value.__cause__ is poll_error
 
 
 def test_download_google_workspace_file_raises_completed_operation_error(
