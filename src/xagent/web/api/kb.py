@@ -4721,7 +4721,7 @@ async def ingest_cloud(
                         result=IngestionResult(
                             status="error",
                             message=f"Metadata lookup failed: {str(e)}",
-                            doc_id=file_info.fileName,
+                            doc_id=source_filename,
                         )
                     )
 

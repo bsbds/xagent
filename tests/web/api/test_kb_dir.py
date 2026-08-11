@@ -3262,6 +3262,65 @@ def test_kb_ingest_cloud_rejects_oversized_drive_file_before_download(
         session.close()
 
 
+def test_kb_ingest_cloud_metadata_validation_uses_current_drive_filename(
+    test_env,
+    temp_uploads,
+):
+    """Metadata validation errors should identify Drive's current file name."""
+    app, headers, _user, TestingSessionLocal = test_env
+    client = TestClient(app)
+    metadata_request = _fake_drive_metadata_request(
+        "drive-invalid-size",
+        "current.pdf",
+        "application/pdf",
+    )
+    metadata_request.execute.return_value["size"] = "invalid"
+
+    class _FakeFilesService:
+        def get(self, **_kwargs):
+            return metadata_request
+
+    class _FakeDriveService:
+        def files(self):
+            return _FakeFilesService()
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
+        patch("xagent.web.api.kb.MediaIoBaseDownload") as downloader,
+        patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_invalid_size",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-invalid-size",
+                        "fileName": "stale.pdf",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    result = response.json()[0]
+    assert result["status"] == "error"
+    assert result["doc_id"] == "current.pdf"
+    assert result["message"].startswith("Metadata lookup failed:")
+    downloader.assert_not_called()
+    run_ingestion.assert_not_called()
+    assert list(temp_uploads.iterdir()) == []
+
+    session = TestingSessionLocal()
+    try:
+        assert session.query(UploadedFile).count() == 0
+    finally:
+        session.close()
+
+
 def test_kb_ingest_cloud_metadata_failure_has_no_file_side_effects(
     test_env, temp_uploads
 ):
