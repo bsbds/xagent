@@ -38,6 +38,8 @@ interface ConnectedAccount {
   created_at: string
 }
 
+const MAX_CLOUD_INGEST_FILES = 5
+
 interface CloudConnectDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -133,6 +135,12 @@ export function CloudConnectDialog({
     if (isSelected(file.id)) {
       setSelectedFiles(prev => prev.filter(f => f.id !== file.id))
     } else {
+      if (selectedFiles.length >= MAX_CLOUD_INGEST_FILES) {
+        toast.error(t("kb.dialog.cloudConnect.selectedFiles.limitReached", {
+          count: MAX_CLOUD_INGEST_FILES,
+        }))
+        return
+      }
       setSelectedFiles(prev => [...prev, file])
     }
   }

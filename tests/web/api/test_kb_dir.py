@@ -5641,6 +5641,31 @@ def test_kb_ingest_cloud_empty_batch_is_rejected(test_env) -> None:
     metadata_store.save_collection_config.assert_not_awaited()
 
 
+def test_kb_ingest_cloud_batch_over_five_files_is_rejected(test_env) -> None:
+    """A cloud batch must fit the endpoint's single five-file worker wave."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/kb/ingest-cloud",
+        json={
+            "collection": "cloud_oversized_batch",
+            "files": [
+                {
+                    "provider": "google-drive",
+                    "fileId": f"drive-file-{index}",
+                    "fileName": f"document-{index}.pdf",
+                }
+                for index in range(6)
+            ],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "files"
+
+
 def test_kb_ingest_cloud_config_save_failure_keeps_per_file_results(
     test_env, temp_uploads
 ) -> None:

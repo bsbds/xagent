@@ -3364,8 +3364,9 @@ class CloudFile(BaseModel):
 
 
 class CloudIngestRequest(BaseModel):
-    # An empty batch ingests nothing, so it must not reach the handler at all.
-    files: List[CloudFile] = Field(..., min_length=1)
+    # Reject empty work and keep each request within one five-file concurrency
+    # wave so Drive polling cannot add a second full timeout interval.
+    files: List[CloudFile] = Field(..., min_length=1, max_length=5)
     collection: str
     parse_method: Optional[ParseMethod] = None
     chunk_strategy: Optional[ChunkStrategy] = None
