@@ -171,6 +171,8 @@ def download_google_workspace_file(
                             raise GoogleDriveDownloadError(
                                 f"Failed to write Drive download: {reason}"
                             ) from exc
+                if written == 0:
+                    raise GoogleDriveDownloadError("Drive export produced no content")
     except GoogleDriveDownloadError:
         raise
     except Exception as exc:

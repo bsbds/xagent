@@ -555,6 +555,38 @@ def test_download_google_workspace_file_rejects_export_over_max_bytes(
     assert destination.read_bytes() == b"123"
 
 
+def test_download_google_workspace_file_rejects_zero_byte_export(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """An empty Drive export should fail before the parser sees it."""
+    module = _module()
+    service = _DriveService(
+        {
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/empty"},
+        }
+    )
+    session = _AuthorizedSession(_Response([b""]))
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    destination = tmp_path / "slides.pptx"
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match="Drive export produced no content",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-empty-export",
+            mime_type="application/vnd.test.presentation",
+            destination=destination,
+            timeout_seconds=600,
+        )
+
+    assert destination.read_bytes() == b""
+
+
 def test_download_google_workspace_file_preserves_partial_file_on_stream_failure(
     tmp_path: Path,
     monkeypatch: Any,
