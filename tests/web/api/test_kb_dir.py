@@ -2699,6 +2699,7 @@ def _fake_drive_metadata_request(
         "id": file_id,
         "name": name,
         "mimeType": mime_type,
+        "size": "1",
     }
     return request
 
@@ -2980,11 +2981,12 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
         def __init__(self):
             self.headers: dict[str, str] = {}
 
-        def execute(self):
+        def execute(self, **_kwargs):
             return {
                 "id": "drive-slides-1",
                 "name": "Quarterly.review",
                 "mimeType": "application/vnd.google-apps.presentation",
+                "size": "1",
             }
 
     class _FakeFilesService:
@@ -3047,7 +3049,7 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
     assert metadata_calls == [
         {
             "fileId": "drive-slides-1",
-            "fields": "id,name,mimeType",
+            "fields": "id,name,mimeType,size",
             "supportsAllDrives": True,
         }
     ]
@@ -3167,7 +3169,7 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
     assert metadata_calls == [
         {
             "fileId": "drive-pptx-1",
-            "fields": "id,name,mimeType",
+            "fields": "id,name,mimeType,size",
             "supportsAllDrives": True,
         }
     ]
@@ -3192,6 +3194,70 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
             file_record.mime_type
             == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
+    finally:
+        session.close()
+
+
+def test_kb_ingest_cloud_rejects_oversized_drive_file_before_download(
+    test_env,
+    temp_uploads,
+    monkeypatch,
+):
+    """Drive imports should enforce the same file-size limit as uploads."""
+    app, headers, _user, TestingSessionLocal = test_env
+    client = TestClient(app)
+    get_media = MagicMock()
+    metadata_request = _fake_drive_metadata_request(
+        "drive-large-1",
+        "large.pdf",
+        "application/pdf",
+    )
+    metadata_request.execute.return_value["size"] = "5"
+
+    class _FakeFilesService:
+        def get(self, **_kwargs):
+            return metadata_request
+
+        def get_media(self, **kwargs):
+            return get_media(**kwargs)
+
+    class _FakeDriveService:
+        def files(self):
+            return _FakeFilesService()
+
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE", 4)
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE_LABEL", "4B")
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
+        patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_oversized",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-large-1",
+                        "fileName": "large.pdf",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["message"] == "File size exceeds maximum limit of 4B"
+    metadata_request.execute.assert_called_once_with(num_retries=3)
+    get_media.assert_not_called()
+    run_ingestion.assert_not_called()
+    assert list(temp_uploads.iterdir()) == []
+
+    session = TestingSessionLocal()
+    try:
+        assert session.query(UploadedFile).count() == 0
     finally:
         session.close()
 
@@ -5530,11 +5596,12 @@ def test_kb_ingest_cloud_config_save_failure_keeps_per_file_results(
         def __init__(self):
             self.headers: dict[str, str] = {}
 
-        def execute(self):
+        def execute(self, **_kwargs):
             return {
                 "id": "drive-file-1",
                 "name": "doc.txt",
                 "mimeType": "text/plain",
+                "size": "1",
             }
 
     class _FakeFilesService:

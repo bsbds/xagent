@@ -4659,7 +4659,7 @@ async def ingest_cloud(
                         """Read current metadata before deriving the local file format."""
                         metadata_request = service.files().get(
                             fileId=file_info.fileId,
-                            fields="id,name,mimeType",
+                            fields="id,name,mimeType,size",
                             supportsAllDrives=True,
                         )
                         if drive_request_headers:
@@ -4671,7 +4671,12 @@ async def ingest_cloud(
                     metadata = await asyncio.to_thread(_get_file_metadata)
                     metadata_name = metadata.get("name")
                     metadata_mime_type = metadata.get("mimeType")
-                    if not metadata_name or not metadata_mime_type:
+                    metadata_size = metadata.get("size")
+                    if (
+                        not metadata_name
+                        or not metadata_mime_type
+                        or metadata_size is None
+                    ):
                         raise ValueError(
                             "Google Drive returned incomplete file metadata"
                         )
@@ -4679,6 +4684,17 @@ async def ingest_cloud(
                     source_filename = Path(str(metadata_name)).name
                     if not source_filename:
                         raise ValueError("Google Drive returned an invalid file name")
+                    if int(str(metadata_size)) > MAX_FILE_SIZE:
+                        return KBApiOperationResult(
+                            result=IngestionResult(
+                                status="error",
+                                message=(
+                                    "File size exceeds maximum limit of "
+                                    f"{MAX_FILE_SIZE_LABEL}"
+                                ),
+                                doc_id=source_filename,
+                            )
+                        )
 
                     drive_mime_type = str(metadata_mime_type)
                     is_native_google_slides = (
