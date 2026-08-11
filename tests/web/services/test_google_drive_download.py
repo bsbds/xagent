@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib
 import logging
 from pathlib import Path
@@ -613,6 +614,60 @@ def test_download_google_workspace_file_reports_local_write_failure(
             destination=tmp_path / "missing" / "slides.pptx",
             timeout_seconds=600,
         )
+
+
+def test_download_google_workspace_file_reports_midstream_write_failure(
+    monkeypatch: Any,
+) -> None:
+    """A disk failure after a partial write must use the service error contract."""
+    module = _module()
+    service = _DriveService(
+        {
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/disk-full"},
+        }
+    )
+    session = _AuthorizedSession(_Response([b"first", b"second"]))
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+
+    class _FailingOutput:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def write(self, chunk: bytes) -> None:
+            if self.writes:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            self.writes.append(chunk)
+
+    output = _FailingOutput()
+
+    class _Destination:
+        def open(self, mode: str) -> _FailingOutput:
+            assert mode == "wb"
+            return output
+
+    destination: Any = _Destination()
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match="Failed to write Drive download: No space left on device",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-disk-full",
+            mime_type="application/vnd.test.presentation",
+            destination=destination,
+            timeout_seconds=600,
+        )
+
+    assert output.writes == [b"first"]
 
 
 def test_download_google_workspace_file_wraps_final_http_failure(
