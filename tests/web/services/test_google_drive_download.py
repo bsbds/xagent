@@ -257,9 +257,9 @@ def test_download_google_workspace_file_stops_at_operation_timeout(
         {"name": "operations/download-4"},
         poll_responses=[{"name": "operations/download-4"}],
     )
-    times = iter([0.0, 0.0, 10.0])
+    times = iter([0.0, 0.0, 10.0, 10.0])
     sleep_calls: list[float] = []
-    monkeypatch.setattr(module, "monotonic", lambda: next(times), raising=False)
+    monkeypatch.setattr(module, "monotonic", lambda: next(times))
     monkeypatch.setattr(module, "sleep", sleep_calls.append)
 
     with pytest.raises(
