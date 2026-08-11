@@ -516,6 +516,39 @@ def test_download_google_workspace_file_caps_poll_backoff(
     assert sleep_calls == [10, 20, 40, 60, 60]
 
 
+def test_download_google_workspace_file_rejects_export_over_max_bytes(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """The exported artifact must not exceed the caller's byte limit."""
+    module = _module()
+    service = _DriveService(
+        {
+            "done": True,
+            "response": {"downloadUri": "https://drive.example/download/large"},
+        }
+    )
+    session = _AuthorizedSession(_Response([b"123", b"45"]))
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    destination = tmp_path / "slides.pptx"
+
+    with pytest.raises(
+        module.GoogleDriveDownloadError,
+        match="Exported file exceeds the maximum allowed size",
+    ):
+        module.download_google_workspace_file(
+            service=service,
+            credentials=object(),
+            file_id="slides-large-export",
+            mime_type="application/vnd.test.presentation",
+            destination=destination,
+            timeout_seconds=600,
+            max_bytes=4,
+        )
+
+    assert destination.read_bytes() == b"123"
+
+
 def test_download_google_workspace_file_preserves_partial_file_on_stream_failure(
     tmp_path: Path,
     monkeypatch: Any,

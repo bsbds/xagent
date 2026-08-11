@@ -2966,6 +2966,7 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
 ):
     """Native Google Slides should use the Drive LRO and the PPTX parser path."""
     from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
+    from xagent.web.config import MAX_FILE_SIZE
 
     app, headers, user, TestingSessionLocal = test_env
     monkeypatch.delenv("XAGENT_GOOGLE_DRIVE_DOWNLOAD_TIMEOUT_SECONDS", raising=False)
@@ -3065,6 +3066,7 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
             "destination": Path(captured_source_paths[0]),
             "timeout_seconds": 600,
             "resource_key": "link-resource-key",
+            "max_bytes": MAX_FILE_SIZE,
         }
     ]
     assert len(captured_source_paths) == 1

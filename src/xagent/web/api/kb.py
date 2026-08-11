@@ -4768,6 +4768,7 @@ async def ingest_cloud(
                                     destination=file_path,
                                     timeout_seconds=get_google_drive_download_timeout_seconds(),
                                     resource_key=file_info.resourceKey,
+                                    max_bytes=MAX_FILE_SIZE,
                                 )
                                 return
 

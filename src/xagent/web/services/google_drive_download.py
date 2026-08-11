@@ -48,13 +48,15 @@ def download_google_workspace_file(
     destination: Path,
     timeout_seconds: float,
     resource_key: str | None = None,
+    max_bytes: int | None = None,
 ) -> None:
     """Export a Google Workspace file and stream it to ``destination``.
 
     Drive returns an operation instead of file bytes. This synchronous helper
     owns that protocol so callers can move the complete blocking operation to a
-    worker thread. On mid-stream failure, ``destination`` may contain a partial
-    write; callers are responsible for cleanup.
+    worker thread. When ``max_bytes`` is set, the stream aborts before writing
+    a chunk that would cross the limit. On mid-stream failure, ``destination``
+    may contain a partial write; callers are responsible for cleanup.
     """
     headers: dict[str, str] = {}
     if resource_key:
@@ -146,12 +148,18 @@ def download_google_workspace_file(
                         f"Failed to write Drive download: {reason}"
                     ) from exc
 
+                written = 0
                 with output_file as output:
                     for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_SIZE):
                         if not chunk:
                             continue
+                        if max_bytes is not None and written + len(chunk) > max_bytes:
+                            raise GoogleDriveDownloadError(
+                                "Exported file exceeds the maximum allowed size"
+                            )
                         try:
                             output.write(chunk)
+                            written += len(chunk)
                         except OSError as exc:
                             reason = exc.strerror or "local filesystem error"
                             raise GoogleDriveDownloadError(
