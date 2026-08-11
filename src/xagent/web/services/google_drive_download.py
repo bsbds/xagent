@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 _DOWNLOAD_HTTP_TIMEOUT_SECONDS = 60
+_GOOGLE_API_NUM_RETRIES = 3
 
 
 class GoogleDriveDownloadError(RuntimeError):
@@ -64,7 +65,9 @@ def download_google_workspace_file(
 
     request = service.files().download(fileId=file_id, mimeType=mime_type)
     request.headers.update(headers)
-    operation = cast(dict[str, Any], request.execute())
+    operation = cast(
+        dict[str, Any], request.execute(num_retries=_GOOGLE_API_NUM_RETRIES)
+    )
     _update_resource_key_header(headers, file_id=file_id, operation=operation)
     started_at = monotonic()
     deadline = started_at + timeout_seconds
@@ -92,7 +95,10 @@ def download_google_workspace_file(
                 name=str(operation_name).removeprefix("operations/")
             )
             poll_request.headers.update(headers)
-            operation = cast(dict[str, Any], poll_request.execute())
+            operation = cast(
+                dict[str, Any],
+                poll_request.execute(num_retries=_GOOGLE_API_NUM_RETRIES),
+            )
         except Exception as exc:
             raise GoogleDriveDownloadError("Drive operation polling failed") from exc
         _update_resource_key_header(headers, file_id=file_id, operation=operation)

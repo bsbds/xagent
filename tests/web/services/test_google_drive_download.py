@@ -18,8 +18,10 @@ class _Request:
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
         self.headers: dict[str, str] = {}
+        self.execute_calls: list[int] = []
 
-    def execute(self) -> dict[str, Any]:
+    def execute(self, *, num_retries: int = 0) -> dict[str, Any]:
+        self.execute_calls.append(num_retries)
         return self.response
 
 
@@ -190,6 +192,8 @@ def test_download_google_workspace_file_polls_pending_operation(
 
     assert destination.read_bytes() == b"complete"
     assert service.operations_resource.get_calls == ["download-2"]
+    assert service.files_resource.request.execute_calls == [3]
+    assert service.operations_resource.requests[0].execute_calls == [3]
     assert sleep_calls == [10]
 
 
@@ -209,7 +213,8 @@ def test_download_google_workspace_file_wraps_poll_http_error(
     class _FailingPollRequest:
         headers: dict[str, str] = {}
 
-        def execute(self) -> dict[str, Any]:
+        def execute(self, *, num_retries: int = 0) -> dict[str, Any]:
+            assert num_retries == 3
             raise poll_error
 
     monkeypatch.setattr(module, "sleep", lambda _seconds: None)
