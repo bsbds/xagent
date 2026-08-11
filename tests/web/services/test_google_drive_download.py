@@ -187,7 +187,7 @@ def test_download_google_workspace_file_polls_pending_operation(
     )
 
     assert destination.read_bytes() == b"complete"
-    assert service.operations_resource.get_calls == ["operations/download-2"]
+    assert service.operations_resource.get_calls == ["download-2"]
     assert sleep_calls == [10]
 
 
@@ -246,7 +246,7 @@ def test_download_google_workspace_file_stops_at_operation_timeout(
             timeout_seconds=10,
         )
 
-    assert service.operations_resource.get_calls == ["operations/download-4"]
+    assert service.operations_resource.get_calls == ["download-4"]
     assert sleep_calls == [10]
     assert not (tmp_path / "slides.pptx").exists()
 

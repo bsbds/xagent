@@ -84,7 +84,9 @@ def download_google_workspace_file(
                 f"{timeout_seconds:g} seconds"
             )
         sleep(min(poll_delay_seconds, remaining_seconds))
-        poll_request = service.operations().get(name=str(operation_name))
+        poll_request = service.operations().get(
+            name=str(operation_name).removeprefix("operations/")
+        )
         poll_request.headers.update(headers)
         operation = cast(dict[str, Any], poll_request.execute())
         _update_resource_key_header(headers, file_id=file_id, operation=operation)
