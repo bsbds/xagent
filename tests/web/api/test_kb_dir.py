@@ -3781,9 +3781,10 @@ def test_kb_ingest_cloud_surfaces_restore_failure_on_download_error(
 
 
 def test_kb_ingest_cloud_returns_download_failure_after_restore_success(
-    test_env, temp_uploads
+    test_env, temp_uploads, caplog
 ):
     """Cloud download failures should stop after restoring the local backup."""
+    from xagent.web.services.google_drive_download import GoogleDriveDownloadError
 
     app, headers, _user, _ = test_env
     client = TestClient(app)
@@ -3804,7 +3805,12 @@ def test_kb_ingest_cloud_returns_download_failure_after_restore_success(
             self._fh = fh
 
         def next_chunk(self):
-            raise RuntimeError("download blew up")
+            try:
+                raise RuntimeError("socket reset")
+            except RuntimeError as cause:
+                raise GoogleDriveDownloadError(
+                    "Final Drive download request failed"
+                ) from cause
 
     with (
         patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
@@ -3830,7 +3836,8 @@ def test_kb_ingest_cloud_returns_download_failure_after_restore_success(
     assert response.status_code == 200
     data = response.json()
     assert data[0]["status"] == "error"
-    assert "Download failed: download blew up" in data[0]["message"]
+    assert "Download failed: Final Drive download request failed" in data[0]["message"]
+    assert "socket reset" in caplog.text
     run_ingestion.assert_not_called()
 
 

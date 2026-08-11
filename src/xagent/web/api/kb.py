@@ -4797,6 +4797,7 @@ async def ingest_cloud(
                             file_info.fileId,
                             int(actor_user.id),
                             e,
+                            exc_info=True,
                         )
                         rollback_api_result = KBApiOperationResult(
                             result=IngestionResult(
