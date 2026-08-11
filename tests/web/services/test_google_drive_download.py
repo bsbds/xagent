@@ -297,6 +297,41 @@ def test_download_google_workspace_file_wraps_malformed_operation_error(
         )
 
 
+def test_download_google_workspace_file_clamps_sleep_to_remaining_deadline(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """The poll sleep must not overshoot a shorter remaining deadline."""
+    module = _module()
+    service = _DriveService(
+        {"name": "operations/download-clamped"},
+        poll_responses=[
+            {
+                "name": "operations/download-clamped",
+                "done": True,
+                "response": {"downloadUri": "https://drive.example/download/clamped"},
+            }
+        ],
+    )
+    session = _AuthorizedSession(_Response([b"complete"]))
+    times = iter([0.0, 3.0, 4.0])
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
+    monkeypatch.setattr(module, "monotonic", lambda: next(times))
+    monkeypatch.setattr(module, "sleep", sleep_calls.append)
+
+    module.download_google_workspace_file(
+        service=service,
+        credentials=object(),
+        file_id="slides-clamped",
+        mime_type="application/vnd.test.presentation",
+        destination=tmp_path / "slides.pptx",
+        timeout_seconds=5,
+    )
+
+    assert sleep_calls == [2]
+
+
 def test_download_google_workspace_file_stops_at_operation_timeout(
     tmp_path: Path,
     monkeypatch: Any,
