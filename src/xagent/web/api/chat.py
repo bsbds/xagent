@@ -2640,9 +2640,9 @@ class AgentServiceManager:
                     task_id=f"web_task_{task_id}",
                     db_task_id=task_id,
                     workspace_owner_id=workspace_owner_id,
-                    file_operation_access_version=(task.agent_config or {}).get(
-                        FILE_OPERATION_ACCESS_VERSION_KEY
-                    ),
+                    file_operation_access_version=(
+                        getattr(task, "agent_config", None) or {}
+                    ).get(FILE_OPERATION_ACCESS_VERSION_KEY),
                     scope=scope,
                     task_runtime_context=_task_runtime_context_for_tool_build(
                         task_id=task_id,
