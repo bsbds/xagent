@@ -8,6 +8,12 @@ New widget and shared-link tasks use a server-owned policy marker to restrict Fi
 
 A mixed-version deployment is unsafe after new public task creation starts. An older worker does not enforce the marker. Gate widget and shared-link task creation until all API and task-execution workers run the new version.
 
+### Scope limitation
+
+This rollout isolates only the File Operation tool family. Other tools that read paths from the shared task workspace, including image, audio, PowerPoint, video, and SSH upload tools, continue to use the existing workspace resolver and owner-wide external directory roots. MCP roots, sandbox access, shell and Python execution, knowledge-base operations, and preview/download authorization are also unchanged.
+
+Do not treat this rollout as complete public-file isolation. Restrict those tools separately when a public deployment requires a task-wide boundary across every file-capable tool.
+
 ### Prerequisites and configuration
 
 This change has no database migration, backfill, new environment variable, dependency, or infrastructure requirement.
