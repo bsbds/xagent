@@ -723,10 +723,33 @@ class TestWorkspaceFileOperations:
         monkeypatch.setenv("XAGENT_FILE_MATERIALIZE_DIR", str(materialized_root))
         materialized_path = materialized_root / "materialized-durable.txt"
         materialized_path.write_text("durable", encoding="utf-8")
+        materialize_calls = 0
+        opened_sessions = []
+        detached_session_factory = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            bind=context.db.get_bind(),
+        )
+
+        def create_tracked_session():
+            session = detached_session_factory()
+            opened_sessions.append(session)
+            return session
+
+        def assert_released_before_materialization(_self):
+            nonlocal materialize_calls
+            materialize_calls += 1
+            assert all(not session.in_transaction() for session in opened_sessions)
+            return materialized_path
+
+        monkeypatch.setattr(
+            "xagent.core.storage.manager.create_db_session",
+            create_tracked_session,
+        )
         monkeypatch.setattr(
             ManagedFileRef,
             "materialize",
-            lambda _self: materialized_path,
+            assert_released_before_materialization,
         )
 
         listed = context.ops.list_all_user_files(include_workspace_files=False)
@@ -738,6 +761,8 @@ class TestWorkspaceFileOperations:
         assert listed["total_count"] == 2
 
         assert context.ops.read_file(current.file_id) == "durable"
+        assert context.ops.read_file(str(current.storage_path)) == "durable"
+        assert materialize_calls == 2
         for denied_file_id in (
             sibling.file_id,
             invalid_prefix.file_id,

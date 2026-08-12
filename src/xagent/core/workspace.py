@@ -1359,6 +1359,7 @@ class TaskWorkspace:
         if not exact_scope:
             return self.resolve_path_with_search(file_path)
 
+        from ..web.models.database import release_db_connection_if_clean
         from ..web.models.uploaded_file import UploadedFile
         from .storage.manager import create_db_session
 
@@ -1389,6 +1390,9 @@ class TaskWorkspace:
                         or int(getattr(record, "task_id", 0) or 0) != self.db_task_id
                     ):
                         raise FileNotFoundError(f"File not found: {file_path}")
+                    db.expunge(record)
+                    if not release_db_connection_if_clean(db):
+                        raise FileNotFoundError(f"File not found: {file_path}")
                     resolved_record = self._exact_file_operation_record_path(record)
                     if resolved_record is None:
                         raise FileNotFoundError(f"File not found: {file_path}")
@@ -1413,6 +1417,9 @@ class TaskWorkspace:
                 )
                 .all()
             )
+            db.expunge_all()
+            if not release_db_connection_if_clean(db):
+                raise FileNotFoundError(f"File not found: {file_path}")
             for record in records:
                 record_path = Path(str(record.storage_path)).resolve()
                 if record_path != resolved:
