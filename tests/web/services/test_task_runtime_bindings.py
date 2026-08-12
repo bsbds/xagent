@@ -13,7 +13,11 @@ from xagent.core.execution_scope import (
     EXECUTION_SCOPE_AGENT_CONFIG_KEY,
     execution_scope_from_agent_config,
 )
-from xagent.core.task_runtime import TaskRuntimeContext, TaskRuntimeContribution
+from xagent.core.task_runtime import (
+    FILE_OPERATION_ACCESS_VERSION_KEY,
+    TaskRuntimeContext,
+    TaskRuntimeContribution,
+)
 from xagent.web.services.task_runtime import (
     CLIENT_RESERVED_AGENT_CONFIG_KEYS,
     SELECTED_FILE_IDS_AGENT_CONFIG_KEY,
@@ -96,6 +100,16 @@ def test_bindings_decode_tolerates_missing_and_malformed_records(
     agent_config: Any,
 ) -> None:
     assert task_extension_bindings_from_agent_config(agent_config) == ()
+
+
+def test_bindings_encode_preserves_file_operation_policy_marker() -> None:
+    encoded = agent_config_with_task_extension_bindings(
+        {FILE_OPERATION_ACCESS_VERSION_KEY: 1},
+        ["local_browser"],
+    )
+
+    assert encoded[FILE_OPERATION_ACCESS_VERSION_KEY] == 1
+    assert encoded[TASK_RUNTIME_BINDINGS_AGENT_CONFIG_KEY] == ["local_browser"]
 
 
 def test_bindings_encode_drops_the_key_when_empty() -> None:
