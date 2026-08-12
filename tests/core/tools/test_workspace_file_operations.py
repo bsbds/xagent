@@ -23,13 +23,17 @@ from xagent.web.tools.config import WebToolConfig
 
 
 @pytest.fixture
-def public_file_scope_context(tmp_path):
+def public_file_scope_context(tmp_path, monkeypatch):
     engine = create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}
     )
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
+    monkeypatch.setattr(
+        "xagent.core.storage.manager.create_db_session",
+        SessionLocal,
+    )
 
     owner = User(username="public-file-owner", password_hash="hash")
     other = User(username="other-file-owner", password_hash="hash")
@@ -763,6 +767,35 @@ class TestWorkspaceFileOperations:
                 context.ops.create_directory("blocked")
             else:
                 context.ops.list_files(".")
+
+    @pytest.mark.parametrize("operation", ["read", "list"])
+    def test_marked_public_file_operation_does_not_reuse_bound_session(
+        self, public_file_scope_context, monkeypatch, operation
+    ):
+        context = public_file_scope_context
+        detached_session_factory = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            bind=context.db.get_bind(),
+        )
+
+        class ThreadBoundSession:
+            def query(self, *_args, **_kwargs):
+                raise AssertionError("bound session crossed into File Operation")
+
+        context.workspace.db_session = ThreadBoundSession()
+        monkeypatch.setattr(
+            "xagent.core.storage.manager.create_db_session",
+            detached_session_factory,
+        )
+
+        if operation == "read":
+            assert context.ops.read_file(context.current_record.file_id) == "current"
+        else:
+            listed = context.ops.list_all_user_files(include_workspace_files=False)
+            assert context.current_record.file_id in {
+                item["file_id"] for item in listed["files"]
+            }
 
     def test_marked_public_missing_task_row_does_not_fall_back_to_legacy_paths(
         self, public_file_scope_context

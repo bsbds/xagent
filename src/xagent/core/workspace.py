@@ -1066,12 +1066,10 @@ class TaskWorkspace:
                 "Marked File Operation workspace has no authoritative identity"
             )
 
-        if self.db_session is not None:
-            db = self.db_session
-            should_close = False
-        else:
-            db = create_db_session()
-            should_close = True
+        # File Operation callables run in worker threads. Always use an
+        # operation-local session for policy checks instead of carrying a
+        # potentially thread-bound caller session into that worker.
+        db = create_db_session()
         try:
             task = db.query(Task).filter(Task.id == self.db_task_id).first()
             if task is None:
@@ -1091,8 +1089,7 @@ class TaskWorkspace:
                 )
             return True
         finally:
-            if should_close:
-                db.close()
+            db.close()
 
     def _file_record_allowed_for_workspace(
         self, record: Any, path: Optional[Path] = None
@@ -1375,12 +1372,9 @@ class TaskWorkspace:
         elif normalized.startswith("file:") and not normalized.startswith("file://"):
             normalized = normalized[5:].strip()
 
-        if self.db_session is not None:
-            db = self.db_session
-            should_close = False
-        else:
-            db = create_db_session()
-            should_close = True
+        # Exact-scope resolution is worker-dispatched by File Operation, so
+        # its record lookup must not reuse a caller-owned session.
+        db = create_db_session()
         try:
             candidate_ref = Path(normalized)
             if normalized and len(candidate_ref.parts) == 1 and "/" not in normalized:
@@ -1428,8 +1422,7 @@ class TaskWorkspace:
                     return resolved_record
             raise FileNotFoundError(f"File not found: {file_path}")
         finally:
-            if should_close:
-                db.close()
+            db.close()
 
     def _ensure_directories(self) -> None:
         """Ensure all workspace directories exist"""
@@ -2066,8 +2059,14 @@ class TaskWorkspace:
         db = None
         should_close = False
         if task_id is not None:
-            db = self.db_session if self.db_session else create_db_session()
-            should_close = self.db_session is None
+            # Marked File Operation listing runs in a worker thread and must
+            # use an operation-local session. Preserve bound-session behavior
+            # only for historical, unmarked callers.
+            if _exact_task_scope or self.db_session is None:
+                db = create_db_session()
+                should_close = True
+            else:
+                db = self.db_session
 
         try:
             # Try to get user_id from task if we have a valid task_id and db session
