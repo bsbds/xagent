@@ -610,7 +610,13 @@ def test_workforce_share_first_turn_attachments_reach_run(
         )
         workspace.owner_user_id = int(task.user_id)
         workspace.file_operation_access_version = 1
-        workspace.db_session = db
+        # File Operation runs in a worker thread and deliberately ignores
+        # caller-bound ORM sessions. Point its operation-local session factory
+        # at this test's temporary application database instead.
+        monkeypatch.setattr(
+            "xagent.core.storage.manager.create_db_session",
+            _direct_db_session,
+        )
         assert WorkspaceFileOperations(workspace).read_file(file_id) == "trip brief"
     finally:
         db.close()
