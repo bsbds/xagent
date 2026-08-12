@@ -3330,7 +3330,12 @@ def test_kb_ingest_cloud_reports_unsupported_drive_shortcut(
         (
             {"name": "/"},
             "Google Drive returned an invalid file name",
-            "",
+            "drive-invalid-metadata",
+        ),
+        (
+            {"size": None},
+            "Google Drive returned incomplete file metadata",
+            "current.pdf",
         ),
     ],
 )
@@ -3489,9 +3494,7 @@ def test_kb_ingest_cloud_metadata_failure_has_no_file_side_effects(
         )
 
     assert response.status_code == 200
-    assert response.json()[0]["message"] == (
-        "Metadata lookup failed: metadata unavailable"
-    )
+    assert response.json()[0]["message"] == "Google Drive metadata lookup failed"
     downloader.assert_not_called()
     run_ingestion.assert_not_called()
     restore_backup.assert_not_called()
@@ -3502,6 +3505,41 @@ def test_kb_ingest_cloud_metadata_failure_has_no_file_side_effects(
         assert session.query(UploadedFile).count() == 0
     finally:
         session.close()
+
+
+def test_kb_ingest_cloud_authentication_error_uses_normalized_filename(
+    test_env,
+):
+    """Authentication failures should identify files by normalized basenames."""
+    from fastapi import HTTPException
+
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+
+    with patch(
+        "xagent.web.api.kb.get_google_credentials",
+        side_effect=HTTPException(status_code=401, detail="Reconnect Drive"),
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_auth_failure",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-file-1",
+                        "fileName": "folder/current.pdf",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    result = response.json()[0]
+    assert result["status"] == "error"
+    assert result["message"] == "Authentication error: Reconnect Drive"
+    assert result["doc_id"] == "current.pdf"
 
 
 def test_kb_ingest_cloud_rejects_extensionless_binary_file(test_env, temp_uploads):
@@ -3965,7 +4003,11 @@ def test_kb_ingest_cloud_surfaces_restore_failure_on_download_error(
     data = response.json()
     assert data[0]["status"] == "error"
     assert data[0]["doc_id"] == "cloud.csv"
-    assert "Failed to fully roll back cloud ingest" in data[0]["message"]
+    assert (
+        "Failed to fully roll back cloud ingest for cloud_coll/cloud.csv"
+        in data[0]["message"]
+    )
+    assert "stale.csv" not in data[0]["message"]
 
 
 def test_kb_ingest_cloud_returns_download_failure_after_restore_success(
@@ -3979,31 +4021,31 @@ def test_kb_ingest_cloud_returns_download_failure_after_restore_success(
 
     class _FakeFilesService:
         def get(self, fileId: str, **_kwargs):
-            return _fake_drive_metadata_request(fileId, "cloud.csv", "text/csv")
-
-        def get_media(self, fileId: str, **_kwargs):
-            return {"fileId": fileId}
+            return _fake_drive_metadata_request(
+                fileId,
+                "Quarterly Review",
+                "application/vnd.google-apps.presentation",
+            )
 
     class _FakeDriveService:
         def files(self):
             return _FakeFilesService()
 
-    class _FailingDownloader:
-        def __init__(self, fh, request_file):
-            self._fh = fh
-
-        def next_chunk(self):
-            try:
-                raise RuntimeError("socket reset")
-            except RuntimeError as cause:
-                raise GoogleDriveDownloadError(
-                    "Final Drive download request failed"
-                ) from cause
+    def _fail_workspace_download(**_kwargs):
+        try:
+            raise RuntimeError("socket reset")
+        except RuntimeError as cause:
+            raise GoogleDriveDownloadError(
+                "Final Drive download request failed"
+            ) from cause
 
     with (
         patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
         patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
-        patch("xagent.web.api.kb.MediaIoBaseDownload", _FailingDownloader),
+        patch(
+            "xagent.web.api.kb.download_google_workspace_file",
+            side_effect=_fail_workspace_download,
+        ),
         patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
     ):
         response = client.post(
@@ -4014,7 +4056,7 @@ def test_kb_ingest_cloud_returns_download_failure_after_restore_success(
                     {
                         "provider": "google-drive",
                         "fileId": "drive-file-1",
-                        "fileName": "cloud.csv",
+                        "fileName": "Quarterly Review",
                     }
                 ],
             },
@@ -4077,7 +4119,7 @@ def test_kb_ingest_cloud_surfaces_restore_failure_on_unexpected_error(
                     {
                         "provider": "google-drive",
                         "fileId": "drive-file-2",
-                        "fileName": "cloud.csv",
+                        "fileName": "stale.csv",
                     }
                 ],
             },
@@ -4087,7 +4129,11 @@ def test_kb_ingest_cloud_surfaces_restore_failure_on_unexpected_error(
     assert response.status_code == 200
     data = response.json()
     assert data[0]["status"] == "error"
-    assert "Failed to fully roll back cloud ingest" in data[0]["message"]
+    assert (
+        "Failed to fully roll back cloud ingest for cloud_coll/cloud.csv"
+        in data[0]["message"]
+    )
+    assert "stale.csv" not in data[0]["message"]
 
 
 def test_restore_ingest_file_backup_raises_when_existing_backup_is_missing(

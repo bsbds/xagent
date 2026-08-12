@@ -194,7 +194,7 @@ def test_download_google_workspace_file_polls_pending_operation(
     assert service.operations_resource.get_calls == ["download-2"]
     assert service.files_resource.request.execute_calls == [3]
     assert service.operations_resource.requests[0].execute_calls == [3]
-    assert sleep_calls == [10]
+    assert sleep_calls == [2]
 
 
 def test_download_google_workspace_file_wraps_poll_http_error(
@@ -314,7 +314,7 @@ def test_download_google_workspace_file_clamps_sleep_to_remaining_deadline(
         ],
     )
     session = _AuthorizedSession(_Response([b"complete"]))
-    times = iter([0.0, 3.0, 4.0])
+    times = iter([0.0, 4.0, 5.0])
     sleep_calls: list[float] = []
     monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
     monkeypatch.setattr(module, "monotonic", lambda: next(times))
@@ -329,7 +329,7 @@ def test_download_google_workspace_file_clamps_sleep_to_remaining_deadline(
         timeout_seconds=5,
     )
 
-    assert sleep_calls == [2]
+    assert sleep_calls == [1]
 
 
 def test_download_google_workspace_file_stops_at_operation_timeout(
@@ -360,7 +360,7 @@ def test_download_google_workspace_file_stops_at_operation_timeout(
         )
 
     assert service.operations_resource.get_calls == ["download-4"]
-    assert sleep_calls == [10]
+    assert sleep_calls == [2]
     assert not (tmp_path / "slides.pptx").exists()
 
 
@@ -533,6 +533,8 @@ def test_download_google_workspace_file_caps_poll_backoff(
             {"name": "operations/download-backoff", "done": False},
             {"name": "operations/download-backoff"},
             {"name": "operations/download-backoff", "done": False},
+            {"name": "operations/download-backoff"},
+            {"name": "operations/download-backoff", "done": False},
             {
                 "name": "operations/download-backoff",
                 "done": True,
@@ -554,7 +556,7 @@ def test_download_google_workspace_file_caps_poll_backoff(
         timeout_seconds=600,
     )
 
-    assert sleep_calls == [10, 20, 40, 60, 60]
+    assert sleep_calls == [2, 4, 8, 16, 32, 60, 60]
 
 
 def test_download_google_workspace_file_rejects_export_over_max_bytes(

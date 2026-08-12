@@ -76,7 +76,7 @@ def download_google_workspace_file(
         file_id,
         operation.get("name", "completed-inline"),
     )
-    poll_delay_seconds = 10.0
+    poll_delay_seconds = 2.0
     while operation.get("done") is not True:
         operation_name = operation.get("name")
         if not operation_name:

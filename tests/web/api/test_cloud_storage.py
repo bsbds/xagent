@@ -21,7 +21,12 @@ async def test_google_drive_listing_preserves_resource_keys() -> None:
                         "name": "Linked Slides",
                         "mimeType": "application/vnd.google-apps.presentation",
                         "resourceKey": "link-resource-key",
-                    }
+                    },
+                    {
+                        "id": "slides-unlinked",
+                        "name": "Unlinked Slides",
+                        "mimeType": "application/vnd.google-apps.presentation",
+                    },
                 ]
             }
 
@@ -49,5 +54,8 @@ async def test_google_drive_listing_preserves_resource_keys() -> None:
             user=SimpleNamespace(id=1),
         )
 
-    assert "resourceKey" in str(list_calls[0]["fields"])
+    assert list_calls[0]["fields"] == (
+        "nextPageToken, files(id, name, mimeType, size, modifiedTime, resourceKey)"
+    )
     assert files[0]["resourceKey"] == "link-resource-key"
+    assert files[1]["resourceKey"] is None

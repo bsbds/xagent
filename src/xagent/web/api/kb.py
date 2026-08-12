@@ -3396,6 +3396,10 @@ class CollectionConfigSaveError(RuntimeError):
         self.file_id = file_id
 
 
+class GoogleDriveMetadataValidationError(ValueError):
+    """Report a client-safe validation failure in trusted Drive metadata fields."""
+
+
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -4644,7 +4648,7 @@ async def ingest_cloud(
                         result=IngestionResult(
                             status="error",
                             message=f"Authentication error: {e.detail}",
-                            doc_id=file_info.fileName,
+                            doc_id=source_filename,
                         )
                     )
 
@@ -4677,19 +4681,29 @@ async def ingest_cloud(
                     if metadata_name:
                         source_filename = Path(str(metadata_name)).name
                     if metadata_mime_type == _GOOGLE_DRIVE_SHORTCUT_MIME_TYPE:
-                        raise ValueError("Google Drive shortcuts are not supported")
+                        raise GoogleDriveMetadataValidationError(
+                            "Google Drive shortcuts are not supported"
+                        )
                     if (
                         not metadata_name
                         or not metadata_mime_type
                         or metadata_size is None
                     ):
-                        raise ValueError(
+                        raise GoogleDriveMetadataValidationError(
                             "Google Drive returned incomplete file metadata"
                         )
 
                     if not source_filename:
-                        raise ValueError("Google Drive returned an invalid file name")
-                    if int(str(metadata_size)) > MAX_FILE_SIZE:
+                        raise GoogleDriveMetadataValidationError(
+                            "Google Drive returned an invalid file name"
+                        )
+                    try:
+                        file_size = int(str(metadata_size))
+                    except (TypeError, ValueError) as exc:
+                        raise GoogleDriveMetadataValidationError(
+                            "Google Drive returned an invalid file size"
+                        ) from exc
+                    if file_size > MAX_FILE_SIZE:
                         return KBApiOperationResult(
                             result=IngestionResult(
                                 status="error",
@@ -4715,18 +4729,26 @@ async def ingest_cloud(
                         if is_native_google_slides
                         else drive_mime_type
                     )
-                except Exception as e:
+                except GoogleDriveMetadataValidationError as e:
+                    return KBApiOperationResult(
+                        result=IngestionResult(
+                            status="error",
+                            message=f"Metadata lookup failed: {e}",
+                            doc_id=source_filename or file_info.fileId,
+                        )
+                    )
+                except Exception:
                     logger.warning(
-                        "Google Drive metadata lookup failed for file_id=%s user_id=%s: %s",
+                        "Google Drive metadata lookup failed for file_id=%s user_id=%s",
                         file_info.fileId,
                         int(actor_user.id),
-                        e,
+                        exc_info=True,
                     )
                     return KBApiOperationResult(
                         result=IngestionResult(
                             status="error",
-                            message=f"Metadata lookup failed: {str(e)}",
-                            doc_id=source_filename,
+                            message="Google Drive metadata lookup failed",
+                            doc_id=source_filename or file_info.fileId,
                         )
                     )
 
@@ -4827,7 +4849,7 @@ async def ingest_cloud(
                                     status="error",
                                     message=(
                                         "Failed to fully roll back cloud ingest for "
-                                        f"{safe_collection}/{file_info.fileName}: "
+                                        f"{safe_collection}/{source_filename}: "
                                         f"{rollback_execution.error}"
                                     ),
                                     doc_id=source_filename,
@@ -5010,7 +5032,7 @@ async def ingest_cloud(
                             status="error",
                             message=(
                                 "Failed to fully roll back cloud ingest for "
-                                f"{safe_collection}/{file_info.fileName}: "
+                                f"{safe_collection}/{source_filename}: "
                                 f"{rollback_execution.error}"
                             ),
                             doc_id=source_filename,

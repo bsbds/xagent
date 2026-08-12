@@ -124,6 +124,7 @@ describe("CloudConnectDialog", () => {
             id: `file-${index + 1}`,
             name: `File ${index + 1}.pdf`,
             type: "file",
+            ...(index === 0 ? { resourceKey: "resource-key-1" } : {}),
           }))
         ))
       }
@@ -134,6 +135,38 @@ describe("CloudConnectDialog", () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+  })
+
+  it("preserves a Drive resource key through file selection", async () => {
+    const onConfirm = vi.fn()
+    const onOpenChange = vi.fn()
+
+    render(
+      <CloudConnectDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        provider={{
+          id: "google-drive",
+          name: "Google Drive",
+          hasDrives: false,
+          authPath: "google",
+          logo: "drive",
+        }}
+        onConfirm={onConfirm}
+      />
+    )
+
+    fireEvent.click(await screen.findByTestId("select-user@example.com"))
+    fireEvent.click(await screen.findByText("File 1.pdf"))
+    fireEvent.click(screen.getByText("kb.dialog.cloudConnect.select.confirm"))
+
+    expect(onConfirm).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: "file-1",
+        resourceKey: "resource-key-1",
+      }),
+    ])
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
   it("prevents selecting more than five files", async () => {

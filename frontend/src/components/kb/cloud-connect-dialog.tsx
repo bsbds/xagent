@@ -38,6 +38,7 @@ interface ConnectedAccount {
   created_at: string
 }
 
+// Keep in sync with CloudIngestRequest.files max_length in src/xagent/web/api/kb.py.
 const MAX_CLOUD_INGEST_FILES = 5
 
 interface CloudConnectDialogProps {
