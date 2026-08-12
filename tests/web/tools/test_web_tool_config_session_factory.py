@@ -6,6 +6,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from types import MappingProxyType, SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -403,6 +404,49 @@ async def test_create_default_tools_uses_worker_session_factory_without_live_db(
     assert captured["db_factory"] is session_factory
     assert captured["workspace_config"]["db_task_id"] == 11
     assert captured["workspace_config"]["__xagent_file_operation_access_version"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_config", ["malformed", ["malformed"]])
+async def test_build_tools_treats_non_mapping_policy_config_as_unmarked(
+    monkeypatch,
+    agent_config,
+):
+    from xagent.web.api.chat import AgentServiceManager
+
+    captured: dict[str, object] = {}
+
+    async def fake_create_default_tools(*_args, **kwargs):
+        captured.update(kwargs)
+        return [], object()
+
+    manager = AgentServiceManager()
+    monkeypatch.setattr(
+        manager,
+        "_get_or_create_task_sandbox",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "xagent.web.api.chat.create_default_tools",
+        fake_create_default_tools,
+    )
+
+    await manager._build_tools_for_task(
+        task_id=11,
+        task=SimpleNamespace(user_id=7, agent_config=agent_config, source="internal"),
+        db=None,
+        user=SimpleNamespace(id=7, is_admin=False),
+        agent_config=None,
+        task_llm=None,
+        task_vision_llm=None,
+        task_setup_snapshot=SimpleNamespace(
+            workforce_runtime=None,
+            excluded_agent_id=None,
+            agent=None,
+        ),
+    )
+
+    assert captured["file_operation_access_version"] is None
 
 
 @pytest.mark.asyncio

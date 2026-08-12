@@ -827,6 +827,14 @@ def _delete_task_sync(*, task_id: int) -> bool:
         delete_db.close()
 
 
+def _file_operation_access_version_from_agent_config(agent_config: Any) -> Any:
+    """Read the server marker without trusting malformed JSON column values."""
+
+    if not isinstance(agent_config, Mapping):
+        return None
+    return agent_config.get(FILE_OPERATION_ACCESS_VERSION_KEY)
+
+
 def _selected_file_ids_from_agent_config(
     agent_config: Any,
 ) -> list[str]:
@@ -2006,8 +2014,8 @@ class AgentServiceManager:
             task_id=f"web_task_{task_id}",
             db_task_id=task_id,
             workspace_owner_id=int(task.user_id),
-            file_operation_access_version=(task.agent_config or {}).get(
-                FILE_OPERATION_ACCESS_VERSION_KEY
+            file_operation_access_version=(
+                _file_operation_access_version_from_agent_config(task.agent_config)
             ),
             scope=scope,
             task_runtime_context=_task_runtime_context_for_tool_build(
@@ -2641,8 +2649,10 @@ class AgentServiceManager:
                     db_task_id=task_id,
                     workspace_owner_id=workspace_owner_id,
                     file_operation_access_version=(
-                        getattr(task, "agent_config", None) or {}
-                    ).get(FILE_OPERATION_ACCESS_VERSION_KEY),
+                        _file_operation_access_version_from_agent_config(
+                            getattr(task, "agent_config", None)
+                        )
+                    ),
                     scope=scope,
                     task_runtime_context=_task_runtime_context_for_tool_build(
                         task_id=task_id,
