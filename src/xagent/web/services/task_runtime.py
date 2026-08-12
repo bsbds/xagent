@@ -25,12 +25,17 @@ from ...config import (
 from ...core.execution_scope import EXECUTION_SCOPE_AGENT_CONFIG_KEY
 from ...core.task_runtime import (
     EMPTY_TASK_RUNTIME_CONTRIBUTION,
-    FILE_OPERATION_ACCESS_VERSION,
+)
+from ...core.task_runtime import (
+    FILE_OPERATION_ACCESS_VERSION as FILE_OPERATION_ACCESS_VERSION,
+)
+from ...core.task_runtime import (
     FILE_OPERATION_ACCESS_VERSION_KEY,
     MAX_TASK_RUNTIME_EXTENSIONS,
     MAX_TASK_RUNTIME_JSON_BYTES,
     MAX_TASK_RUNTIME_PUBLIC_METADATA_BYTES,
     MAX_TASK_RUNTIME_REQUEST_BYTES,
+    SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS,
     TaskRuntimeContext,
     TaskRuntimeContribution,
     TaskRuntimeExtensionProvider,
@@ -207,7 +212,11 @@ def requires_exact_file_operation_scope(task: Any) -> bool:
     marker = config.get(FILE_OPERATION_ACCESS_VERSION_KEY)
     if marker is None:
         return False
-    if isinstance(marker, bool) or marker != FILE_OPERATION_ACCESS_VERSION:
+    if (
+        isinstance(marker, bool)
+        or not isinstance(marker, int)
+        or marker not in SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS
+    ):
         raise FileOperationAccessPolicyError(
             "File Operation access policy version is unsupported"
         )

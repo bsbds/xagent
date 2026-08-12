@@ -47,6 +47,12 @@ Both queries must return no rows. If either query returns a task, stop the deplo
 
 Do not backfill historical tasks. Marker absence is the compatibility boundary for this rollout.
 
+For a future marker version, first deploy readers that accept both the current and
+new versions while writers still emit the current version. Only change writers
+after every API and task-execution worker accepts the new version. Never replace
+the current accepted version in one step because persisted tasks must remain
+readable throughout the rollout.
+
 ### Verification and monitoring
 
 Create one widget task and one shared-link task after the rollout. Make sure that each task can use its own uploaded file.

@@ -1051,13 +1051,17 @@ class TaskWorkspace:
 
         from ..web.models.task import Task
         from ..web.services.task_runtime import (
-            FILE_OPERATION_ACCESS_VERSION,
             FileOperationAccessPolicyError,
             requires_exact_file_operation_scope,
         )
         from .storage.manager import create_db_session
+        from .task_runtime import SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS
 
-        if isinstance(marker, bool) or marker != FILE_OPERATION_ACCESS_VERSION:
+        if (
+            isinstance(marker, bool)
+            or not isinstance(marker, int)
+            or marker not in SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS
+        ):
             raise FileOperationAccessPolicyError(
                 "File Operation workspace policy version is unsupported"
             )

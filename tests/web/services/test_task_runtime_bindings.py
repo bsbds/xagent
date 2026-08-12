@@ -382,6 +382,15 @@ def test_file_operation_scope_marker_is_strict_and_new_public_only() -> None:
                 "__xagent_file_operation_access_version": True,
             },
         ),
+        SimpleNamespace(
+            id=7,
+            user_id=7,
+            source="shared_link",
+            agent_config={
+                "auth_mode": "share",
+                "__xagent_file_operation_access_version": [1],
+            },
+        ),
     ):
         with pytest.raises(FileOperationAccessPolicyError):
             requires_exact_file_operation_scope(malformed)
