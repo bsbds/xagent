@@ -211,6 +211,13 @@ class WorkspaceFileOperations:
         try:
             self.workspace.requires_exact_file_operation_scope()
         except Exception as exc:
+            logger.warning(
+                "File Operation workspace authority validation failed for "
+                "workspace %s and task %s",
+                self.workspace.id,
+                self.workspace.db_task_id,
+                exc_info=True,
+            )
             raise ValueError("File Operation unavailable") from exc
 
     def read_file(

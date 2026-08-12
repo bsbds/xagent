@@ -1355,6 +1355,13 @@ class TaskWorkspace:
         except Exception as exc:
             # Preserve File Operation's public not-found shape while failing
             # closed on malformed policy state or database infrastructure.
+            logger.warning(
+                "File Operation selector policy validation failed for "
+                "workspace %s and task %s",
+                self.id,
+                self.db_task_id,
+                exc_info=True,
+            )
             raise FileNotFoundError(f"File not found: {file_path}") from exc
         if not exact_scope:
             return self.resolve_path_with_search(file_path)
@@ -2018,6 +2025,13 @@ class TaskWorkspace:
         try:
             exact_scope = self.requires_exact_file_operation_scope()
         except Exception as exc:
+            logger.warning(
+                "File Operation listing policy validation failed for "
+                "workspace %s and task %s",
+                self.id,
+                self.db_task_id,
+                exc_info=True,
+            )
             raise ValueError("File listing unavailable") from exc
         return self.list_all_user_files(
             include_workspace_files,

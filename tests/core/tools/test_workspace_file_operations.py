@@ -5,6 +5,7 @@ This module tests the core workspace file operations functionality,
 focusing on JSON and CSV workspace writes and reads.
 """
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -776,7 +777,7 @@ class TestWorkspaceFileOperations:
         ["text", "json", "csv", "mkdir", "list"],
     )
     def test_marked_public_workspace_operations_revalidate_authority(
-        self, public_file_scope_context, operation
+        self, public_file_scope_context, operation, caplog
     ):
         context = public_file_scope_context
         context.workspace.owner_user_id = int(context.owner.id) + 1
@@ -792,6 +793,13 @@ class TestWorkspaceFileOperations:
                 context.ops.create_directory("blocked")
             else:
                 context.ops.list_files(".")
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "workspace authority validation failed" in record.message
+            and record.exc_info is not None
+            for record in caplog.records
+        )
 
     @pytest.mark.parametrize("operation", ["read", "list"])
     def test_marked_public_file_operation_does_not_reuse_bound_session(
@@ -853,7 +861,7 @@ class TestWorkspaceFileOperations:
         assert WorkspaceFileOperations(workspace).read_file("local.txt") == "local"
 
     def test_marked_public_policy_load_failure_uses_file_not_found_shape(
-        self, public_file_scope_context, monkeypatch
+        self, public_file_scope_context, monkeypatch, caplog
     ):
         context = public_file_scope_context
 
@@ -869,8 +877,15 @@ class TestWorkspaceFileOperations:
         with pytest.raises(FileNotFoundError, match="File not found"):
             context.ops.read_file(context.current_record.file_id)
 
+        assert any(
+            record.levelno == logging.WARNING
+            and "selector policy validation failed" in record.message
+            and record.exc_info is not None
+            for record in caplog.records
+        )
+
     def test_marked_public_malformed_listing_uses_value_error_shape(
-        self, public_file_scope_context
+        self, public_file_scope_context, caplog
     ):
         context = public_file_scope_context
         context.marked_task.agent_config = {
@@ -881,6 +896,13 @@ class TestWorkspaceFileOperations:
 
         with pytest.raises(ValueError, match="File listing unavailable"):
             context.ops.list_all_user_files(include_workspace_files=False)
+
+        assert any(
+            record.levelno == logging.WARNING
+            and "listing policy validation failed" in record.message
+            and record.exc_info is not None
+            for record in caplog.records
+        )
 
     def test_marked_public_missing_owner_fails_before_legacy_allow(
         self, public_file_scope_context, tmp_path
