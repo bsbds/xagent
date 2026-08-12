@@ -2014,32 +2014,6 @@ class TaskWorkspace:
             logger.warning(f"get_file_id_from_path: Exception: {e}")
             return None
 
-    def list_file_operation_files(
-        self,
-        include_workspace_files: bool = True,
-        limit: int = DEFAULT_USER_FILE_LIST_LIMIT,
-        offset: int = 0,
-    ) -> Dict[str, Any]:
-        """List files under the policy for the File Operation tool only."""
-
-        try:
-            exact_scope = self.requires_exact_file_operation_scope()
-        except Exception as exc:
-            logger.warning(
-                "File Operation listing policy validation failed for "
-                "workspace %s and task %s",
-                self.id,
-                self.db_task_id,
-                exc_info=True,
-            )
-            raise ValueError("File listing unavailable") from exc
-        return self.list_all_user_files(
-            include_workspace_files,
-            limit,
-            offset,
-            _exact_task_scope=exact_scope,
-        )
-
     def list_all_user_files(
         self,
         include_workspace_files: bool = True,

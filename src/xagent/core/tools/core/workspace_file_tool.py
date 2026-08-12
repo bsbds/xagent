@@ -704,8 +704,22 @@ class WorkspaceFileOperations:
             Dictionary with list of all user files with metadata including file_id,
             filename, storage_path, size, mime_type, etc.
         """
-        return self.workspace.list_file_operation_files(
-            include_workspace_files, limit, offset
+        try:
+            exact_scope = self.workspace.requires_exact_file_operation_scope()
+        except Exception as exc:
+            logger.warning(
+                "File Operation listing policy validation failed for "
+                "workspace %s and task %s",
+                self.workspace.id,
+                self.workspace.db_task_id,
+                exc_info=True,
+            )
+            raise ValueError("File listing unavailable") from exc
+        return self.workspace.list_all_user_files(
+            include_workspace_files,
+            limit,
+            offset,
+            _exact_task_scope=exact_scope,
         )
 
     def edit_file(
