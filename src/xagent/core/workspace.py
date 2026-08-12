@@ -1347,7 +1347,7 @@ class TaskWorkspace:
         Unmarked tasks delegate byte-for-byte to the shared resolver. Marked
         public tasks may use workspace-local files or external files backed by
         an exact owner/task record; the ambient external-directory allowlist is
-        never authority for File Operation in that mode.
+        never sufficient authority on its own in that mode.
         """
 
         try:
