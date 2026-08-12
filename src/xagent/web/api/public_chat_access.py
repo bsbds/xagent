@@ -17,6 +17,10 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ...core.task_runtime import (
+    FILE_OPERATION_ACCESS_VERSION,
+    FILE_OPERATION_ACCESS_VERSION_KEY,
+)
 from ..auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from ..jwt_validation import (
     has_matching_temporal_claim_conversion_failure,
@@ -42,11 +46,7 @@ from ..services.share_rate_limit import (
     get_share_rate_limiter,
     remote_ip_from_request,
 )
-from ..services.task_runtime import (
-    FILE_OPERATION_ACCESS_VERSION,
-    FILE_OPERATION_ACCESS_VERSION_KEY,
-    sanitize_client_agent_config,
-)
+from ..services.task_runtime import sanitize_client_agent_config
 from ..services.workforce_runs import create_workforce_run
 from ..utils.db_timezone import format_datetime_for_api
 from .files import store_uploaded_files
