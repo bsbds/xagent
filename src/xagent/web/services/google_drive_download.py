@@ -25,21 +25,6 @@ class GoogleDriveDownloadTimeout(GoogleDriveDownloadError):
     """Report a Drive operation that exceeded the caller's wait limit."""
 
 
-def _update_resource_key_header(
-    headers: dict[str, str],
-    *,
-    file_id: str,
-    operation: dict[str, Any],
-) -> None:
-    """Apply the resource key returned in Drive operation metadata."""
-    metadata = operation.get("metadata")
-    if not isinstance(metadata, dict):
-        return
-    resource_key = metadata.get("resourceKey")
-    if resource_key:
-        headers["X-Goog-Drive-Resource-Keys"] = f"{file_id}/{resource_key}"
-
-
 def download_google_workspace_file(
     *,
     service: Any,
@@ -56,8 +41,9 @@ def download_google_workspace_file(
     Drive returns an operation instead of file bytes. This synchronous helper
     owns that protocol so callers can move the complete blocking operation to a
     worker thread. When ``max_bytes`` is set, the stream aborts before writing
-    a chunk that would cross the limit. On mid-stream failure, ``destination``
-    may contain a partial write; callers are responsible for cleanup.
+    a chunk that would cross the limit. Any failure after opening
+    ``destination`` may leave an empty or partially written file; callers are
+    responsible for cleanup.
     """
     headers: dict[str, str] = {}
     if resource_key:
@@ -68,7 +54,6 @@ def download_google_workspace_file(
     operation = cast(
         dict[str, Any], request.execute(num_retries=_GOOGLE_API_NUM_RETRIES)
     )
-    _update_resource_key_header(headers, file_id=file_id, operation=operation)
     started_at = monotonic()
     deadline = started_at + timeout_seconds
     logger.info(
@@ -101,7 +86,6 @@ def download_google_workspace_file(
             )
         except Exception as exc:
             raise GoogleDriveDownloadError("Drive operation polling failed") from exc
-        _update_resource_key_header(headers, file_id=file_id, operation=operation)
         poll_delay_seconds = min(poll_delay_seconds * 2, 60.0)
 
     if "error" in operation:

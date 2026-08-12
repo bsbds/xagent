@@ -425,40 +425,6 @@ def test_download_google_workspace_file_sends_supplied_resource_key_on_start(
     assert session.get_calls[0]["headers"] == expected_headers
 
 
-def test_download_google_workspace_file_prefers_operation_resource_key(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """Drive operation metadata should replace a stale caller resource key."""
-    module = _module()
-    service = _DriveService(
-        {
-            "done": True,
-            "metadata": {"resourceKey": "operation-resource-key"},
-            "response": {"downloadUri": "https://drive.example/download/updated-key"},
-        }
-    )
-    session = _AuthorizedSession(_Response([b"updated-key"]))
-    monkeypatch.setattr(module, "AuthorizedSession", lambda _credentials: session)
-
-    module.download_google_workspace_file(
-        service=service,
-        credentials=object(),
-        file_id="slides-updated-key",
-        mime_type="application/vnd.test.presentation",
-        destination=tmp_path / "slides.pptx",
-        timeout_seconds=600,
-        resource_key="caller-resource-key",
-    )
-
-    assert service.files_resource.request.headers == {
-        "X-Goog-Drive-Resource-Keys": "slides-updated-key/caller-resource-key"
-    }
-    assert session.get_calls[0]["headers"] == {
-        "X-Goog-Drive-Resource-Keys": "slides-updated-key/operation-resource-key"
-    }
-
-
 def test_download_google_workspace_file_sends_resource_key_without_logging_secrets(
     tmp_path: Path,
     monkeypatch: Any,
@@ -466,10 +432,7 @@ def test_download_google_workspace_file_sends_resource_key_without_logging_secre
 ) -> None:
     module = _module()
     service = _DriveService(
-        {
-            "name": "operations/download-shared",
-            "metadata": {"resourceKey": "resource-secret"},
-        },
+        {"name": "operations/download-shared"},
         poll_responses=[
             {
                 "name": "operations/download-shared",
@@ -490,10 +453,11 @@ def test_download_google_workspace_file_sends_resource_key_without_logging_secre
         mime_type="application/vnd.test.presentation",
         destination=tmp_path / "slides.pptx",
         timeout_seconds=600,
+        resource_key="resource-secret",
     )
 
     expected_headers = {"X-Goog-Drive-Resource-Keys": "slides-shared/resource-secret"}
-    assert service.files_resource.request.headers == {}
+    assert service.files_resource.request.headers == expected_headers
     assert service.operations_resource.requests[0].headers == expected_headers
     assert session.get_calls[0]["headers"] == expected_headers
     assert "Drive download operation started file_id=slides-shared" in caplog.text
