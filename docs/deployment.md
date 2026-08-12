@@ -18,7 +18,25 @@ Do not treat this rollout as complete public-file isolation. Restrict those tool
 
 This change has no database migration, backfill, new environment variable, dependency, or infrastructure requirement.
 
-Before deployment, inspect existing `Task.agent_config` values for `__xagent_file_operation_access_version`. If any existing task contains this key, stop the deployment. Select an unused internal key before you continue.
+Before deployment, inspect existing `Task.agent_config` values for `__xagent_file_operation_access_version`. Use the query for the configured database:
+
+```sql
+-- PostgreSQL
+SELECT id
+FROM tasks
+WHERE agent_config ? '__xagent_file_operation_access_version'
+LIMIT 1;
+```
+
+```sql
+-- SQLite with the JSON1 extension
+SELECT id
+FROM tasks
+WHERE json_type(agent_config, '$.__xagent_file_operation_access_version') IS NOT NULL
+LIMIT 1;
+```
+
+Both queries must return no rows. If either query returns a task, stop the deployment. Select an unused internal key before you continue.
 
 ### Deployment and migration steps
 
