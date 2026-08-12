@@ -554,6 +554,13 @@ class TestWorkspaceFileOperations:
         context = public_file_scope_context
 
         assert context.ops.read_file(context.current_record.file_id) == "current"
+        assert (
+            context.ops.read_file(f"file:{context.current_record.file_id}") == "current"
+        )
+        assert (
+            context.ops.read_file(f"file://{context.current_record.file_id}")
+            == "current"
+        )
         assert context.ops.read_file(str(context.current_path)) == "current"
 
         denied = (

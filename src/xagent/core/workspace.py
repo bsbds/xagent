@@ -1035,6 +1035,21 @@ class TaskWorkspace:
         except (TypeError, ValueError, IndexError):
             return None
 
+    @staticmethod
+    def _normalize_file_selector(file_path: str) -> str:
+        """Normalize a file reference without resolving its authority."""
+
+        normalized = str(file_path).strip()
+        referenced_file_id = parse_file_id_ref(normalized)
+        if referenced_file_id is not None:
+            return referenced_file_id
+        if normalized.startswith("file:") and not normalized.startswith("file://"):
+            # Preserve legacy workspace path refs such as
+            # ``file:output/report.csv``. They are paths, not file ids, and
+            # still pass through the normal workspace containment checks.
+            return normalized[5:].strip()
+        return normalized
+
     def requires_exact_file_operation_scope(self) -> bool:
         """Return whether File Operation must use exact owner/task authority.
 
@@ -1377,12 +1392,7 @@ class TaskWorkspace:
         if self.owner_user_id is None or self.db_task_id is None:
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        normalized = str(file_path).strip()
-        referenced_file_id = parse_file_id_ref(normalized)
-        if referenced_file_id is not None:
-            normalized = referenced_file_id
-        elif normalized.startswith("file:") and not normalized.startswith("file://"):
-            normalized = normalized[5:].strip()
+        normalized = self._normalize_file_selector(file_path)
 
         # Exact-scope resolution is worker-dispatched by File Operation, so
         # its record lookup must not reuse a caller-owned session.
@@ -1659,17 +1669,7 @@ class TaskWorkspace:
             ValueError: If path is outside both workspace and allowed external directories
             FileNotFoundError: If relative path doesn't exist in any searched directory
         """
-        normalized_input = file_path.strip()
-        referenced_file_id = parse_file_id_ref(normalized_input)
-        if referenced_file_id is not None:
-            normalized_input = referenced_file_id
-        elif normalized_input.startswith("file:") and not normalized_input.startswith(
-            "file://"
-        ):
-            # Preserve legacy workspace path refs such as
-            # ``file:output/report.csv``. They are paths, not file ids, and
-            # still pass through the normal workspace containment checks.
-            normalized_input = normalized_input[5:].strip()
+        normalized_input = self._normalize_file_selector(file_path)
 
         path = Path(normalized_input)
 
