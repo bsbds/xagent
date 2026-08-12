@@ -4,15 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const apiRequestMock = vi.hoisted(() => vi.fn())
 const toastErrorMock = vi.hoisted(() => vi.fn())
+const translateMock = vi.hoisted(() => vi.fn((key: string) => key))
 
 vi.mock("@/contexts/auth-context", () => ({
   useAuth: () => ({ token: "token" }),
 }))
 
 vi.mock("@/contexts/i18n-context", () => ({
-  useI18n: () => ({
-    t: (key: string) => key,
-  }),
+  useI18n: () => ({ t: translateMock }),
 }))
 
 vi.mock("@/lib/api-wrapper", () => ({
@@ -112,6 +111,7 @@ describe("CloudConnectDialog", () => {
     vi.stubGlobal("React", React)
     apiRequestMock.mockReset()
     toastErrorMock.mockReset()
+    translateMock.mockClear()
     apiRequestMock.mockImplementation((url: string) => {
       if (url === "http://api.local/api/cloud/accounts?provider=google-drive") {
         return Promise.resolve(jsonResponse([
@@ -192,6 +192,10 @@ describe("CloudConnectDialog", () => {
       fireEvent.click(screen.getByText(`File ${index}.pdf`))
     }
 
+    expect(translateMock).toHaveBeenCalledWith(
+      "kb.dialog.cloudConnect.selectedFiles.limitReached",
+      { count: 5 },
+    )
     expect(toastErrorMock).toHaveBeenCalledWith(
       "kb.dialog.cloudConnect.selectedFiles.limitReached"
     )
