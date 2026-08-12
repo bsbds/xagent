@@ -3025,6 +3025,7 @@ def test_kb_ingest_cloud_downloads_native_google_slides_as_pptx(
         patch("xagent.web.api.kb.build", return_value=drive_service),
         patch(
             "xagent.web.api.kb.download_google_workspace_file",
+            autospec=True,
             side_effect=_download_with_lro,
         ),
         patch("xagent.web.api.kb.run_document_ingestion", side_effect=_capture_ingest),
@@ -3198,6 +3199,143 @@ def test_kb_ingest_cloud_uses_drive_metadata_for_binary_file(test_env, temp_uplo
         )
     finally:
         session.close()
+
+
+def test_kb_ingest_cloud_downloads_native_slides_when_native_size_exceeds_limit(
+    test_env,
+    temp_uploads,
+    monkeypatch,
+):
+    """Native editor size must not reject a smaller exported PPTX artifact."""
+    from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
+
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+    metadata_request = _fake_drive_metadata_request(
+        "drive-large-native",
+        "Large Native Deck",
+        "application/vnd.google-apps.presentation",
+    )
+    metadata_request.execute.return_value["size"] = "5"
+    drive_service = MagicMock()
+    drive_service.files.return_value.get.return_value = metadata_request
+
+    def _download(**kwargs):
+        Path(kwargs["destination"]).write_bytes(b"pptx")
+
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE", 4)
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE_LABEL", "4B")
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=drive_service),
+        patch(
+            "xagent.web.api.kb.download_google_workspace_file",
+            autospec=True,
+            side_effect=_download,
+        ) as download,
+        patch(
+            "xagent.web.api.kb.run_document_ingestion",
+            return_value=IngestionResult(
+                status="success",
+                doc_id="slides-doc-id",
+                parse_hash="hash",
+                failed_step="",
+                message="success",
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_large_native",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-large-native",
+                        "fileName": "stale-name",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "success"
+    download.assert_called_once()
+
+
+def test_kb_ingest_cloud_accepts_drive_file_at_exact_size_limit(
+    test_env,
+    temp_uploads,
+    monkeypatch,
+):
+    """A blob whose metadata size equals the limit remains valid."""
+    from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
+
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+    metadata_request = _fake_drive_metadata_request(
+        "drive-exact-size",
+        "exact.pdf",
+        "application/pdf",
+    )
+    metadata_request.execute.return_value["size"] = "4"
+
+    class _FakeFilesService:
+        def get(self, **_kwargs):
+            return metadata_request
+
+        def get_media(self, **_kwargs):
+            return object()
+
+    class _FakeDriveService:
+        def files(self):
+            return _FakeFilesService()
+
+    class _FakeDownloader:
+        def __init__(self, fh, _request_file):
+            self._fh = fh
+
+        def next_chunk(self):
+            self._fh.write(b"1234")
+            return None, True
+
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE", 4)
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE_LABEL", "4B")
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
+        patch("xagent.web.api.kb.MediaIoBaseDownload", _FakeDownloader),
+        patch(
+            "xagent.web.api.kb.run_document_ingestion",
+            return_value=IngestionResult(
+                status="success",
+                doc_id="exact-doc-id",
+                parse_hash="hash",
+                failed_step="",
+                message="success",
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_exact_size",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-exact-size",
+                        "fileName": "stale.pdf",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "success"
 
 
 def test_kb_ingest_cloud_rejects_oversized_drive_file_before_download(
@@ -3590,6 +3728,72 @@ def test_kb_ingest_cloud_rejects_extensionless_binary_file(test_env, temp_upload
     assert not [path for path in temp_uploads.rglob("*") if path.is_file()]
 
 
+@pytest.mark.parametrize(
+    "metadata_name", ["Quarterly Review.pptx", "Quarterly Review.PPTX"]
+)
+def test_kb_ingest_cloud_native_slides_preserves_existing_pptx_suffix(
+    metadata_name,
+    test_env,
+    temp_uploads,
+):
+    """Native Slides names that already end in PPTX must not gain a second suffix."""
+    from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
+
+    app, headers, _user, TestingSessionLocal = test_env
+    client = TestClient(app)
+    drive_service = MagicMock()
+    drive_service.files.return_value.get.return_value = _fake_drive_metadata_request(
+        "drive-slides-suffixed",
+        metadata_name,
+        "application/vnd.google-apps.presentation",
+    )
+
+    def _download(**kwargs):
+        Path(kwargs["destination"]).write_bytes(b"pptx")
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=drive_service),
+        patch(
+            "xagent.web.api.kb.download_google_workspace_file",
+            autospec=True,
+            side_effect=_download,
+        ),
+        patch(
+            "xagent.web.api.kb.run_document_ingestion",
+            return_value=IngestionResult(
+                status="success",
+                doc_id="slides-doc-id",
+                parse_hash="hash",
+                failed_step="",
+                message="success",
+            ),
+        ),
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_slides_suffix",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-slides-suffixed",
+                        "fileName": "stale-name",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "success"
+    session = TestingSessionLocal()
+    try:
+        assert session.query(UploadedFile).one().filename == metadata_name
+    finally:
+        session.close()
+
+
 def test_kb_ingest_cloud_download_failure_removes_partial_file(test_env, temp_uploads):
     """Failed native Slides downloads should remove partial local state."""
     app, headers, _user, TestingSessionLocal = test_env
@@ -3616,6 +3820,7 @@ def test_kb_ingest_cloud_download_failure_removes_partial_file(test_env, temp_up
         patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
         patch(
             "xagent.web.api.kb.download_google_workspace_file",
+            autospec=True,
             side_effect=_fail_download,
         ),
         patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
@@ -3684,6 +3889,7 @@ def test_kb_ingest_cloud_download_failure_restores_existing_file(
         patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
         patch(
             "xagent.web.api.kb.download_google_workspace_file",
+            autospec=True,
             side_effect=_fail_download,
         ),
         patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
@@ -3708,6 +3914,37 @@ def test_kb_ingest_cloud_download_failure_restores_existing_file(
     run_ingestion.assert_not_called()
     assert file_path.read_bytes() == b"previous-pptx"
     assert list(file_path.parent.glob("*.rollback-*")) == []
+
+
+@pytest.mark.parametrize(
+    "original_filename",
+    ["a" * 255 + ".pptx", "資料" * 100 + ".pptx"],
+)
+def test_build_cloud_storage_filename_respects_utf8_filesystem_limit(
+    original_filename,
+    temp_uploads,
+) -> None:
+    """Cloud filename truncation must preserve its digest and extension."""
+    from xagent.web.api.kb import _build_cloud_storage_filename
+
+    storage_filename = _build_cloud_storage_filename(original_filename, "drive-file-1")
+
+    assert len(storage_filename.encode("utf-8")) <= 255
+    assert storage_filename.endswith("__30b487d9d8d6.pptx")
+    destination = temp_uploads / storage_filename
+    destination.write_bytes(b"content")
+    assert destination.read_bytes() == b"content"
+
+
+def test_build_cloud_storage_filename_is_deterministic_after_truncation() -> None:
+    """Truncating a stem must not discard the file-ID collision guard."""
+    from xagent.web.api.kb import _build_cloud_storage_filename
+
+    original_filename = "資料" * 100 + ".pptx"
+
+    first = _build_cloud_storage_filename(original_filename, "drive-file-1")
+    assert first == _build_cloud_storage_filename(original_filename, "drive-file-1")
+    assert first != _build_cloud_storage_filename(original_filename, "drive-file-2")
 
 
 def test_kb_ingest_cloud_passes_file_id_to_pipeline(test_env, temp_uploads):
@@ -4044,6 +4281,7 @@ def test_kb_ingest_cloud_returns_download_failure_after_restore_success(
         patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
         patch(
             "xagent.web.api.kb.download_google_workspace_file",
+            autospec=True,
             side_effect=_fail_workspace_download,
         ),
         patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
@@ -5793,6 +6031,65 @@ def test_list_collections_skips_document_scan_when_duplicate_names_have_metadata
     assert len(payload["collections"][0]["document_metadata"]) == 2
 
 
+@pytest.mark.parametrize("field", ["fileId", "resourceKey"])
+@pytest.mark.parametrize("line_break", ["\r", "\n"])
+def test_kb_ingest_cloud_rejects_line_breaks_in_drive_header_values(
+    field,
+    line_break,
+    test_env,
+) -> None:
+    """Drive identifiers must not permit HTTP header line breaks."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+    file_payload = {
+        "provider": "google-drive",
+        "fileId": "drive:file_1-2",
+        "fileName": "document.pdf",
+        "resourceKey": "resource:key_1-2",
+    }
+    file_payload[field] = f"valid{line_break}injected"
+
+    response = client.post(
+        "/api/kb/ingest-cloud",
+        json={"collection": "cloud_header_validation", "files": [file_payload]},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == field
+
+
+def test_kb_ingest_cloud_accepts_punctuation_in_drive_identifiers(test_env) -> None:
+    """Header safety validation must not invent a narrower Drive identifier grammar."""
+    from fastapi import HTTPException
+
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+
+    with patch(
+        "xagent.web.api.kb.get_google_credentials",
+        side_effect=HTTPException(status_code=401, detail="validation passed"),
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_identifier_punctuation",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive:file_1-2",
+                        "fileName": "document.pdf",
+                        "resourceKey": "resource:key_1-2",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["message"] == "Authentication error: validation passed"
+
+
 def test_kb_ingest_cloud_empty_batch_is_rejected(test_env) -> None:
     """An empty batch publishes nothing, so it must not report success."""
     app, headers, _user, _ = test_env
@@ -5813,6 +6110,31 @@ def test_kb_ingest_cloud_empty_batch_is_rejected(test_env) -> None:
 
     assert response.status_code == 422
     metadata_store.save_collection_config.assert_not_awaited()
+
+
+def test_kb_ingest_cloud_batch_of_exactly_five_files_is_accepted(test_env) -> None:
+    """The request boundary includes one complete five-worker wave."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/kb/ingest-cloud",
+        json={
+            "collection": "cloud_full_wave",
+            "files": [
+                {
+                    "provider": "unsupported",
+                    "fileId": f"file-{index}",
+                    "fileName": f"document-{index}.pdf",
+                }
+                for index in range(5)
+            ],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()) == 5
 
 
 def test_kb_ingest_cloud_batch_over_five_files_is_rejected(test_env) -> None:

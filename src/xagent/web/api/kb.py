@@ -3359,9 +3359,9 @@ def _effective_knowledge_base_user(
 
 class CloudFile(BaseModel):
     provider: str
-    fileId: str
+    fileId: str = Field(pattern=r"^[^\r\n]*$")
     fileName: str
-    resourceKey: Optional[str] = None
+    resourceKey: Optional[str] = Field(default=None, pattern=r"^[^\r\n]*$")
 
 
 class CloudIngestRequest(BaseModel):
@@ -3572,12 +3572,17 @@ async def _save_collection_config_after_ingest(
 
 
 def _build_cloud_storage_filename(original_filename: str, file_id: str) -> str:
-    """Generate a collision-resistant local filename for cloud ingests."""
+    """Generate a collision-resistant filename within filesystem byte limits."""
     original_path = Path(original_filename)
     suffix = original_path.suffix
-    stem = original_path.stem or "cloud-file"
     digest = hashlib.sha256(file_id.encode("utf-8")).hexdigest()[:12]
-    return f"{stem}__{digest}{suffix}"
+    trailer = f"__{digest}{suffix}"
+    max_stem_bytes = _MAX_FILESYSTEM_FILENAME_BYTES - len(trailer.encode("utf-8"))
+    stem = _truncate_utf8_bytes(
+        original_path.stem or "cloud-file",
+        max_stem_bytes,
+    )
+    return f"{stem}{trailer}"
 
 
 def _raise_if_list_collections_failed(
@@ -4703,7 +4708,14 @@ async def ingest_cloud(
                         raise GoogleDriveMetadataValidationError(
                             "Google Drive returned an invalid file size"
                         ) from exc
-                    if file_size > MAX_FILE_SIZE:
+                    drive_mime_type = str(metadata_mime_type)
+                    is_native_google_slides = (
+                        drive_mime_type == _GOOGLE_SLIDES_MIME_TYPE
+                    )
+                    # Drive reports the native editor-file size here, not the
+                    # generated PPTX size. The export stream enforces its own
+                    # byte limit while it is written.
+                    if not is_native_google_slides and file_size > MAX_FILE_SIZE:
                         return KBApiOperationResult(
                             result=IngestionResult(
                                 status="error",
@@ -4715,10 +4727,6 @@ async def ingest_cloud(
                             )
                         )
 
-                    drive_mime_type = str(metadata_mime_type)
-                    is_native_google_slides = (
-                        drive_mime_type == _GOOGLE_SLIDES_MIME_TYPE
-                    )
                     safe_filename = source_filename
                     if is_native_google_slides and not safe_filename.lower().endswith(
                         ".pptx"
