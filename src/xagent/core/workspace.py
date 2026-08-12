@@ -1294,6 +1294,9 @@ class TaskWorkspace:
         """Return whether a record-backed path stays in configured storage."""
 
         resolved = path.resolve()
+        # The materialization cache is host-shared, so containment within it
+        # is never sufficient authority. Callers reach this check only after an
+        # exact UploadedFile owner/task/status/storage-key authorization.
         roots = [
             self.base_dir.resolve(),
             self.workspace_dir.resolve(),
