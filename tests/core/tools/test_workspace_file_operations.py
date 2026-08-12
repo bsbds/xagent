@@ -548,10 +548,20 @@ class TestWorkspaceFileOperations:
             == "current"
         )
 
+    @pytest.mark.parametrize(
+        ("source", "auth_mode"),
+        [("shared_link", "share"), ("widget", "widget")],
+    )
     def test_marked_public_reads_only_workspace_or_exact_task_records(
-        self, public_file_scope_context
+        self, public_file_scope_context, source, auth_mode
     ):
         context = public_file_scope_context
+        context.marked_task.source = source
+        context.marked_task.agent_config = {
+            "auth_mode": auth_mode,
+            "__xagent_file_operation_access_version": 1,
+        }
+        context.db.commit()
 
         assert context.ops.read_file(context.current_record.file_id) == "current"
         assert (
