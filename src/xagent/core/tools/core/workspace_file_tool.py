@@ -512,9 +512,11 @@ class WorkspaceFileOperations:
         recursive: bool = False,
     ) -> Dict[str, Any]:
         """List files in workspace directory (default: list all directories)"""
-        self._require_workspace_authority()
-        # If no directory path specified, return all directories' files
+        # The workspace-wide branch has no selector resolver to perform this
+        # check. Named directories delegate to ``_resolve_path``, which already
+        # revalidates marked-task authority before resolving the selector.
         if directory_path == ".":
+            self._require_workspace_authority()
             return self.workspace.get_all_files()
 
         # If specific directory is specified, only list files in that directory

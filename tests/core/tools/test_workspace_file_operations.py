@@ -565,6 +565,29 @@ class TestWorkspaceFileOperations:
                 context.ops.read_file(reference)
             assert context.ops.file_exists(reference) is False
 
+    def test_marked_public_named_directory_listing_validates_authority_once(
+        self, public_file_scope_context, monkeypatch
+    ):
+        context = public_file_scope_context
+        calls = 0
+        original = context.workspace.requires_exact_file_operation_scope
+
+        def count_authority_checks():
+            nonlocal calls
+            calls += 1
+            return original()
+
+        monkeypatch.setattr(
+            context.workspace,
+            "requires_exact_file_operation_scope",
+            count_authority_checks,
+        )
+        (context.workspace.output_dir / "listed").mkdir()
+
+        context.ops.list_files("listed")
+
+        assert calls == 1
+
     def test_marked_public_output_registers_to_exact_task(
         self, public_file_scope_context
     ):
