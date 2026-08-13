@@ -3338,6 +3338,94 @@ def test_kb_ingest_cloud_accepts_drive_file_at_exact_size_limit(
     assert response.json()[0]["status"] == "success"
 
 
+@pytest.mark.parametrize("had_existing_file", [False, True])
+def test_kb_ingest_cloud_rejects_binary_download_that_grows_over_limit(
+    had_existing_file,
+    test_env,
+    temp_uploads,
+    monkeypatch,
+):
+    """Actual binary bytes must remain bounded after the metadata size check."""
+    app, headers, user, TestingSessionLocal = test_env
+    client = TestClient(app)
+    metadata_request = _fake_drive_metadata_request(
+        "drive-growing-file",
+        "growing.pdf",
+        "application/pdf",
+    )
+    metadata_request.execute.return_value["size"] = "4"
+
+    class _FakeFilesService:
+        def get(self, **_kwargs):
+            return metadata_request
+
+        def get_media(self, **_kwargs):
+            return object()
+
+    class _FakeDriveService:
+        def files(self):
+            return _FakeFilesService()
+
+    class _GrowingDownloader:
+        def __init__(self, fh, _request_file):
+            self._fh = fh
+
+        def next_chunk(self):
+            self._fh.write(b"12345")
+            return None, True
+
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE", 4)
+    monkeypatch.setattr("xagent.web.api.kb.MAX_FILE_SIZE_LABEL", "4B")
+    from xagent.web.api.kb import _build_cloud_storage_filename
+
+    file_path = (
+        temp_uploads
+        / f"user_{user.id}"
+        / _build_cloud_storage_filename("growing.pdf", "drive-growing-file")
+    )
+    if had_existing_file:
+        file_path.parent.mkdir(parents=True)
+        file_path.write_bytes(b"previous")
+
+    with (
+        patch("xagent.web.api.kb.get_google_credentials", return_value=object()),
+        patch("xagent.web.api.kb.build", return_value=_FakeDriveService()),
+        patch("xagent.web.api.kb.MediaIoBaseDownload", _GrowingDownloader),
+        patch("xagent.web.api.kb.run_document_ingestion") as run_ingestion,
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_growing_binary",
+                "files": [
+                    {
+                        "provider": "google-drive",
+                        "fileId": "drive-growing-file",
+                        "fileName": "stale.pdf",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["message"] == (
+        "Download failed: File size exceeds maximum limit of 4B"
+    )
+    run_ingestion.assert_not_called()
+    if had_existing_file:
+        assert file_path.read_bytes() == b"previous"
+        assert list(file_path.parent.glob("*.rollback-*")) == []
+    else:
+        assert not [path for path in temp_uploads.rglob("*") if path.is_file()]
+
+    session = TestingSessionLocal()
+    try:
+        assert session.query(UploadedFile).count() == 0
+    finally:
+        session.close()
+
+
 def test_kb_ingest_cloud_rejects_oversized_drive_file_before_download(
     test_env,
     temp_uploads,

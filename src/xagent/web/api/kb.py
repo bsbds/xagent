@@ -4,6 +4,7 @@ import asyncio
 import functools
 import hashlib
 import inspect
+import io
 import json
 import logging
 import mimetypes
@@ -659,6 +660,24 @@ _BACKGROUND_INGEST_STAGING_DIR = ".background-ingest"
 class UploadCopyResult:
     total_size: int
     sha256: str
+
+
+class _LimitedWriter(io.BufferedWriter):
+    """Reject a write before a cloud download can exceed its byte limit."""
+
+    def __init__(self, raw: io.FileIO, *, max_bytes: int) -> None:
+        super().__init__(raw)
+        self._max_bytes = max_bytes
+        self._written = 0
+
+    def write(self, data: Any) -> int:
+        if self._written + len(data) > self._max_bytes:
+            raise ValueError(
+                f"File size exceeds maximum limit of {MAX_FILE_SIZE_LABEL}"
+            )
+        written = super().write(data)
+        self._written += written
+        return written
 
 
 def _like_contains_pattern(value: str) -> str:
@@ -4812,11 +4831,18 @@ async def ingest_cloud(
                             )
                             if drive_request_headers:
                                 request_file.headers.update(drive_request_headers)
-                            with open(file_path, "wb") as fh:
-                                downloader = MediaIoBaseDownload(fh, request_file)
-                                done = False
-                                while done is False:
-                                    _status, done = downloader.next_chunk()
+                            with open(file_path, "wb", buffering=0) as raw_file:
+                                with _LimitedWriter(
+                                    raw_file,
+                                    max_bytes=MAX_FILE_SIZE,
+                                ) as output_file:
+                                    downloader = MediaIoBaseDownload(
+                                        output_file,
+                                        request_file,
+                                    )
+                                    done = False
+                                    while done is False:
+                                        _status, done = downloader.next_chunk()
 
                         if is_native_google_slides:
                             logger.info(
