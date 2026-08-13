@@ -1085,6 +1085,9 @@ class TaskWorkspace:
         from .storage.manager import create_db_session
         from .task_runtime import SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS
 
+        # Validate the propagated workspace marker independently. The task's
+        # persisted marker is loaded and revalidated at the database authority
+        # boundary below so construction-time state cannot substitute for it.
         if (
             isinstance(marker, bool)
             or not isinstance(marker, int)
