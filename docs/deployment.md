@@ -16,6 +16,8 @@ This rollout isolates only the File Operation tool family. Other tools that read
 
 Do not treat this rollout as complete public-file isolation. Restrict those tools separately when a public deployment requires a task-wide boundary across every file-capable tool.
 
+Isolation is task-level, not agent-level: delegated agents within the same task inherit the parent task identity and share that task's File Operation file set.
+
 ### Prerequisites and configuration
 
 This change has no database migration, backfill, new environment variable, dependency, or infrastructure requirement.
