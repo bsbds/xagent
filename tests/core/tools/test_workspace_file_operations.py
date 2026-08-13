@@ -635,6 +635,35 @@ class TestWorkspaceFileOperations:
         assert str(missing.value) == "File not found: missing-file-id"
         assert str(foreign.value) == f"File not found: {context.other_record.file_id}"
 
+    def test_marked_public_taskless_durable_id_does_not_materialize(
+        self, public_file_scope_context, monkeypatch
+    ):
+        from xagent.web.services.managed_file_ref import ManagedFileRef
+
+        context = public_file_scope_context
+        taskless = UploadedFile(
+            file_id="taskless-durable-selector",
+            user_id=context.owner.id,
+            task_id=None,
+            filename="taskless.txt",
+            storage_path=str(context.external_dir / "missing-taskless.txt"),
+            storage_key=f"users/{context.owner.id}/uploads/taskless/file.txt",
+            storage_status="available",
+            mime_type="text/plain",
+            file_size=8,
+        )
+        context.db.add(taskless)
+        context.db.commit()
+
+        monkeypatch.setattr(
+            ManagedFileRef,
+            "materialize",
+            lambda self: pytest.fail("unauthorized durable record was materialized"),
+        )
+
+        with pytest.raises(FileNotFoundError):
+            context.ops.read_file(taskless.file_id)
+
     def test_foreign_file_id_does_not_shadow_workspace_local_file(
         self, public_file_scope_context
     ):

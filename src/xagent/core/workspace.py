@@ -1434,11 +1434,21 @@ class TaskWorkspace:
                         raise FileNotFoundError(f"File not found: {file_path}")
                     return resolved_record
 
+            if not release_db_connection_if_clean(db):
+                raise FileNotFoundError(f"File not found: {file_path}")
+
             if candidate_ref.is_absolute():
                 resolved = candidate_ref.resolve()
             else:
                 try:
-                    resolved = self.resolve_path_with_search(normalized).resolve()
+                    # Exact mode already performed its authorized file-id lookup.
+                    # Restrict the fallback to workspace-local discovery so a
+                    # foreign or taskless durable record cannot be materialized
+                    # through the legacy owner-wide resolver.
+                    resolved = self.resolve_path_with_search(
+                        normalized,
+                        resolve_file_ids=False,
+                    ).resolve()
                 except FileNotFoundError as exc:
                     raise FileNotFoundError(f"File not found: {file_path}") from exc
 
@@ -1671,7 +1681,12 @@ class TaskWorkspace:
             return filename
         return name_part + extension
 
-    def resolve_path_with_search(self, file_path: str) -> Path:
+    def resolve_path_with_search(
+        self,
+        file_path: str,
+        *,
+        resolve_file_ids: bool = True,
+    ) -> Path:
         """
         Resolve a file path within the workspace with intelligent directory search.
         Searches for the file in input -> output -> temp -> workspace root order.
@@ -1692,7 +1707,12 @@ class TaskWorkspace:
         path = Path(normalized_input)
 
         file_id_candidate = normalized_input
-        if file_id_candidate and len(path.parts) == 1 and "/" not in file_id_candidate:
+        if (
+            resolve_file_ids
+            and file_id_candidate
+            and len(path.parts) == 1
+            and "/" not in file_id_candidate
+        ):
             resolved_by_id = self.resolve_file_id(file_id_candidate)
             if resolved_by_id is not None:
                 return resolved_by_id
