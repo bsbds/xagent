@@ -26,7 +26,7 @@ Before deployment, inspect existing `Task.agent_config` values for `__xagent_fil
 -- PostgreSQL
 SELECT id
 FROM tasks
-WHERE agent_config ? '__xagent_file_operation_access_version'
+WHERE agent_config -> '__xagent_file_operation_access_version' IS NOT NULL
 LIMIT 1;
 ```
 
