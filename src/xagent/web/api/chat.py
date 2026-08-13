@@ -637,6 +637,9 @@ async def create_default_tools(
     # uploads (see _build_allowed_external_dirs docstring).
     allowed_external_dirs = _build_allowed_external_dirs(owner_id, scope=scope)
     scope_segments = scope.workspace_segments if scope is not None else ()
+    durable_storage_segments = (
+        scope.durable_storage_segments if scope is not None else ()
+    )
 
     tool_config = WebToolConfig(
         db=db,
@@ -656,6 +659,7 @@ async def create_default_tools(
             "user_id": owner_id,
             "allowed_external_dirs": allowed_external_dirs,
             "scope_segments": scope_segments,
+            "durable_storage_segments": durable_storage_segments,
         },
         execution_scope=scope,
         # Only load MCP servers (a DB query + per-server session init)

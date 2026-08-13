@@ -32,6 +32,7 @@ from uuid import uuid4
 from ..config import get_file_materialize_dir, get_uploads_dir
 from .execution_scope import validate_scope_component
 from .file_ref import parse_file_id_ref
+from .file_storage.keys import build_user_key_prefix
 
 if TYPE_CHECKING:
     from ..web.services.uploaded_file_store import (
@@ -169,6 +170,7 @@ class TaskWorkspace:
         allowed_external_dirs: Optional[List[str]] = None,
         db_task_id: Optional[int] = None,
         scope_segments: Sequence[str] = (),
+        durable_storage_segments: Sequence[str] | None = None,
     ):
         self.id = id
         self.db_task_id = db_task_id
@@ -179,6 +181,17 @@ class TaskWorkspace:
         # from the path.
         self.scope_segments: tuple[str, ...] = tuple(scope_segments)
         for segment in self.scope_segments:
+            validate_scope_component(segment, field_name="workspace_segments entry")
+        # Logical workspace paths and durable object keys intentionally diverge
+        # when an ExecutionScope does not isolate external directories. Keep the
+        # write-side durable segments explicit so marked reads validate the key
+        # layout that UploadedFileStore actually produced.
+        self.durable_storage_segments: tuple[str, ...] = tuple(
+            self.scope_segments
+            if durable_storage_segments is None
+            else durable_storage_segments
+        )
+        for segment in self.durable_storage_segments:
             validate_scope_component(segment, field_name="workspace_segments entry")
         if base_dir is None:
             base_dir = str(get_uploads_dir())
@@ -1332,8 +1345,9 @@ class TaskWorkspace:
         if storage_key:
             if self.owner_user_id is None:
                 return None
-            owner_prefix = "/".join(
-                ["users", str(self.owner_user_id), *self.scope_segments]
+            owner_prefix = build_user_key_prefix(
+                self.owner_user_id,
+                self.durable_storage_segments,
             )
             key = str(storage_key)
             if key != owner_prefix and not key.startswith(owner_prefix + "/"):
@@ -2094,8 +2108,9 @@ class TaskWorkspace:
                         )
                     from sqlalchemy import and_, or_
 
-                    owner_prefix = "/".join(
-                        ["users", str(self.owner_user_id), *self.scope_segments]
+                    owner_prefix = build_user_key_prefix(
+                        self.owner_user_id,
+                        self.durable_storage_segments,
                     )
                     storage_roots = [
                         self.base_dir.resolve(),
@@ -2302,6 +2317,7 @@ class WorkspaceManager:
         allowed_external_dirs: Optional[List[str]] = None,
         db_task_id: Optional[int] = None,
         scope_segments: Sequence[str] = (),
+        durable_storage_segments: Sequence[str] | None = None,
     ) -> TaskWorkspace:
         """
         Get existing workspace or create new one.
@@ -2326,6 +2342,7 @@ class WorkspaceManager:
                 allowed_external_dirs,
                 db_task_id=db_task_id,
                 scope_segments=scope_segments,
+                durable_storage_segments=durable_storage_segments,
             )
             self._workspaces[cache_key] = workspace
         elif db_task_id is not None and self._workspaces[cache_key].db_task_id is None:

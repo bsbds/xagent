@@ -587,6 +587,41 @@ class TestWorkspaceFileOperations:
                 context.ops.read_file(reference)
             assert context.ops.file_exists(reference) is False
 
+    @pytest.mark.parametrize(
+        ("durable_segments", "storage_key", "allowed"),
+        [
+            ((), "users/{owner}/uploads/current/file.txt", True),
+            (("tenant-a",), "users/{owner}/tenant-a/uploads/current/file.txt", True),
+            (("tenant-a",), "users/{owner}/uploads/current/file.txt", False),
+        ],
+    )
+    def test_marked_public_durable_scope_matches_write_side_segments(
+        self,
+        public_file_scope_context,
+        durable_segments,
+        storage_key,
+        allowed,
+    ):
+        context = public_file_scope_context
+        context.workspace.scope_segments = ("tenant-a",)
+        context.workspace.durable_storage_segments = durable_segments
+        context.current_record.storage_key = storage_key.format(owner=context.owner.id)
+        context.db.commit()
+
+        if allowed:
+            assert context.ops.read_file(context.current_record.file_id) == "current"
+            listed = context.ops.list_all_user_files(include_workspace_files=False)
+            assert context.current_record.file_id in {
+                item["file_id"] for item in listed["files"]
+            }
+        else:
+            with pytest.raises(FileNotFoundError):
+                context.ops.read_file(context.current_record.file_id)
+            listed = context.ops.list_all_user_files(include_workspace_files=False)
+            assert context.current_record.file_id not in {
+                item["file_id"] for item in listed["files"]
+            }
+
     def test_marked_public_named_directory_listing_validates_authority_once(
         self, public_file_scope_context, monkeypatch
     ):

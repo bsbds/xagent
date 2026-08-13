@@ -2184,6 +2184,11 @@ class AgentTool(AbstractBaseTool):
                 if self._execution_scope is not None
                 else ()
             )
+            _durable_storage_segments = (
+                self._execution_scope.durable_storage_segments
+                if self._execution_scope is not None
+                else ()
+            )
             tool_config = WebToolConfig(
                 db=None,
                 db_factory=self._session_factory,
@@ -2212,6 +2217,7 @@ class AgentTool(AbstractBaseTool):
                     "db_task_id": parent_db_task_id,
                     FILE_OPERATION_ACCESS_VERSION_KEY: self._file_operation_access_version,
                     "scope_segments": _scope_segments,
+                    "durable_storage_segments": _durable_storage_segments,
                 },
                 execution_scope=self._execution_scope,
                 # Delegated sub-agents stay closed: identity here is restored

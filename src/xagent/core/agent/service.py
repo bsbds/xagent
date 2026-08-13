@@ -180,6 +180,9 @@ class AgentService:
                 scope_segments=tuple(
                     ws_config.get("scope_segments") or self.scope_segments
                 ),
+                durable_storage_segments=tuple(
+                    ws_config.get("durable_storage_segments") or ()
+                ),
             )
         elif self.enable_workspace:
             self._setup_workspace()
