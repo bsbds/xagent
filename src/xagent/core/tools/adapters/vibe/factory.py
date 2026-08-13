@@ -863,8 +863,8 @@ class ToolFactory:
                 allowed_external_dirs=workspace_config.get("allowed_external_dirs"),
                 db_task_id=workspace_config.get("db_task_id"),
                 scope_segments=tuple(workspace_config.get("scope_segments") or ()),
-                durable_storage_segments=tuple(
-                    workspace_config.get("durable_storage_segments") or ()
+                durable_storage_segments=workspace_config.get(
+                    "durable_storage_segments"
                 ),
             )
             user_id = workspace_config.get("user_id")
