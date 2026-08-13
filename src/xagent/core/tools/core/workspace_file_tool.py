@@ -672,8 +672,8 @@ class WorkspaceFileOperations:
 
     def get_workspace_output_files(self) -> Dict[str, Any]:
         """Get output file list from current workspace"""
+        self._require_workspace_authority()
         try:
-            self._require_workspace_authority()
             output_files = self.workspace.get_output_files()
 
             return {

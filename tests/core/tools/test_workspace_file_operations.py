@@ -987,6 +987,15 @@ class TestWorkspaceFileOperations:
             for record in caplog.records
         )
 
+    def test_marked_public_output_listing_propagates_policy_failure(
+        self, public_file_scope_context
+    ):
+        context = public_file_scope_context
+        context.workspace.file_operation_access_version = True
+
+        with pytest.raises(ValueError, match="File Operation unavailable"):
+            context.ops.get_workspace_output_files()
+
     def test_marked_public_listing_fails_if_task_disappears_after_validation(
         self, public_file_scope_context, monkeypatch
     ):
