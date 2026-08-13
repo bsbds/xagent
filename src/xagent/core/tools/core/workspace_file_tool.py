@@ -715,12 +715,23 @@ class WorkspaceFileOperations:
                 exc_info=True,
             )
             raise ValueError("File listing unavailable") from exc
-        return self.workspace.list_all_user_files(
-            include_workspace_files,
-            limit,
-            offset,
-            _exact_task_scope=exact_scope,
-        )
+        try:
+            return self.workspace.list_all_user_files(
+                include_workspace_files,
+                limit,
+                offset,
+                _exact_task_scope=exact_scope,
+            )
+        except RuntimeError as exc:
+            if not exact_scope:
+                raise
+            logger.warning(
+                "File Operation listing authority changed for workspace %s and task %s",
+                self.workspace.id,
+                self.workspace.db_task_id,
+                exc_info=True,
+            )
+            raise ValueError("File listing unavailable") from exc
 
     def edit_file(
         self,

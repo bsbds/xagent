@@ -958,6 +958,28 @@ class TestWorkspaceFileOperations:
             for record in caplog.records
         )
 
+    def test_marked_public_listing_fails_if_task_disappears_after_validation(
+        self, public_file_scope_context, monkeypatch
+    ):
+        context = public_file_scope_context
+        original = context.workspace.list_all_user_files
+
+        def delete_then_list(*args, **kwargs):
+            task = context.db.get(Task, context.marked_task.id)
+            assert task is not None
+            context.db.delete(task)
+            context.db.commit()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            context.workspace,
+            "list_all_user_files",
+            delete_then_list,
+        )
+
+        with pytest.raises(ValueError, match="File listing unavailable"):
+            context.ops.list_all_user_files()
+
     def test_marked_public_malformed_listing_uses_value_error_shape(
         self, public_file_scope_context, caplog
     ):

@@ -2086,6 +2086,8 @@ class TaskWorkspace:
             # Try to get user_id from task if we have a valid task_id and db session
             if task_id and db is not None:
                 task = db.query(Task).filter(Task.id == task_id).first()
+                if task is None and _exact_task_scope:
+                    raise RuntimeError("Marked File Operation listing task is missing")
                 if task:
                     user_id = task.user_id
 
@@ -2099,11 +2101,7 @@ class TaskWorkspace:
                 # distort pagination.
                 query = db.query(UploadedFile).filter(UploadedFile.user_id == user_id)
                 if _exact_task_scope:
-                    if (
-                        self.owner_user_id is None
-                        or int(user_id) != self.owner_user_id
-                        or task_id != self.db_task_id
-                    ):
+                    if self.owner_user_id is None or int(user_id) != self.owner_user_id:
                         raise RuntimeError(
                             "Marked File Operation listing authority disagrees"
                         )
