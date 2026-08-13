@@ -622,6 +622,28 @@ class TestWorkspaceFileOperations:
                 item["file_id"] for item in listed["files"]
             }
 
+    def test_marked_public_selector_misses_hide_record_existence(
+        self, public_file_scope_context
+    ):
+        context = public_file_scope_context
+
+        with pytest.raises(FileNotFoundError) as missing:
+            context.ops.read_file("missing-file-id")
+        with pytest.raises(FileNotFoundError) as foreign:
+            context.ops.read_file(context.other_record.file_id)
+
+        assert str(missing.value) == "File not found: missing-file-id"
+        assert str(foreign.value) == f"File not found: {context.other_record.file_id}"
+
+    def test_foreign_file_id_does_not_shadow_workspace_local_file(
+        self, public_file_scope_context
+    ):
+        context = public_file_scope_context
+        local_path = context.workspace.input_dir / context.other_record.file_id
+        local_path.write_text("local", encoding="utf-8")
+
+        assert context.ops.read_file(context.other_record.file_id) == "local"
+
     def test_marked_public_named_directory_listing_validates_authority_once(
         self, public_file_scope_context, monkeypatch
     ):

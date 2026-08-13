@@ -1419,12 +1419,10 @@ class TaskWorkspace:
                     .filter(UploadedFile.file_id == normalized)
                     .first()
                 )
-                if record is not None:
-                    if (
-                        int(getattr(record, "user_id", 0) or 0) != self.owner_user_id
-                        or int(getattr(record, "task_id", 0) or 0) != self.db_task_id
-                    ):
-                        raise FileNotFoundError(f"File not found: {file_path}")
+                if record is not None and (
+                    int(getattr(record, "user_id", 0) or 0) == self.owner_user_id
+                    and int(getattr(record, "task_id", 0) or 0) == self.db_task_id
+                ):
                     db.expunge(record)
                     if not release_db_connection_if_clean(db):
                         raise FileNotFoundError(f"File not found: {file_path}")
@@ -1436,7 +1434,10 @@ class TaskWorkspace:
             if candidate_ref.is_absolute():
                 resolved = candidate_ref.resolve()
             else:
-                resolved = self.resolve_path_with_search(normalized).resolve()
+                try:
+                    resolved = self.resolve_path_with_search(normalized).resolve()
+                except FileNotFoundError as exc:
+                    raise FileNotFoundError(f"File not found: {file_path}") from exc
 
             workspace_root = self.workspace_dir.resolve()
             if resolved == workspace_root or resolved.is_relative_to(workspace_root):
