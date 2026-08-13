@@ -62,4 +62,14 @@ describe("UserManagement account labels", () => {
       screen.queryByText("acct_0123456789abcdef0123456789abcdef"),
     ).not.toBeInTheDocument()
   })
+
+  it("labels the mixed-identity column as an account", async () => {
+    render(<UserManagement />)
+
+    expect(
+      await screen.findByRole("columnheader", {
+        name: "userManagement.list.table.account",
+      }),
+    ).toBeInTheDocument()
+  })
 })

@@ -177,7 +177,7 @@ export default function UserManagement() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t('userManagement.list.table.id')}</TableHead>
-                      <TableHead>{t('userManagement.list.table.email')}</TableHead>
+                      <TableHead>{t('userManagement.list.table.account')}</TableHead>
                       <TableHead>{t('userManagement.list.table.role')}</TableHead>
                       <TableHead>{t('userManagement.list.table.created_at')}</TableHead>
                       <TableHead>{t('userManagement.list.table.updated_at')}</TableHead>
