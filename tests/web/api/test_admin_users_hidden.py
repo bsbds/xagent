@@ -141,7 +141,9 @@ async def test_admin_user_delete_runs_runtime_cleanup_before_task_delete():
         assert response == {"message": "User deleted successfully"}
         assert provider.task_existed_on_delete == [True]
         assert db.query(Task).filter(Task.id == task_id).count() == 0
-        assert db.query(DAGExecution).filter(DAGExecution.task_id == task_id).count() == 0
+        assert (
+            db.query(DAGExecution).filter(DAGExecution.task_id == task_id).count() == 0
+        )
         assert db.query(User).filter(User.id == target_id).count() == 0
     finally:
         unregister_task_extension("delete_observer")

@@ -265,7 +265,9 @@ async def get_users(
 
     # Apply search filter
     if search:
-        query = query.filter(User.username.like(f"%{search}%") | User.email.like(f"%{search}%"))
+        query = query.filter(
+            User.username.like(f"%{search}%") | User.email.like(f"%{search}%")
+        )
 
     # Get total count
     total = query.count()
