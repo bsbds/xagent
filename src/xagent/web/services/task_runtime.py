@@ -23,6 +23,8 @@ from ...config import (
     get_task_runtime_hook_queue_timeout_seconds,
 )
 from ...core.execution_scope import EXECUTION_SCOPE_AGENT_CONFIG_KEY
+
+# Compatibility re-exports for callers using the former web-layer paths.
 from ...core.task_runtime import (
     EMPTY_TASK_RUNTIME_CONTRIBUTION,
 )
@@ -35,12 +37,19 @@ from ...core.task_runtime import (
     MAX_TASK_RUNTIME_JSON_BYTES,
     MAX_TASK_RUNTIME_PUBLIC_METADATA_BYTES,
     MAX_TASK_RUNTIME_REQUEST_BYTES,
-    SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS,
+)
+from ...core.task_runtime import (
+    FileOperationAccessPolicyError as FileOperationAccessPolicyError,
+)
+from ...core.task_runtime import (
     TaskRuntimeContext,
     TaskRuntimeContribution,
     TaskRuntimeExtensionProvider,
     merge_task_runtime_contributions,
     normalize_task_runtime_contribution,
+)
+from ...core.task_runtime import (
+    requires_exact_file_operation_scope as requires_exact_file_operation_scope,
 )
 
 _EXTENSION_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -191,58 +200,6 @@ CLIENT_RESERVED_AGENT_CONFIG_KEYS: frozenset[str] = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
-
-
-class FileOperationAccessPolicyError(RuntimeError):
-    """A marked task cannot prove its exact File Operation authority."""
-
-
-def requires_exact_file_operation_scope(task: Any) -> bool:
-    """Return whether one persisted task opts into exact File Operation scope.
-
-    Marker absence deliberately preserves private and historical behavior for
-    the focused #803 rollout. Once a marker exists, every field is strict: an
-    unknown version or inconsistent public identity fails closed instead of
-    falling back to creator-wide access.
-    """
-
-    config = getattr(task, "agent_config", None)
-    if not isinstance(config, Mapping):
-        return False
-    marker = config.get(FILE_OPERATION_ACCESS_VERSION_KEY)
-    if marker is None:
-        return False
-    if (
-        isinstance(marker, bool)
-        or not isinstance(marker, int)
-        or marker not in SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS
-    ):
-        raise FileOperationAccessPolicyError(
-            "File Operation access policy version is unsupported"
-        )
-
-    task_id = getattr(task, "id", None)
-    owner_user_id = getattr(task, "user_id", None)
-    if (
-        isinstance(task_id, bool)
-        or not isinstance(task_id, int)
-        or task_id <= 0
-        or isinstance(owner_user_id, bool)
-        or not isinstance(owner_user_id, int)
-        or owner_user_id <= 0
-    ):
-        raise FileOperationAccessPolicyError(
-            "Marked File Operation task has no authoritative identity"
-        )
-
-    source = getattr(task, "source", None)
-    auth_mode = config.get("auth_mode")
-    expected_source = "shared_link" if auth_mode == "share" else "widget"
-    if auth_mode not in {"share", "widget"} or source != expected_source:
-        raise FileOperationAccessPolicyError(
-            "Marked File Operation task has inconsistent public identity"
-        )
-    return True
 
 
 def sanitize_client_agent_config(agent_config: Any) -> dict[str, Any]:

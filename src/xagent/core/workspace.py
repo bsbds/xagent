@@ -1078,12 +1078,12 @@ class TaskWorkspace:
             return False
 
         from ..web.models.task import Task
-        from ..web.services.task_runtime import (
+        from .storage.manager import create_db_session
+        from .task_runtime import (
+            SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS,
             FileOperationAccessPolicyError,
             requires_exact_file_operation_scope,
         )
-        from .storage.manager import create_db_session
-        from .task_runtime import SUPPORTED_FILE_OPERATION_ACCESS_VERSIONS
 
         # Validate the propagated workspace marker independently. The task's
         # persisted marker is loaded and revalidated at the database authority
