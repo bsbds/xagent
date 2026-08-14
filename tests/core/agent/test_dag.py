@@ -391,7 +391,7 @@ def test_dag_completion_assessment_prompt_includes_grounding_rule() -> None:
     assert "quantitative data" in system_prompt
     assert "illustrative placeholders" in system_prompt
     assert "use an appropriate tool" not in system_prompt
-    assert "## FINAL DELIVERABLE FILE REFERENCES" in system_prompt
+    assert system_prompt.count("## FINAL DELIVERABLE FILE REFERENCES") == 1
     assert "get_workspace_output_files" not in system_prompt
 
     answer_description = pattern._completion_assessment_tool_schema()["function"][

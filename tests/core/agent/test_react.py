@@ -1351,7 +1351,8 @@ def test_react_grounding_rule_present_in_both_answer_paths() -> None:
         assert "illustrative placeholders" in prompt
     assert "use an appropriate tool to verify" in tool_prompt
     assert "use an appropriate tool" not in forced_prompt
-    assert "## FINAL DELIVERABLE FILE REFERENCES" in forced_prompt
+    assert "## FINAL DELIVERABLE FILE REFERENCES" not in tool_prompt
+    assert forced_prompt.count("## FINAL DELIVERABLE FILE REFERENCES") == 1
     assert "get_workspace_output_files" not in forced_prompt
 
 

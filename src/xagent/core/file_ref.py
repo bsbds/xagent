@@ -38,7 +38,7 @@ supporting, or temporary files unless the user explicitly requested them as
 deliverables. Never include internal FileRefs in user-facing output."""
 
 
-FILE_REF_OUTPUT_INSTRUCTIONS = f"""## FILE REFERENCE OUTPUTS
+FILE_REF_OUTPUT_INSTRUCTIONS = """## FILE REFERENCE OUTPUTS
 When mentioning a generated or uploaded file that has a file_id, render it as a Markdown file reference:
 - Files: [filename](file:file_id)
 - Images intended for inline display: ![filename](file:file_id)
@@ -48,9 +48,7 @@ File delivery integrity:
 - Internal FileRefs (`internal: true`) are runtime context only. Never render or expose a `file:` link for them.
 - Never invent, guess, or construct a file_id or `file:` link. Use only a trusted FileRef supplied for an existing input/attachment, or the exact FileRef or markdown_link returned by a successful tool result. A link mentioned only in prior assistant prose is not provenance.
 - When the user requests a new file or file-based artifact, it is not delivered until a successful tool result returns its registered FileRef or markdown_link.
-- Do not call final_answer claiming that a file was created or delivered unless that result exists.
-
-{final_deliverable_file_reference_instructions(can_lookup=False)}"""
+- Do not call final_answer claiming that a file was created or delivered unless that result exists."""
 
 FILE_REF_MODEL_INSTRUCTIONS = f"""## FILE REFERENCES
 Files are referenced by FileRef objects. Treat file_id as the canonical file handle.
