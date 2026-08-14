@@ -1093,6 +1093,9 @@ async def test_auto_decision_prompt_includes_grounding_rule() -> None:
     assert "illustrative placeholders" in decision_prompt
     assert "invented values" in decision_prompt
     assert decision_prompt.count("## FINAL DELIVERABLE FILE REFERENCES") == 1
+    assert decision_prompt.index(
+        "If the answer would need such unsupported specifics"
+    ) < decision_prompt.index("## FINAL DELIVERABLE FILE REFERENCES")
     assert "get_workspace_output_files" not in decision_prompt
     answer_description = pattern._decision_tool_schema()["function"]["parameters"][
         "properties"
