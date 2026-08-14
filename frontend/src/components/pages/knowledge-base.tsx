@@ -113,7 +113,7 @@ export function KnowledgeBasePage() {
           const data: AdminUserListResponse = await response.json()
           const users: AdminUser[] = data.users || []
           for (const u of users) {
-            map[u.id] = userDisplayLabel(u, String(u.id))
+            map[u.id] = userDisplayLabel(u, `#${u.id}`)
           }
 
           if (typeof data.pages === "number" && data.pages > 0) {

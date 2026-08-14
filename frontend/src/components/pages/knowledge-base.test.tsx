@@ -182,6 +182,31 @@ describe("KnowledgeBasePage", () => {
     expect(screen.queryByText(/acct_0123456789abcdef/)).not.toBeInTheDocument()
   })
 
+  it("formats an incomplete owner fallback with the account ID convention", async () => {
+    authMock.user.is_admin = true
+    apiRequestMock.mockImplementation((url: string) => {
+      if (url === "http://api.local/api/kb/collections") {
+        return Promise.resolve(createJsonResponse({
+          collections: [{
+            ...ONE_COLLECTION.collections[0],
+            owners: [2],
+          }],
+        }))
+      }
+      if (url.startsWith("http://api.local/api/admin/users?")) {
+        return Promise.resolve(createJsonResponse({
+          users: [{ id: 2, username: "", email: null }],
+          pages: 1,
+        }))
+      }
+      return Promise.resolve(createStatusResponse(404, { detail: "not found" }))
+    })
+
+    render(<KnowledgeBasePage />)
+
+    expect(await screen.findByText("kb.card.ownerLabel:#2")).toBeInTheDocument()
+  })
+
   it("shows the collection delete action in the detail sheet flow", async () => {
     let collectionFetchCount = 0
 
