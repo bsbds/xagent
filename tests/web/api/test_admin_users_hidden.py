@@ -108,6 +108,43 @@ async def test_admin_users_include_email_and_support_email_search():
 
 
 @pytest.mark.asyncio
+async def test_admin_user_email_search_is_case_insensitive():
+    _admin_headers()
+    opaque_username = "acct_0123456789abcdef0123456789abcdef"
+    _register_second_user(opaque_username, "opaque-password")
+    db = _direct_db_session()
+    try:
+        admin = db.query(User).filter(User.username == "admin").one()
+        target = db.query(User).filter(User.username == opaque_username).one()
+        target.email = "display@example.com"
+        db.commit()
+        db.execute(text("PRAGMA case_sensitive_like = ON"))
+
+        result = await get_users(1, 100, "DISPLAY@EXAMPLE.COM", admin, db)
+
+        assert [user.id for user in result.users] == [target.id]
+    finally:
+        db.execute(text("PRAGMA case_sensitive_like = OFF"))
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_user_search_treats_wildcards_as_literal_text():
+    _admin_headers()
+    _register_second_user("search-user", "search-password")
+    db = _direct_db_session()
+    try:
+        admin = db.query(User).filter(User.username == "admin").one()
+
+        result = await get_users(1, 100, "%_", admin, db)
+
+        assert result.users == []
+        assert result.total == 0
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_admin_user_delete_runs_runtime_cleanup_before_task_delete():
     _admin_headers()
     _register_second_user("runtime-user", "runtimepass1")

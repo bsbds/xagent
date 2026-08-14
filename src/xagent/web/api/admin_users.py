@@ -263,10 +263,11 @@ async def get_users(
     if hidden:
         query = query.filter(User.id.notin_(hidden))
 
-    # Apply search filter
+    # Match account identifiers without exposing SQL LIKE wildcards from user input.
     if search:
         query = query.filter(
-            User.username.like(f"%{search}%") | User.email.like(f"%{search}%")
+            User.username.icontains(search, autoescape=True)
+            | User.email.icontains(search, autoescape=True)
         )
 
     # Get total count
