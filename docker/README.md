@@ -317,6 +317,7 @@ backend cannot see v2 containers and otherwise double-provisions sandboxes.
 
 - `Dockerfile.backend` - Backend image (FastAPI, Python, Node.js)
 - `Dockerfile.frontend` - Frontend image (Next.js, nginx)
+- `Dockerfile.sandbox` - Sandbox image for isolated code execution
 - `../docker-compose.yml` - Base multi-service orchestration
 - `docker-compose.sandbox.boxlite.yml` - Boxlite/KVM sandbox overlay
 - `docker-compose.sandbox.docker.yml` - Docker sibling sandbox overlay
@@ -397,14 +398,22 @@ docker buildx build \
 Images are published to Docker Hub under the `xprobe` organization:
 - Backend: `xprobe/xagent-backend:latest`
 - Frontend: `xprobe/xagent-frontend:latest`
+- Sandbox: `xprobe/xagent-sandbox:latest`
 
-Manual GitHub Container Registry publishing is also available through the GitHub Actions workflow:
+`docker/publish.sh` builds and publishes only the backend and frontend images.
+The sandbox image is published separately by the `Publish Sandbox Image`
+workflow in `.github/workflows/sandbox-publish.yml`; it is not part of
+`publish.sh`.
+
+Manual GitHub Container Registry publishing is also available for the backend
+and frontend through their GitHub Actions workflow:
 - Backend: `ghcr.io/<owner>/xagent-backend`
 - Frontend: `ghcr.io/<owner>/xagent-frontend`
 
 ### Publish to Docker Hub
 
-From the `docker/` directory:
+To publish the backend and frontend, run these commands from the `docker/`
+directory:
 
 ```bash
 # Publish with default tag (latest)
@@ -442,7 +451,8 @@ docker buildx build --platform linux/amd64,linux/arm64 -f docker/Dockerfile.fron
 
 1. **Create Docker Hub repositories** (one-time):
    - Go to https://hub.docker.com/
-   - Create repositories: `xagent-backend` and `xagent-frontend`
+   - Create repositories: `xagent-backend`, `xagent-frontend`, and
+     `xagent-sandbox`
    - Or they will be auto-created on first push
 
 2. **Login to Docker Hub** (one-time):
@@ -450,20 +460,28 @@ docker buildx build --platform linux/amd64,linux/arm64 -f docker/Dockerfile.fron
    docker login
    ```
 
-3. **Publish images** (on each release):
+3. **Publish backend and frontend images** (on each release):
    ```bash
    ./docker/publish.sh
    ```
+
+4. **Publish the sandbox image** separately by pushing a release tag or by
+   manually running the `Publish Sandbox Image` workflow defined in
+   `.github/workflows/sandbox-publish.yml`.
 
 ### Docker Hub Repositories
 
 - https://hub.docker.com/r/xprobe/xagent-backend
 - https://hub.docker.com/r/xprobe/xagent-frontend
+- https://hub.docker.com/r/xprobe/xagent-sandbox
 
 ### Automatic Publishing (GitHub Actions)
 
-Images are automatically published to Docker Hub when you create a GitHub release.
-You can also run the same workflow manually and optionally publish to GHCR.
+Backend and frontend images are automatically published to Docker Hub when you
+create a GitHub release. The sandbox image is published separately by
+`.github/workflows/sandbox-publish.yml` when a tag is pushed. Both workflows
+can also be run manually; only the backend/frontend workflow supports optional
+GHCR publishing.
 
 **Setup (one-time):**
 
@@ -477,6 +495,7 @@ You can also run the same workflow manually and optionally publish to GHCR.
 2. Ensure Docker Hub repositories exist:
    - `xprobe/xagent-backend`
    - `xprobe/xagent-frontend`
+   - `xprobe/xagent-sandbox`
 
 **Publish on release:**
 
@@ -488,9 +507,9 @@ gh release create v1.0.0
 ```
 
 GitHub Actions will:
-- Build backend and frontend images
-- Tag with version (e.g., `v1.0.0`, `v1.0`, `v1`, `latest`)
-- Push to Docker Hub
+- Build and publish the backend and frontend images from the GitHub release
+- Build and publish `xprobe/xagent-sandbox` separately when the tag is pushed
+- Tag the images with their workflow's release tags
 
 ### Manual GHCR Publish
 
