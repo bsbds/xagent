@@ -108,6 +108,42 @@ async def test_admin_users_include_email_and_support_email_search():
 
 
 @pytest.mark.asyncio
+async def test_admin_user_search_still_matches_username():
+    _admin_headers()
+    username = "searchable-user"
+    _register_second_user(username, "search-password")
+    db = _direct_db_session()
+    try:
+        admin = db.query(User).filter(User.username == "admin").one()
+
+        result = await get_users(1, 100, username, admin, db)
+
+        assert [user.username for user in result.users] == [username]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_user_list_serializes_null_email():
+    _admin_headers()
+    username = "email-less-user"
+    _register_second_user(username, "search-password")
+    db = _direct_db_session()
+    try:
+        admin = db.query(User).filter(User.username == "admin").one()
+        target = db.query(User).filter(User.username == username).one()
+        target.email = None
+        db.commit()
+
+        result = await get_users(1, 100, username, admin, db)
+
+        assert len(result.users) == 1
+        assert result.users[0].email is None
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_admin_user_email_search_is_case_insensitive():
     _admin_headers()
     opaque_username = "acct_0123456789abcdef0123456789abcdef"
