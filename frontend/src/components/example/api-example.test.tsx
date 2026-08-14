@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ApiExample } from "./api-example"
 
+const translateMock = vi.hoisted(() => vi.fn((key: string) => key))
+
 vi.mock("@/contexts/auth-context", () => ({
   useAuth: () => ({
     user: {
@@ -16,7 +18,7 @@ vi.mock("@/contexts/auth-context", () => ({
   }),
 }))
 vi.mock("@/contexts/i18n-context", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({ t: translateMock }),
 }))
 vi.mock("@/hooks/use-api", () => ({
   apiHooks: {
@@ -33,7 +35,10 @@ vi.mock("@/lib/utils", async (importOriginal) => ({
 }))
 
 describe("ApiExample current-user label", () => {
-  beforeEach(() => vi.stubGlobal("React", React))
+  beforeEach(() => {
+    vi.stubGlobal("React", React)
+    translateMock.mockClear()
+  })
 
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -45,5 +50,14 @@ describe("ApiExample current-user label", () => {
 
     expect(screen.getByText(/current@example\.com/)).toBeInTheDocument()
     expect(screen.queryByText(/acct_0123456789abcdef/)).not.toBeInTheDocument()
+  })
+
+  it("uses an example-owned fallback label", () => {
+    render(<ApiExample />)
+
+    expect(translateMock).toHaveBeenCalledWith(
+      "agent.vibeMode.descriptions.think.examples.apiExample.labels.defaultUser",
+    )
+    expect(translateMock).not.toHaveBeenCalledWith("sidebar.user.defaultName")
   })
 })

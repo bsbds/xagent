@@ -58,7 +58,10 @@ export function ApiExample() {
   if (!user) {
     return <div>{t('agentStore.loginRequiredTitle')}</div>
   }
-  const userLabel = userDisplayLabel(user, t("sidebar.user.defaultName"))
+  const userLabel = userDisplayLabel(
+    user,
+    t("agent.vibeMode.descriptions.think.examples.apiExample.labels.defaultUser"),
+  )
 
   return (
     <div className="p-6 space-y-6">

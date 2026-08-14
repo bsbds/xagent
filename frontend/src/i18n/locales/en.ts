@@ -2864,6 +2864,7 @@ Build when you need.`,
               title: "Token Refresh Demo",
               labels: {
                 currentUser: "Current user:",
+                defaultUser: "User",
                 accessTokenStatus: "Access Token status:",
                 refreshTokenStatus: "Refresh Token status:",
                 wsStatus: "WebSocket status:",

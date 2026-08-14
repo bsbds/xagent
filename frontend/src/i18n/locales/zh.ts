@@ -2864,6 +2864,7 @@ const zh = {
               title: "Token Refresh 演示",
               labels: {
                 currentUser: "当前用户:",
+                defaultUser: "用户",
                 accessTokenStatus: "Access Token状态:",
                 refreshTokenStatus: "Refresh Token状态:",
                 wsStatus: "WebSocket状态:",
