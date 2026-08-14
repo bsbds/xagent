@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,4 +215,45 @@ def test_docker_readme_documents_lockfile_requirement() -> None:
 
     assert "`uv.lock` during the Docker build" in readme
     assert "uv sync --locked" in readme
+    assert "`[dependency-groups].sandbox`" in readme
+    assert "docker/Dockerfile.sandbox" in readme
     assert "uv.lock` is not copied" not in readme
+
+
+def test_sandbox_image_dependencies_are_a_dedicated_locked_group() -> None:
+    pyproject = tomllib.loads(read_repo_file("pyproject.toml"))
+
+    assert pyproject["dependency-groups"]["sandbox"] == [
+        "pydantic>=2.11.7",
+        "pydantic-settings",
+        "cloudpickle>=3.0.0",
+        "mcp>=1.12.4",
+        "pandas>=1.3.0",
+        "numpy>=1.21.0",
+        "matplotlib>=3.5.0",
+        "openpyxl>=3.1.0",
+        "fsspec>=2024.0.0",
+    ]
+
+
+def test_sandbox_dockerfile_installs_locked_group_and_smoke_tests_imports() -> None:
+    dockerfile = read_repo_file("docker/Dockerfile.sandbox")
+
+    assert "FROM node:22-slim AS sandbox-requirements" in dockerfile
+    assert "COPY pyproject.toml uv.lock ./" in dockerfile
+    assert (
+        "uv export --quiet --locked --only-group sandbox --no-emit-project"
+        in dockerfile
+    )
+    assert "FROM node:22-slim AS sandbox" in dockerfile
+    runtime_stage = dockerfile.split("FROM node:22-slim AS sandbox\n", maxsplit=1)[1]
+    assert "COPY pyproject.toml uv.lock ./" not in runtime_stage
+    assert "COPY --from=sandbox-requirements /sandbox-requirements.txt" in runtime_stage
+    assert "uv pip install --system --break-system-packages" in runtime_stage
+    assert "import cloudpickle, fsspec, matplotlib, mcp" in runtime_stage
+    assert (
+        "import numpy, openpyxl, pandas, pydantic, pydantic_settings" in runtime_stage
+    )
+    assert "docker/sandbox-requirements.txt" not in dockerfile
+    assert not (ROOT / "docker" / "sandbox-requirements.txt").exists()
+    assert "USER sandbox" in runtime_stage

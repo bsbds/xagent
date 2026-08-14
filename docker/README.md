@@ -360,6 +360,28 @@ docker buildx build \
   --push .
 ```
 
+### Sandbox
+
+The sandbox remains a separate image for untrusted code execution. Its Python
+packages come only from the dedicated `[dependency-groups].sandbox` group in
+`pyproject.toml`. Update `uv.lock` whenever that group changes.
+`docker/Dockerfile.sandbox` exports the group from the lockfile and checks all
+supported imports during the image build. The build stage does not copy
+`pyproject.toml` or `uv.lock` into the runtime image.
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -f docker/Dockerfile.sandbox \
+  -t xprobe/xagent-sandbox:latest \
+  --push .
+```
+
+The `Publish Sandbox Image` workflow in
+`.github/workflows/sandbox-publish.yml` publishes release tags and supports
+manual tags. After publishing, update deployments to reference the new sandbox
+image tag. Rolling back only requires restoring the previous sandbox image tag.
+
 ### Frontend
 
 ```bash
