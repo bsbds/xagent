@@ -29,11 +29,12 @@ def final_deliverable_file_reference_instructions(*, can_lookup: bool) -> str:
     return f"""## FINAL DELIVERABLE FILE REFERENCES
 If a successful tool result or trusted public FileRef produced a file that
 satisfies the user's requested final deliverable, the final answer MUST include
-the exact markdown_link returned for that file.
+the exact markdown_link returned for that file, unless the successful tool result
+prescribes a different exact user-facing rendering, such as inline_markdown for screenshots.
 
-{lookup_instructions}Copy the markdown_link verbatim and preserve its original filename and extension.
+{lookup_instructions}Copy the selected rendering verbatim and preserve its original filename and extension.
 Never invent, guess, shorten, or rewrite a file_id. Do not claim that a file was
-delivered unless its exact markdown_link appears in the final answer.
+delivered unless its exact selected rendering appears in the final answer.
 
 Include only user-requested final deliverables. Do not include intermediate,
 supporting, or temporary files unless the user explicitly requested them as

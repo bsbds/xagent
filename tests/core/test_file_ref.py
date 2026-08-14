@@ -27,6 +27,8 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
     for instruction in (lookup_instruction, forced_instruction):
         assert FINAL_DELIVERABLE_INSTRUCTION_MARKER in instruction
         assert "exact markdown_link" in instruction
+        assert "inline_markdown for screenshots" in instruction
+        assert "different exact user-facing rendering" in instruction
         assert "verbatim" in instruction
         assert "filename and extension" in instruction
         assert "Never invent" in instruction
