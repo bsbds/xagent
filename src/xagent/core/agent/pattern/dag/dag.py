@@ -1558,7 +1558,7 @@ class DAGPattern(AgentPattern):
                             "description": (
                                 "Final user-facing answer when status is completed; "
                                 "empty when status is incomplete. "
-                                f"{final_deliverable_file_reference_instructions(can_lookup=False)} "
+                                f"{final_deliverable_file_reference_instructions(can_lookup=False, include_heading=False)} "
                                 f"{final_answer_language_rule(subject='output language policy')}"
                             ),
                         },

@@ -23,9 +23,12 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
     forced_instruction = file_ref.final_deliverable_file_reference_instructions(
         can_lookup=False
     )
+    inline_instruction = file_ref.final_deliverable_file_reference_instructions(
+        can_lookup=False,
+        include_heading=False,
+    )
 
-    for instruction in (lookup_instruction, forced_instruction):
-        assert FINAL_DELIVERABLE_INSTRUCTION_MARKER in instruction
+    for instruction in (lookup_instruction, forced_instruction, inline_instruction):
         assert "exact markdown_link" in instruction
         assert "trusted non-internal FileRef" in instruction
         assert "trusted public FileRef" not in instruction
@@ -34,10 +37,14 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
         assert "different exact user-facing rendering" in instruction
         assert "verbatim" in instruction
         assert "filename and extension" in instruction
-        assert "Never invent" in instruction
+        assert "Preserve every returned file_id exactly" in instruction
+        assert "Never invent, guess, shorten" not in instruction
         assert "intermediate" in instruction
         assert "Never include internal FileRefs" in instruction
 
+    assert FINAL_DELIVERABLE_INSTRUCTION_MARKER not in inline_instruction
+    assert FINAL_DELIVERABLE_INSTRUCTION_MARKER in lookup_instruction
+    assert FINAL_DELIVERABLE_INSTRUCTION_MARKER in forced_instruction
     assert "get_workspace_output_files" in lookup_instruction
     assert "once before finalizing" in lookup_instruction
     assert "returned non-null file_id or markdown_link" in lookup_instruction

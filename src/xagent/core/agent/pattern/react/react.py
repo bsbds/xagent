@@ -1699,7 +1699,7 @@ class ReActPattern(AgentPattern):
                                 "description": (
                                     "Complete user-facing answer. It must be "
                                     "non-empty and must match response_language. "
-                                    f"{final_deliverable_file_reference_instructions(can_lookup=True)} "
+                                    f"{final_deliverable_file_reference_instructions(can_lookup=True, include_heading=False)} "
                                     f"{final_answer_language_rule()}"
                                 ),
                             },

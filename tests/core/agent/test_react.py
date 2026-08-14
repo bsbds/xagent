@@ -3102,7 +3102,8 @@ async def test_react_pattern_reserves_control_tool_names_in_schema() -> None:
     answer_schema = final_answer_schema["parameters"]["properties"]["answer"]
     assert "response_language" in answer_schema["description"]
     assert "tool results, source documents" in answer_schema["description"]
-    assert "## FINAL DELIVERABLE FILE REFERENCES" in answer_schema["description"]
+    assert "## FINAL DELIVERABLE FILE REFERENCES" not in answer_schema["description"]
+    assert "exact markdown_link" in answer_schema["description"]
     assert "get_workspace_output_files" in answer_schema["description"]
 
 

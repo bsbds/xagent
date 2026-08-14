@@ -16,25 +16,28 @@ link, or claim delivery.
 """
 
 
-def final_deliverable_file_reference_instructions(*, can_lookup: bool) -> str:
-    """Build final-deliverable rules for the current tool capability.
+def final_deliverable_file_reference_instructions(
+    *, can_lookup: bool, include_heading: bool = True
+) -> str:
+    """Build final-deliverable rules for the current prompt location.
 
     Final-only protocol turns cannot call workspace tools. Omitting lookup advice
     there prevents the prompt from requiring a tool call that the active schema
-    rejects, while preserving the same fail-closed delivery requirements.
+    rejects. Schema descriptions also omit the Markdown heading because they
+    embed these rules inline after existing prose.
     """
     lookup_instructions = (
         _FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS if can_lookup else ""
     )
-    return f"""## FINAL DELIVERABLE FILE REFERENCES
-If a successful tool result or trusted non-internal FileRef produced a file that
+    heading = "## FINAL DELIVERABLE FILE REFERENCES\n" if include_heading else ""
+    return f"""{heading}If a successful tool result or trusted non-internal FileRef produced a file that
 satisfies the user's requested final deliverable, the final answer MUST include
 the exact markdown_link returned for that file, unless the successful tool result
 prescribes a different exact user-facing rendering, such as inline_markdown for screenshots.
 
 {lookup_instructions}Copy the selected rendering verbatim and preserve its original filename and extension.
-Never invent, guess, shorten, or rewrite a file_id. Do not claim that a file was
-delivered unless its exact selected rendering appears in the final answer.
+Preserve every returned file_id exactly. Do not claim that a file was delivered
+unless its exact selected rendering appears in the final answer.
 
 Include only user-requested final deliverables. Do not include intermediate,
 supporting, or temporary files unless the user explicitly requested them as

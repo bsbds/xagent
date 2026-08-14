@@ -1448,7 +1448,7 @@ class AutoPattern(AgentPattern):
                                 "Required for every decision. When action is "
                                 "final_answer, provide the complete non-empty final "
                                 "response to the user. Use an empty string for react "
-                                f"or plan_execute. {final_deliverable_file_reference_instructions(can_lookup=False)} "
+                                f"or plan_execute. {final_deliverable_file_reference_instructions(can_lookup=False, include_heading=False)} "
                                 f"{final_answer_language_rule()}"
                             ),
                         },

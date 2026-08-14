@@ -1097,7 +1097,8 @@ async def test_auto_decision_prompt_includes_grounding_rule() -> None:
     answer_description = pattern._decision_tool_schema()["function"]["parameters"][
         "properties"
     ]["answer"]["description"]
-    assert "## FINAL DELIVERABLE FILE REFERENCES" in answer_description
+    assert "## FINAL DELIVERABLE FILE REFERENCES" not in answer_description
+    assert "exact markdown_link" in answer_description
     assert "get_workspace_output_files" not in answer_description
     # Routes through the classification field so _normalize_decision's
     # deterministic fallback catches it, not just the model's routing choice.
