@@ -1,9 +1,38 @@
 from __future__ import annotations
 
+import ast
+import re
+import subprocess
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Distribution names and import names are separate interfaces. Keep the mapping
+# explicit so packages such as pydantic-settings are checked without guessing
+# their import name from punctuation.
+SANDBOX_DISTRIBUTION_IMPORTS = {
+    "pydantic": "pydantic",
+    "pydantic-settings": "pydantic_settings",
+    "cloudpickle": "cloudpickle",
+    "mcp": "mcp",
+    "pandas": "pandas",
+    "numpy": "numpy",
+    "matplotlib": "matplotlib",
+    "openpyxl": "openpyxl",
+    "fsspec": "fsspec",
+}
+SANDBOX_DIRECT_REQUIREMENTS = {
+    "pydantic": "pydantic>=2.11.7",
+    "pydantic-settings": "pydantic-settings",
+    "cloudpickle": "cloudpickle>=3.0.0",
+    "mcp": "mcp>=1.12.4",
+    "pandas": "pandas>=1.3.0",
+    "numpy": "numpy>=1.21.0",
+    "matplotlib": "matplotlib>=3.5.0",
+    "openpyxl": "openpyxl>=3.1.0",
+    "fsspec": "fsspec>=2024.0.0",
+}
 
 
 def read_workflow(name: str) -> str:
@@ -210,7 +239,7 @@ def test_docker_workflows_pass_package_version_to_backend_build() -> None:
     )
 
 
-def test_docker_readme_documents_lockfile_requirement() -> None:
+def test_docker_readme_documents_backend_and_sandbox_lockfile_requirements() -> None:
     readme = read_repo_file("docker/README.md")
 
     assert "`uv.lock` during the Docker build" in readme
@@ -223,23 +252,15 @@ def test_docker_readme_documents_lockfile_requirement() -> None:
 def test_sandbox_image_dependencies_are_a_dedicated_locked_group() -> None:
     pyproject = tomllib.loads(read_repo_file("pyproject.toml"))
 
-    assert pyproject["dependency-groups"]["sandbox"] == [
-        "pydantic>=2.11.7",
-        "pydantic-settings",
-        "cloudpickle>=3.0.0",
-        "mcp>=1.12.4",
-        "pandas>=1.3.0",
-        "numpy>=1.21.0",
-        "matplotlib>=3.5.0",
-        "openpyxl>=3.1.0",
-        "fsspec>=2024.0.0",
-    ]
+    assert pyproject["dependency-groups"]["sandbox"] == list(
+        SANDBOX_DIRECT_REQUIREMENTS.values()
+    )
 
 
 def test_sandbox_dockerfile_installs_locked_group_and_smoke_tests_imports() -> None:
     dockerfile = read_repo_file("docker/Dockerfile.sandbox")
 
-    assert "FROM node:22-slim AS sandbox-requirements" in dockerfile
+    assert "FROM python:3.11-slim AS sandbox-requirements" in dockerfile
     assert "COPY pyproject.toml uv.lock ./" in dockerfile
     assert (
         "uv export --quiet --locked --only-group sandbox --no-emit-project"
@@ -250,10 +271,69 @@ def test_sandbox_dockerfile_installs_locked_group_and_smoke_tests_imports() -> N
     assert "COPY pyproject.toml uv.lock ./" not in runtime_stage
     assert "COPY --from=sandbox-requirements /sandbox-requirements.txt" in runtime_stage
     assert "uv pip install --system --break-system-packages" in runtime_stage
-    assert "import cloudpickle, fsspec, matplotlib, mcp" in runtime_stage
-    assert (
-        "import numpy, openpyxl, pandas, pydantic, pydantic_settings" in runtime_stage
-    )
     assert "docker/sandbox-requirements.txt" not in dockerfile
     assert not (ROOT / "docker" / "sandbox-requirements.txt").exists()
     assert "USER sandbox" in runtime_stage
+
+
+def test_sandbox_export_is_locked_without_managed_python_downloads() -> None:
+    dockerfile = read_repo_file("docker/Dockerfile.sandbox")
+    requirements_stage = dockerfile.split(
+        "FROM python:3.11-slim AS sandbox-requirements\n", maxsplit=1
+    )[1].split("FROM node:22-slim AS sandbox\n", maxsplit=1)[0]
+
+    assert "ENV UV_PYTHON_DOWNLOADS=0" in requirements_stage
+    assert "uv export --quiet --locked --only-group sandbox --no-emit-project" in (
+        requirements_stage
+    )
+    assert "--frozen" not in requirements_stage
+    assert "uv python install" not in requirements_stage
+    assert "apt-get install" not in requirements_stage
+
+
+def test_sandbox_uv_install_uses_buildkit_cache() -> None:
+    dockerfile = read_repo_file("docker/Dockerfile.sandbox")
+    runtime_stage = dockerfile.split("FROM node:22-slim AS sandbox\n", maxsplit=1)[1]
+
+    assert "--mount=type=cache,target=/root/.cache/uv" in runtime_stage
+    assert "--no-cache" not in runtime_stage
+
+
+def test_sandbox_direct_distributions_have_explicit_smoke_imports() -> None:
+    pyproject = tomllib.loads(read_repo_file("pyproject.toml"))
+    direct_requirements = pyproject["dependency-groups"]["sandbox"]
+    dockerfile = read_repo_file("docker/Dockerfile.sandbox")
+    runtime_stage = dockerfile.split("FROM node:22-slim AS sandbox\n", maxsplit=1)[1]
+    smoke_command = re.search(r'python -c "([^"]+)"', runtime_stage)
+
+    assert SANDBOX_DIRECT_REQUIREMENTS.keys() == SANDBOX_DISTRIBUTION_IMPORTS.keys()
+    assert direct_requirements == list(SANDBOX_DIRECT_REQUIREMENTS.values())
+    assert smoke_command is not None
+    imported_modules = {
+        alias.name
+        for node in ast.walk(ast.parse(smoke_command.group(1)))
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert imported_modules == set(SANDBOX_DISTRIBUTION_IMPORTS.values())
+
+
+def test_uv_export_locked_sandbox_group_contains_direct_distributions() -> None:
+    result = subprocess.run(
+        [
+            "uv",
+            "export",
+            "--quiet",
+            "--locked",
+            "--only-group",
+            "sandbox",
+            "--no-emit-project",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    for distribution in SANDBOX_DISTRIBUTION_IMPORTS:
+        assert re.search(rf"^{re.escape(distribution)}==", result.stdout, re.MULTILINE)

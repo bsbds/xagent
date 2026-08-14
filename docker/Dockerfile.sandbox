@@ -6,7 +6,9 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 ############################
 # Locked sandbox requirements
 ############################
-FROM node:22-slim AS sandbox-requirements
+FROM python:3.11-slim AS sandbox-requirements
+
+ENV UV_PYTHON_DOWNLOADS=0
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 WORKDIR /build
@@ -50,7 +52,7 @@ COPY --from=sandbox-requirements /sandbox-requirements.txt /tmp/sandbox-requirem
 # Install the exact versions exported from uv.lock. The import check fails the
 # build if a supported runtime package is missing from the resulting image.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --break-system-packages --no-cache \
+    uv pip install --system --break-system-packages \
         -r /tmp/sandbox-requirements.txt \
     && rm /tmp/sandbox-requirements.txt \
     && python -c "import cloudpickle, fsspec, matplotlib, mcp; import numpy, openpyxl, pandas, pydantic, pydantic_settings"
