@@ -121,7 +121,9 @@ export function createPublicFileAccessPolicy(accessToken: string): FileAccessPol
     request: (url, options = {}) => {
       const headers = new Headers(options.headers)
       headers.delete("Authorization")
-      return fetch(url, { ...options, headers, credentials: "omit" })
+      // Same-origin cookies carry deployment routing state, not file authority;
+      // the scoped query token remains the public endpoint's credential.
+      return fetch(url, { ...options, headers, credentials: "same-origin" })
     },
     // The guest token rides the query string, so media elements can load
     // previewUrl directly — no headers needed, and range requests work.
