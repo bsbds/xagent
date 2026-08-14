@@ -5,24 +5,38 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS = """## FINAL DELIVERABLE FILE REFERENCES
-If a successful tool result or trusted public FileRef produced a file that
-satisfies the user's requested final deliverable, the final answer MUST include
-the exact markdown_link returned for that file.
-
-If a generated final deliverable exists but no trusted file UUID or markdown_link
+_FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS = """If a generated final deliverable exists but no trusted file UUID or markdown_link
 remains in the current context, call get_workspace_output_files once before finalizing.
 Match the exact deliverable path and filename, then use only a
 returned non-null file_id or markdown_link. If the lookup has no registered ID
 or link, do not repeat the lookup, invent a link, or claim delivery.
 
-Copy the markdown_link verbatim and preserve its original filename and extension.
+"""
+
+
+def final_deliverable_file_reference_instructions(*, can_lookup: bool) -> str:
+    """Build final-deliverable rules for the current tool capability.
+
+    Final-only protocol turns cannot call workspace tools. Omitting lookup advice
+    there prevents the prompt from requiring a tool call that the active schema
+    rejects, while preserving the same fail-closed delivery requirements.
+    """
+    lookup_instructions = (
+        _FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS if can_lookup else ""
+    )
+    return f"""## FINAL DELIVERABLE FILE REFERENCES
+If a successful tool result or trusted public FileRef produced a file that
+satisfies the user's requested final deliverable, the final answer MUST include
+the exact markdown_link returned for that file.
+
+{lookup_instructions}Copy the markdown_link verbatim and preserve its original filename and extension.
 Never invent, guess, shorten, or rewrite a file_id. Do not claim that a file was
 delivered unless its exact markdown_link appears in the final answer.
 
 Include only user-requested final deliverables. Do not include intermediate,
 supporting, or temporary files unless the user explicitly requested them as
 deliverables. Never include internal FileRefs in user-facing output."""
+
 
 FILE_REF_OUTPUT_INSTRUCTIONS = f"""## FILE REFERENCE OUTPUTS
 When mentioning a generated or uploaded file that has a file_id, render it as a Markdown file reference:
@@ -36,7 +50,7 @@ File delivery integrity:
 - When the user requests a new file or file-based artifact, it is not delivered until a successful tool result returns its registered FileRef or markdown_link.
 - Do not call final_answer claiming that a file was created or delivered unless that result exists.
 
-{FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS}"""
+{final_deliverable_file_reference_instructions(can_lookup=False)}"""
 
 FILE_REF_MODEL_INSTRUCTIONS = f"""## FILE REFERENCES
 Files are referenced by FileRef objects. Treat file_id as the canonical file handle.

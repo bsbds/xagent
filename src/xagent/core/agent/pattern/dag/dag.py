@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ....file_ref import FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS
+from ....file_ref import final_deliverable_file_reference_instructions
 from ....model.intent import goal_scope
 from ....task_runtime import (
     PREFERRED_INPUT_MODALITIES_METADATA_KEY,
@@ -1525,7 +1525,7 @@ class DAGPattern(AgentPattern):
                     "When writing the answer field, including any content carried "
                     "over from candidate_output or step_results: "
                     f"{grounding_rule(can_call_tools=False)}\n\n"
-                    f"{FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS}\n\n"
+                    f"{final_deliverable_file_reference_instructions(can_lookup=False)}\n\n"
                     "If the answer presents any figure as an illustrative "
                     "placeholder because no step produced the underlying data, "
                     "name that unsourced data in reason even when you choose "
@@ -1558,7 +1558,7 @@ class DAGPattern(AgentPattern):
                             "description": (
                                 "Final user-facing answer when status is completed; "
                                 "empty when status is incomplete. "
-                                f"{FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS} "
+                                f"{final_deliverable_file_reference_instructions(can_lookup=False)} "
                                 f"{final_answer_language_rule(subject='output language policy')}"
                             ),
                         },

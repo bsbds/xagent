@@ -392,11 +392,13 @@ def test_dag_completion_assessment_prompt_includes_grounding_rule() -> None:
     assert "illustrative placeholders" in system_prompt
     assert "use an appropriate tool" not in system_prompt
     assert "## FINAL DELIVERABLE FILE REFERENCES" in system_prompt
+    assert "get_workspace_output_files" not in system_prompt
 
     answer_description = pattern._completion_assessment_tool_schema()["function"][
         "parameters"
     ]["properties"]["answer"]["description"]
     assert "## FINAL DELIVERABLE FILE REFERENCES" in answer_description
+    assert "get_workspace_output_files" not in answer_description
 
 
 def test_dag_waiting_response_preserves_active_step_state() -> None:

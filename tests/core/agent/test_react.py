@@ -1352,6 +1352,7 @@ def test_react_grounding_rule_present_in_both_answer_paths() -> None:
     assert "use an appropriate tool to verify" in tool_prompt
     assert "use an appropriate tool" not in forced_prompt
     assert "## FINAL DELIVERABLE FILE REFERENCES" in forced_prompt
+    assert "get_workspace_output_files" not in forced_prompt
 
 
 @pytest.mark.asyncio
@@ -3101,6 +3102,7 @@ async def test_react_pattern_reserves_control_tool_names_in_schema() -> None:
     assert "response_language" in answer_schema["description"]
     assert "tool results, source documents" in answer_schema["description"]
     assert "## FINAL DELIVERABLE FILE REFERENCES" in answer_schema["description"]
+    assert "get_workspace_output_files" in answer_schema["description"]
 
 
 @pytest.mark.asyncio
