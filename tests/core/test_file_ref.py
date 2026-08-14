@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from xagent.core.file_ref import (
+    FILE_REF_OUTPUT_INSTRUCTIONS,
+    FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS,
     build_file_id_ref,
     build_file_ref,
     build_workspace_file_ref,
@@ -10,6 +12,25 @@ from xagent.core.file_ref import (
     sanitize_file_ref_for_context,
 )
 from xagent.core.workspace import TaskWorkspace
+
+FINAL_DELIVERABLE_INSTRUCTION_MARKER = "## FINAL DELIVERABLE FILE REFERENCES"
+
+
+def test_final_deliverable_instruction_is_shared_with_file_reference_outputs() -> None:
+    instruction = FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS
+
+    assert FINAL_DELIVERABLE_INSTRUCTION_MARKER in instruction
+    assert "exact markdown_link" in instruction
+    assert "verbatim" in instruction
+    assert "filename and extension" in instruction
+    assert "Never invent" in instruction
+    assert "get_workspace_output_files" in instruction
+    assert "once before finalizing" in instruction
+    assert "returned non-null file_id or markdown_link" in instruction
+    assert "do not repeat the lookup" in instruction
+    assert "intermediate" in instruction
+    assert "Never include internal FileRefs" in instruction
+    assert instruction in FILE_REF_OUTPUT_INSTRUCTIONS
 
 
 @pytest.mark.parametrize(

@@ -42,6 +42,7 @@ from datetime import timezone
 from enum import Enum
 from typing import Any, cast
 
+from ....file_ref import FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS
 from ....model.chat.exceptions import LLMToolProtocolError
 from ....model.chat.tool_protocol import get_tool_protocol_error
 from ....tools.user_interaction import (
@@ -823,7 +824,8 @@ class ReActPattern(AgentPattern):
                 "tool-call markup as plain text. Set outcome=completed only when "
                 "every requested action or verification succeeded; otherwise set "
                 "outcome=partial or outcome=blocked and say what remains. "
-                f"{grounding_rule(can_call_tools=False)} "
+                f"{grounding_rule(can_call_tools=False)}\n\n"
+                f"{FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS}\n\n"
                 f"{final_answer_language_rule()}"
             )
         elif has_tools:
@@ -1697,6 +1699,7 @@ class ReActPattern(AgentPattern):
                                 "description": (
                                     "Complete user-facing answer. It must be "
                                     "non-empty and must match response_language. "
+                                    f"{FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS} "
                                     f"{final_answer_language_rule()}"
                                 ),
                             },

@@ -8,6 +8,7 @@ from typing import Any
 
 from json_repair import loads as repair_json_loads
 
+from ....file_ref import FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS
 from ....model.chat.exceptions import LLMToolProtocolError
 from ...context.enrichment import (
     IMAGE_EDIT_UNAVAILABLE_METADATA_KEY,
@@ -1308,7 +1309,8 @@ class AutoPattern(AgentPattern):
             "when action is final_answer, you must include a complete non-empty "
             "answer field in the same tool call. Put action before answer in the "
             "tool arguments. "
-            f"When writing that answer field: {grounding_rule(can_call_tools=False)} "
+            f"When writing that answer field: {grounding_rule(can_call_tools=False)}\n\n"
+            f"{FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS}\n\n"
             "If the answer would need such unsupported specifics, set "
             "existing_context_sufficient=false and choose react so the agent can "
             "verify them with tools. "
@@ -1446,7 +1448,8 @@ class AutoPattern(AgentPattern):
                                 "Required for every decision. When action is "
                                 "final_answer, provide the complete non-empty final "
                                 "response to the user. Use an empty string for react "
-                                f"or plan_execute. {final_answer_language_rule()}"
+                                f"or plan_execute. {FINAL_DELIVERABLE_FILE_REFERENCE_INSTRUCTIONS} "
+                                f"{final_answer_language_rule()}"
                             ),
                         },
                         "requires_current_or_external_facts": {
