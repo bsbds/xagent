@@ -5,7 +5,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-_FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS = """If a generated final deliverable exists but no trusted file UUID or markdown_link
+_FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS = """If a generated final deliverable exists but no trusted file_id or markdown_link
 remains in the current context, call get_workspace_output_files once before finalizing.
 Match the exact deliverable path and filename, then use only a
 returned non-null file_id or markdown_link. From a returned file_id, render [filename](file:file_id)
@@ -27,7 +27,7 @@ def final_deliverable_file_reference_instructions(*, can_lookup: bool) -> str:
         _FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS if can_lookup else ""
     )
     return f"""## FINAL DELIVERABLE FILE REFERENCES
-If a successful tool result or trusted public FileRef produced a file that
+If a successful tool result or trusted non-internal FileRef produced a file that
 satisfies the user's requested final deliverable, the final answer MUST include
 the exact markdown_link returned for that file, unless the successful tool result
 prescribes a different exact user-facing rendering, such as inline_markdown for screenshots.
