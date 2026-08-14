@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Trash2, Users, Search, ChevronLeft, ChevronRight, ArrowLeft } from "lucide-react";
@@ -88,13 +89,13 @@ export default function UserManagement() {
         throw new Error(errorData.detail || "Failed to delete user");
       }
 
-      alert(`${t('userManagement.list.alerts.delete_success_prefix')}${userLabel}${t('userManagement.list.alerts.delete_success_suffix')}`);
+      toast.success(`${t('userManagement.list.alerts.delete_success_prefix')}${userLabel}${t('userManagement.list.alerts.delete_success_suffix')}`);
 
       // Refresh users list
       fetchUsers();
     } catch (error: any) {
       console.error("Error deleting user:", error);
-      alert(`${t('userManagement.list.alerts.delete_failed_prefix')}${error.message || t('userManagement.list.alerts.delete_failed_suffix')}`);
+      toast.error(`${t('userManagement.list.alerts.delete_failed_prefix')}${error.message || t('userManagement.list.alerts.delete_failed_suffix')}`);
     }
   };
 
