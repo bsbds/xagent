@@ -1314,7 +1314,7 @@ class AutoPattern(AgentPattern):
             "existing_context_sufficient=false and choose react so the agent can "
             "verify them with tools.\n\n"
             f"{final_deliverable_file_reference_instructions(can_lookup=False)}\n\n"
-            "You must also classify whether "
+            "You must classify whether "
             "the latest request requires current or external facts, and whether "
             "the existing context is sufficient evidence for those facts. "
             "Set response_language to the natural language that user-facing prose "

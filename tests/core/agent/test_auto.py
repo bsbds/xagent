@@ -1097,6 +1097,8 @@ async def test_auto_decision_prompt_includes_grounding_rule() -> None:
         "If the answer would need such unsupported specifics"
     ) < decision_prompt.index("## FINAL DELIVERABLE FILE REFERENCES")
     assert "get_workspace_output_files" not in decision_prompt
+    assert "You must classify whether" in decision_prompt
+    assert "You must also classify whether" not in decision_prompt
     answer_description = pattern._decision_tool_schema()["function"]["parameters"][
         "properties"
     ]["answer"]["description"]
