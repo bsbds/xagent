@@ -56,6 +56,10 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
     assert "canonical markdown_link form" not in lookup_instruction
     assert "do not repeat the lookup" in lookup_instruction
     assert "get_workspace_output_files" not in forced_instruction
+    assert "lookup is unavailable" in forced_instruction
+    assert "do not reconstruct one or claim delivery" in forced_instruction
+    assert "deliverable link is unavailable" in forced_instruction
+    assert "lookup is unavailable" not in lookup_instruction
     assert forced_instruction not in FILE_REF_OUTPUT_INSTRUCTIONS
     assert FINAL_DELIVERABLE_INSTRUCTION_MARKER not in FILE_REF_OUTPUT_INSTRUCTIONS
     assert "get_workspace_output_files" in FILE_REF_OUTPUT_INSTRUCTIONS

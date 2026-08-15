@@ -15,6 +15,11 @@ link, or claim delivery.
 
 """
 
+_FINAL_DELIVERABLE_NO_LOOKUP_INSTRUCTIONS = """If no trusted link or prescribed rendering remains in context and lookup is unavailable,
+do not reconstruct one or claim delivery; state that the deliverable link is unavailable.
+
+"""
+
 
 def final_deliverable_file_reference_instructions(
     *, can_lookup: bool, include_heading: bool = True
@@ -27,7 +32,9 @@ def final_deliverable_file_reference_instructions(
     embed these rules inline after existing prose.
     """
     lookup_instructions = (
-        _FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS if can_lookup else ""
+        _FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS
+        if can_lookup
+        else _FINAL_DELIVERABLE_NO_LOOKUP_INSTRUCTIONS
     )
     heading = "## FINAL DELIVERABLE FILE REFERENCES\n" if include_heading else ""
     return f"""{heading}If a successful tool result or trusted non-internal FileRef produced a file that
