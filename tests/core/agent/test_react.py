@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -3142,6 +3143,7 @@ async def test_react_pattern_reserves_control_tool_names_in_schema() -> None:
 def test_react_final_answer_lookup_instruction_tracks_active_workspace_tool() -> None:
     pattern = ReActPattern()
 
+    assert not inspect.signature(pattern._final_answer_tool_schema).parameters
     schemas = pattern._tool_schemas_with_builtin_controls([FakeWorkspaceOutputTool()])
     final_answer_schema = next(
         schema for schema in schemas if schema["function"]["name"] == "final_answer"

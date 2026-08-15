@@ -1122,12 +1122,8 @@ class ReActPattern(AgentPattern):
             for tool_call in normalized.get("tool_calls") or []
         )
 
-    def _final_answer_tool_schema(
-        self, *, can_lookup_output_files: bool = False
-    ) -> dict[str, Any]:
-        for schema in self._builtin_tool_schemas(
-            can_lookup_output_files=can_lookup_output_files
-        ):
+    def _final_answer_tool_schema(self) -> dict[str, Any]:
+        for schema in self._builtin_tool_schemas():
             function = schema.get("function")
             if isinstance(function, dict) and function.get("name") == "final_answer":
                 return schema
