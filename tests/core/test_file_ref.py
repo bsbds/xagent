@@ -38,6 +38,7 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
         assert "verbatim" in instruction
         assert "filename and extension" in instruction
         assert "Preserve every returned file_id exactly" in instruction
+        assert "Do not claim that a file was delivered" not in instruction
         assert "Never invent, guess, shorten" not in instruction
         assert "intermediate" in instruction
         assert "Never include internal FileRefs" in instruction
@@ -54,6 +55,9 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
     assert "get_workspace_output_files" not in forced_instruction
     assert forced_instruction not in FILE_REF_OUTPUT_INSTRUCTIONS
     assert FINAL_DELIVERABLE_INSTRUCTION_MARKER not in FILE_REF_OUTPUT_INSTRUCTIONS
+    assert "get_workspace_output_files" in FILE_REF_OUTPUT_INSTRUCTIONS
+    assert "trusted provenance" in FILE_REF_OUTPUT_INSTRUCTIONS
+    assert "Do not call final_answer claiming" in FILE_REF_OUTPUT_INSTRUCTIONS
 
 
 @pytest.mark.parametrize(

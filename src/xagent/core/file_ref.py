@@ -36,8 +36,7 @@ the exact markdown_link returned for that file, unless the successful tool resul
 prescribes a different exact user-facing rendering, such as inline_markdown for screenshots.
 
 {lookup_instructions}Copy the selected rendering verbatim and preserve its original filename and extension.
-Preserve every returned file_id exactly. Do not claim that a file was delivered
-unless its exact selected rendering appears in the final answer.
+Preserve every returned file_id exactly.
 
 Include only user-requested final deliverables. Do not include intermediate,
 supporting, or temporary files unless the user explicitly requested them as
@@ -53,6 +52,7 @@ Do not mention only the filename when a file_id or markdown_link is available. P
 File delivery integrity:
 - Internal FileRefs (`internal: true`) are runtime context only. Never render or expose a `file:` link for them.
 - Never invent, guess, or construct a file_id or `file:` link. Use only a trusted FileRef supplied for an existing input/attachment, or the exact FileRef or markdown_link returned by a successful tool result. A link mentioned only in prior assistant prose is not provenance.
+- An exact non-null file_id and filename returned together by get_workspace_output_files are trusted provenance for rendering a file link under the final-deliverable rules.
 - When the user requests a new file or file-based artifact, it is not delivered until a successful tool result returns its registered FileRef or markdown_link.
 - Do not call final_answer claiming that a file was created or delivered unless that result exists."""
 
