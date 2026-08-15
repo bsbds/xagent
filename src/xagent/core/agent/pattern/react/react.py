@@ -42,7 +42,10 @@ from datetime import timezone
 from enum import Enum
 from typing import Any, cast
 
-from ....file_ref import final_deliverable_file_reference_instructions
+from ....file_ref import (
+    WORKSPACE_OUTPUT_FILES_TOOL_NAME,
+    final_deliverable_file_reference_instructions,
+)
 from ....model.chat.exceptions import LLMToolProtocolError
 from ....model.chat.tool_protocol import get_tool_protocol_error
 from ....tools.user_interaction import (
@@ -1838,7 +1841,7 @@ class ReActPattern(AgentPattern):
             if self._tool_name(tool) not in control_tool_names
         ]
         can_lookup_output_files = any(
-            schema.get("function", {}).get("name") == "get_workspace_output_files"
+            schema.get("function", {}).get("name") == WORKSPACE_OUTPUT_FILES_TOOL_NAME
             for schema in external_tools
         )
         return [

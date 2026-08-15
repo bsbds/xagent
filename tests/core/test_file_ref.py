@@ -17,6 +17,7 @@ FINAL_DELIVERABLE_INSTRUCTION_MARKER = "## FINAL DELIVERABLE FILE REFERENCES"
 
 
 def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -> None:
+    assert file_ref.WORKSPACE_OUTPUT_FILES_TOOL_NAME == "get_workspace_output_files"
     lookup_instruction = file_ref.final_deliverable_file_reference_instructions(
         can_lookup=True
     )

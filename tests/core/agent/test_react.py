@@ -20,6 +20,7 @@ from xagent.core.agent import (
     ToolCallRecord,
 )
 from xagent.core.agent.result import tool_result_succeeded
+from xagent.core.file_ref import WORKSPACE_OUTPUT_FILES_TOOL_NAME
 from xagent.core.model.chat.basic.router import RouterLLM
 from xagent.core.model.chat.exceptions import LLMToolProtocolError
 from xagent.core.model.chat.tool_protocol import (
@@ -69,7 +70,7 @@ class FakeTool:
 class FakeWorkspaceOutputTool:
     def __init__(self) -> None:
         class Metadata:
-            name = "get_workspace_output_files"
+            name = WORKSPACE_OUTPUT_FILES_TOOL_NAME
             description = "List output files from the current workspace."
 
         self.metadata = Metadata()

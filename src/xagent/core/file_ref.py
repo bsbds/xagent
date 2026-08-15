@@ -5,8 +5,10 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-_FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS = """If a generated final deliverable exists but no trusted file_id remains in the current
-context, call get_workspace_output_files once before finalizing. Match the exact
+WORKSPACE_OUTPUT_FILES_TOOL_NAME = "get_workspace_output_files"
+
+_FINAL_DELIVERABLE_FILE_LOOKUP_INSTRUCTIONS = f"""If a generated final deliverable exists but no trusted file_id remains in the current
+context, call {WORKSPACE_OUTPUT_FILES_TOOL_NAME} once before finalizing. Match the exact
 deliverable path and filename, then use only a returned non-null file_id and render [filename](file:file_id)
 with the exact returned filename; this matches the markdown_link form.
 If the lookup has no registered file_id, do not repeat the lookup, invent a link,
