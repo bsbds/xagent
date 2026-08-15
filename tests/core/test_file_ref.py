@@ -50,7 +50,9 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
     assert FINAL_DELIVERABLE_INSTRUCTION_MARKER in forced_instruction
     assert "get_workspace_output_files" in lookup_instruction
     assert "once before finalizing" in lookup_instruction
-    assert "returned non-null file_id or markdown_link" in lookup_instruction
+    assert "no trusted file_id remains" in lookup_instruction
+    assert "returned non-null file_id" in lookup_instruction
+    assert "file_id or markdown_link" not in lookup_instruction
     assert "render [filename](file:file_id)" in lookup_instruction
     assert "matches the markdown_link form" in lookup_instruction
     assert "canonical markdown_link form" not in lookup_instruction
