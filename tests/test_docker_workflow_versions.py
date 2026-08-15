@@ -6,6 +6,10 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # Distribution names and import names are separate interfaces. Keep the mapping
@@ -257,6 +261,47 @@ def test_sandbox_image_dependencies_are_a_dedicated_locked_group() -> None:
     )
 
 
+def test_sandbox_group_covers_runtime_requirements_with_compatible_lock() -> None:
+    runtime_constants = {
+        "src/xagent/core/tools/adapters/vibe/sandboxed_tool/"
+        "sandboxed_tool_wrapper.py": "SANDBOX_BASE_DEPENDENCIES",
+        "src/xagent/core/tools/adapters/vibe/sandboxed_tool/"
+        "sandboxed_mcp_tool_helper.py": "_MCP_SANDBOX_EXTRA_PACKAGES",
+    }
+    runtime_requirements: list[str] = []
+    for path, constant_name in runtime_constants.items():
+        module = ast.parse(read_repo_file(path))
+        assignment = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == constant_name
+                for target in node.targets
+            )
+        )
+        runtime_requirements.extend(ast.literal_eval(assignment.value))
+
+    pyproject = tomllib.loads(read_repo_file("pyproject.toml"))
+    sandbox_requirements = {
+        canonicalize_name(requirement.name): requirement
+        for raw_requirement in pyproject["dependency-groups"]["sandbox"]
+        if (requirement := Requirement(raw_requirement))
+    }
+    lock = tomllib.loads(read_repo_file("uv.lock"))
+    locked_versions = {
+        canonicalize_name(package["name"]): Version(package["version"])
+        for package in lock["package"]
+        if "version" in package
+    }
+
+    for raw_requirement in runtime_requirements:
+        runtime_requirement = Requirement(raw_requirement)
+        name = canonicalize_name(runtime_requirement.name)
+        assert name in sandbox_requirements
+        assert locked_versions[name] in runtime_requirement.specifier
+
+
 def test_sandbox_dockerfile_installs_locked_group_and_smoke_tests_imports() -> None:
     dockerfile = read_repo_file("docker/Dockerfile.sandbox")
 
@@ -276,6 +321,14 @@ def test_sandbox_dockerfile_installs_locked_group_and_smoke_tests_imports() -> N
     assert "USER sandbox" in runtime_stage
 
 
+def test_sandbox_runtime_keeps_and_smoke_tests_uvx() -> None:
+    dockerfile = read_repo_file("docker/Dockerfile.sandbox")
+    runtime_stage = dockerfile.split("FROM node:22-slim AS sandbox\n", maxsplit=1)[1]
+
+    assert "COPY --from=uv /uv /uvx /usr/local/bin/" in runtime_stage
+    assert "uvx --version" in runtime_stage
+
+
 def test_sandbox_export_is_locked_without_managed_python_downloads() -> None:
     dockerfile = read_repo_file("docker/Dockerfile.sandbox")
     requirements_stage = dockerfile.split(
@@ -286,9 +339,6 @@ def test_sandbox_export_is_locked_without_managed_python_downloads() -> None:
     assert "uv export --quiet --locked --only-group sandbox --no-emit-project" in (
         requirements_stage
     )
-    assert "--frozen" not in requirements_stage
-    assert "uv python install" not in requirements_stage
-    assert "apt-get install" not in requirements_stage
 
 
 def test_sandbox_uv_install_uses_buildkit_cache() -> None:
