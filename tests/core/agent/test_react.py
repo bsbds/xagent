@@ -1363,16 +1363,27 @@ def test_react_grounding_rule_present_in_both_answer_paths() -> None:
     tool_prompt = pattern._messages_for_llm(
         context, has_tools=True, tool_names=["calculator"]
     )[0]["content"]
+    lookup_tool_prompt = pattern._messages_for_llm(
+        context,
+        has_tools=True,
+        tool_names=[WORKSPACE_OUTPUT_FILES_TOOL_NAME, "final_answer"],
+    )[0]["content"]
     forced_prompt = pattern._messages_for_llm(
         context, has_tools=True, force_final_answer=True, tool_names=["final_answer"]
     )[0]["content"]
 
-    for prompt in (tool_prompt, forced_prompt):
+    for prompt in (tool_prompt, lookup_tool_prompt, forced_prompt):
         assert "quantitative data" in prompt
         assert "illustrative placeholders" in prompt
     assert "use an appropriate tool to verify" in tool_prompt
     assert "use an appropriate tool" not in forced_prompt
     assert "## FINAL DELIVERABLE FILE REFERENCES" not in tool_prompt
+    assert "exact markdown_link" in tool_prompt
+    assert "lookup is unavailable" in tool_prompt
+    assert "call get_workspace_output_files once before finalizing" not in tool_prompt
+    assert (
+        "call get_workspace_output_files once before finalizing" in lookup_tool_prompt
+    )
     assert forced_prompt.count("## FINAL DELIVERABLE FILE REFERENCES") == 1
     assert "call get_workspace_output_files once before finalizing" not in forced_prompt
 

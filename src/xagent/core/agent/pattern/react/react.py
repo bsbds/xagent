@@ -832,7 +832,11 @@ class ReActPattern(AgentPattern):
                 f"{final_answer_language_rule()}"
             )
         elif has_tools:
-            available_tools = ", ".join(tool_names or []) or "(none)"
+            active_tool_names = tool_names or []
+            available_tools = ", ".join(active_tool_names) or "(none)"
+            can_lookup_output_files = (
+                WORKSPACE_OUTPUT_FILES_TOOL_NAME in active_tool_names
+            )
             current_date = (
                 context.created_at.astimezone(timezone.utc).date().isoformat()
             )
@@ -855,7 +859,10 @@ class ReActPattern(AgentPattern):
                 "instruction for follow-up requests. If the user corrects a previous "
                 "assumption, especially about dates or freshness, revise the answer "
                 "instead of restating prior content. "
-                f"{grounding_rule()} "
+                f"{grounding_rule()}\n\n"
+                "When writing any final user-facing response, including plain "
+                "assistant text: "
+                f"{final_deliverable_file_reference_instructions(can_lookup=can_lookup_output_files, include_heading=False)}\n\n"
                 f"Current date (UTC): {current_date}. "
                 "For recent, latest, current, or time-sensitive requests, use this "
                 "date when forming search queries and judging source relevance. Only call "
