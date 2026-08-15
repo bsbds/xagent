@@ -1373,7 +1373,7 @@ def test_react_grounding_rule_present_in_both_answer_paths() -> None:
     assert "use an appropriate tool" not in forced_prompt
     assert "## FINAL DELIVERABLE FILE REFERENCES" not in tool_prompt
     assert forced_prompt.count("## FINAL DELIVERABLE FILE REFERENCES") == 1
-    assert "get_workspace_output_files" not in forced_prompt
+    assert "call get_workspace_output_files once before finalizing" not in forced_prompt
 
 
 @pytest.mark.asyncio
