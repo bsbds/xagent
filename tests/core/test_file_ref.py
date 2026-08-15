@@ -34,6 +34,8 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
         assert "trusted public FileRef" not in instruction
         assert "file UUID" not in instruction
         assert "inline_markdown for screenshots" in instruction
+        assert "inline image Markdown" in instruction
+        assert "image intended for inline display" in instruction
         assert "different exact user-facing rendering" in instruction
         assert "verbatim" in instruction
         assert "filename and extension" in instruction

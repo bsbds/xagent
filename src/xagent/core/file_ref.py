@@ -33,7 +33,8 @@ def final_deliverable_file_reference_instructions(
     return f"""{heading}If a successful tool result or trusted non-internal FileRef produced a file that
 satisfies the user's requested final deliverable, the final answer MUST include
 the exact markdown_link returned for that file, unless the successful tool result
-prescribes a different exact user-facing rendering, such as inline_markdown for screenshots.
+prescribes a different exact user-facing rendering, such as inline_markdown for screenshots,
+or the FileRef rules require inline image Markdown for an image intended for inline display.
 
 {lookup_instructions}Copy the selected rendering verbatim and preserve its original filename and extension.
 Preserve every returned file_id exactly.
