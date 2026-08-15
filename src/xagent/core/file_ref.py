@@ -38,8 +38,8 @@ def final_deliverable_file_reference_instructions(
         else _FINAL_DELIVERABLE_NO_LOOKUP_INSTRUCTIONS
     )
     heading = "## FINAL DELIVERABLE FILE REFERENCES\n" if include_heading else ""
-    return f"""{heading}If a successful tool result or trusted non-internal FileRef produced a file that
-satisfies the user's requested final deliverable, the final answer MUST include
+    return f"""{heading}If a successful tool result produced a file (or a trusted non-internal FileRef references one)
+that satisfies the user's requested final deliverable, the final answer MUST include
 the exact markdown_link returned for that file, unless the successful tool result
 prescribes a different exact user-facing rendering, such as inline_markdown for screenshots,
 or the FileRef rules require inline image Markdown for an image intended for inline display.

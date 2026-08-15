@@ -31,6 +31,9 @@ def test_final_deliverable_instruction_scopes_workspace_lookup_by_capability() -
 
     for instruction in (lookup_instruction, forced_instruction, inline_instruction):
         assert "exact markdown_link" in instruction
+        assert "tool result produced a file" in instruction
+        assert "trusted non-internal FileRef references one" in instruction
+        assert "FileRef produced a file" not in instruction
         assert "trusted non-internal FileRef" in instruction
         assert "trusted public FileRef" not in instruction
         assert "file UUID" not in instruction
