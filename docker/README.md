@@ -365,10 +365,14 @@ docker buildx build \
 
 The sandbox remains a separate image for untrusted code execution. Its Python
 packages come only from the dedicated `[dependency-groups].sandbox` group in
-`pyproject.toml`. Update `uv.lock` whenever that group changes.
-`docker/Dockerfile.sandbox` exports the group from the lockfile and checks all
-supported imports during the image build. The build stage does not copy
-`pyproject.toml` or `uv.lock` into the runtime image.
+`pyproject.toml`. Whenever that group changes, run `uv lock` from the repository
+root and commit the updated `uv.lock`. `docker/Dockerfile.sandbox` exports the
+group from the lockfile and checks all supported imports during the image build.
+The build stage does not copy `pyproject.toml` or `uv.lock` into the runtime
+image.
+
+Custom `SANDBOX_IMAGE` images used with sandboxed uvx MCP connections must
+provide `uvx` on `PATH`; Xagent no longer installs uv dynamically.
 
 ```bash
 docker buildx build \
@@ -380,8 +384,10 @@ docker buildx build \
 
 The `Publish Sandbox Image` workflow in
 `.github/workflows/sandbox-publish.yml` publishes release tags and supports
-manual tags. After publishing, update deployments to reference the new sandbox
-image tag. Rolling back only requires restoring the previous sandbox image tag.
+manual tags. After a new sandbox tag is published, update the `SANDBOX_IMAGE`
+pins in `docker/docker-compose.sandbox.boxlite.yml` and
+`docker/docker-compose.sandbox.docker.yml` to reference it. Rolling back only
+requires restoring the previous sandbox image tag.
 
 ### Frontend
 
