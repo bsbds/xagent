@@ -43,6 +43,10 @@ class SearchArgs(BaseModel):
     count: int = 10
 
 
+class EmptyArgs(BaseModel):
+    pass
+
+
 class FakeTool:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -60,6 +64,18 @@ class FakeTool:
         self.calls.append(args)
         expression = args["expression"]
         return {"result": eval(expression), "expression": expression}  # noqa: S307
+
+
+class FakeWorkspaceOutputTool:
+    def __init__(self) -> None:
+        class Metadata:
+            name = "get_workspace_output_files"
+            description = "List output files from the current workspace."
+
+        self.metadata = Metadata()
+
+    def args_type(self) -> type[BaseModel]:
+        return EmptyArgs
 
 
 class FakeWriteFileTool:
@@ -1090,6 +1106,10 @@ async def test_react_pattern_streams_only_final_answer_after_tool_call() -> None
     assert [tool["function"]["name"] for tool in llm.stream_calls[1]["tools"]] == [
         "final_answer"
     ]
+    forced_answer_description = llm.stream_calls[1]["tools"][0]["function"][
+        "parameters"
+    ]["properties"]["answer"]["description"]
+    assert "get_workspace_output_files" not in forced_answer_description
     assert llm.stream_calls[1]["tool_choice"] == "required"
     assert [event["type"] for event in outbound.events] == [
         "final_answer_start",
@@ -3104,7 +3124,21 @@ async def test_react_pattern_reserves_control_tool_names_in_schema() -> None:
     assert "tool results, source documents" in answer_schema["description"]
     assert "## FINAL DELIVERABLE FILE REFERENCES" not in answer_schema["description"]
     assert "exact markdown_link" in answer_schema["description"]
-    assert "get_workspace_output_files" in answer_schema["description"]
+    assert "get_workspace_output_files" not in answer_schema["description"]
+
+
+def test_react_final_answer_lookup_instruction_tracks_active_workspace_tool() -> None:
+    pattern = ReActPattern()
+
+    schemas = pattern._tool_schemas_with_builtin_controls([FakeWorkspaceOutputTool()])
+    final_answer_schema = next(
+        schema for schema in schemas if schema["function"]["name"] == "final_answer"
+    )
+    answer_description = final_answer_schema["function"]["parameters"]["properties"][
+        "answer"
+    ]["description"]
+
+    assert "get_workspace_output_files" in answer_description
 
 
 @pytest.mark.asyncio

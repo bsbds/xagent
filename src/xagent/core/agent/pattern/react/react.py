@@ -1112,8 +1112,12 @@ class ReActPattern(AgentPattern):
             for tool_call in normalized.get("tool_calls") or []
         )
 
-    def _final_answer_tool_schema(self) -> dict[str, Any]:
-        for schema in self._builtin_tool_schemas():
+    def _final_answer_tool_schema(
+        self, *, can_lookup_output_files: bool = False
+    ) -> dict[str, Any]:
+        for schema in self._builtin_tool_schemas(
+            can_lookup_output_files=can_lookup_output_files
+        ):
             function = schema.get("function")
             if isinstance(function, dict) and function.get("name") == "final_answer":
                 return schema
@@ -1667,7 +1671,9 @@ class ReActPattern(AgentPattern):
                 )
         return compacted
 
-    def _builtin_tool_schemas(self) -> list[dict[str, Any]]:
+    def _builtin_tool_schemas(
+        self, *, can_lookup_output_files: bool = False
+    ) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
@@ -1699,7 +1705,7 @@ class ReActPattern(AgentPattern):
                                 "description": (
                                     "Complete user-facing answer. It must be "
                                     "non-empty and must match response_language. "
-                                    f"{final_deliverable_file_reference_instructions(can_lookup=True, include_heading=False)} "
+                                    f"{final_deliverable_file_reference_instructions(can_lookup=can_lookup_output_files, include_heading=False)} "
                                     f"{final_answer_language_rule()}"
                                 ),
                             },
@@ -1831,7 +1837,16 @@ class ReActPattern(AgentPattern):
             for tool in tools
             if self._tool_name(tool) not in control_tool_names
         ]
-        return [*external_tools, *self._builtin_tool_schemas()]
+        can_lookup_output_files = any(
+            schema.get("function", {}).get("name") == "get_workspace_output_files"
+            for schema in external_tools
+        )
+        return [
+            *external_tools,
+            *self._builtin_tool_schemas(
+                can_lookup_output_files=can_lookup_output_files
+            ),
+        ]
 
     def _control_tool_names(self) -> set[str]:
         return set(CONTROL_TOOL_NAMES)
