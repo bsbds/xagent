@@ -57,6 +57,11 @@ from ...core.tools.adapters.vibe.connector_runtime import (
     runtime_bindings_from_config,
 )
 from ...core.tools.adapters.vibe.db_session import tool_session_scope
+from ..services.mcp_runtime import (
+    HTTP_MCP_TRANSPORTS,
+    MCPRuntimeAuthorizationPolicy,
+    mcp_oauth_runtime_diagnostic,
+)
 from ..services.tool_credentials import (
     TOOL_CREDENTIAL_SPECS,
     get_sql_connection_map,
@@ -81,6 +86,9 @@ UNAVAILABLE_MCP_CREDENTIAL_MESSAGE = "MCP server credentials are unavailable."
 # after loading and must not be admitted here by sharing one broad constant.
 MCP_UNAVAILABLE_REASONS = frozenset(
     {
+        "actor_policy_conflict",
+        "actor_policy_requires_oauth",
+        "actor_policy_server_not_allowed",
         "authorization_required",
         "catalog_app_not_found",
         "config_load_failed",
@@ -1205,6 +1213,7 @@ class WebToolConfig(BaseToolConfig):
         mcp_auth_context: Optional[Dict[str, Any]] = None,
         execution_scope: Optional[Any] = None,
         connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
         mcp_failure_policy: MCPFailurePolicy = MCPFailurePolicy.BEST_EFFORT,
         mcp_load_summary_tracer: Optional[Any] = None,
         mcp_load_summary_trace_task_id: Optional[str] = None,
@@ -1287,6 +1296,7 @@ class WebToolConfig(BaseToolConfig):
                 raw_turn_id if isinstance(raw_turn_id, str) else None
             )
         self._connector_runtime_turn_id = connector_runtime_turn_id
+        self._mcp_runtime_authorization_policy = mcp_runtime_authorization_policy
         self._connector_runtime_view: Optional[Dict[str, Any]] = None
         self._mcp_oauth_diagnostics: List[Dict[str, Any]] = []
         self._explicit_vision_model = vision_model
@@ -1628,24 +1638,40 @@ class WebToolConfig(BaseToolConfig):
             ) from exc
         return self._connector_runtime_view
 
-    def set_connector_runtime_turn_id(self, turn_id: Optional[str]) -> bool:
-        """Switch the per-turn connector runtime source for reused agents.
+    def set_mcp_runtime_context(
+        self,
+        *,
+        turn_id: Optional[str],
+        authorization_policy: MCPRuntimeAuthorizationPolicy | None,
+    ) -> bool:
+        """Atomically replace every per-turn MCP authorization input.
 
-        ``WebToolConfig`` instances are cached with ``AgentService`` by task.
-        Runtime secrets/auth selectors are intentionally per-turn, so an append
-        turn must not keep using the first turn's resolved connector runtime
-        view or MCP config cache.
+        Cached agents are reused by task. Replacing the turn ID and actor policy
+        in one operation prevents a rebuild from observing one turn's runtime
+        values with another actor's server allowlist.
         """
 
         normalized_turn_id = turn_id if isinstance(turn_id, str) else None
-        if self._connector_runtime_turn_id == normalized_turn_id:
+        if (
+            self._connector_runtime_turn_id == normalized_turn_id
+            and self._mcp_runtime_authorization_policy == authorization_policy
+        ):
             return False
         self._connector_runtime_turn_id = normalized_turn_id
+        self._mcp_runtime_authorization_policy = authorization_policy
         self._connector_runtime_view = None
         self._cached_mcp_configs = None
         self._factory_runtime_snapshot = None
         self._pending_runtime_policy = None
         return True
+
+    def set_connector_runtime_turn_id(self, turn_id: Optional[str]) -> bool:
+        """Retain the generic turn-only update API for existing callers."""
+
+        return self.set_mcp_runtime_context(
+            turn_id=turn_id,
+            authorization_policy=self._mcp_runtime_authorization_policy,
+        )
 
     def set_execution_scope(self, scope: Optional[Any]) -> bool:
         """Switch the per-turn execution scope for a reused tool config.
@@ -3179,7 +3205,30 @@ class WebToolConfig(BaseToolConfig):
         allow_delegated_authorization = bool(
             getattr(server, "allow_delegated_authorization", False)
         )
-        runtime_values = self._get_connector_runtime_for("mcp", int(server.id))
+        actor_policy = self._mcp_runtime_authorization_policy
+        if actor_policy is not None:
+            auth_config = server._decrypt_auth_config(getattr(server, "auth", None))
+            if not actor_policy.allow_non_oauth and (
+                server.transport not in HTTP_MCP_TRANSPORTS
+                or not isinstance(auth_config, dict)
+                or auth_config.get("type") != "mcp_oauth"
+            ):
+                policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_requires_oauth",
+                    message="Actor-scoped MCP execution requires remote OAuth",
+                )
+                self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                return self._build_unavailable_mcp_config(
+                    server=server,
+                    reason="actor_policy_requires_oauth",
+                    diagnostic=policy_diagnostic,
+                )
+        runtime_values = (
+            None
+            if actor_policy is not None
+            else self._get_connector_runtime_for("mcp", int(server.id))
+        )
         config: Dict[str, Any] = {
             "id": int(server.id),
             "name": server.name,
@@ -3338,6 +3387,11 @@ class WebToolConfig(BaseToolConfig):
                 runtime_values=runtime_values,
             )
             resolver, registration_generation = _get_oauth_token_resolver_hook()
+            if actor_policy is not None:
+                # Actor-required execution accepts only database MCP OAuth grants.
+                # Resolver hooks and connector-runtime Authorization values are
+                # separate credential sources and cannot override this policy.
+                resolver = None
             remote_providers_to_resolve: list[str] = []
             remote_configured_resource: str | None = None
             remote_hook_token: _ResolvedHookToken | None = None
@@ -3409,6 +3463,7 @@ class WebToolConfig(BaseToolConfig):
                             server,
                             user_id=self._user_id,
                             mcp_auth_context=auth_context,
+                            authorization_policy=actor_policy,
                         )
                     except ConnectorRuntimeError:
                         raise
@@ -3524,11 +3579,13 @@ class WebToolConfig(BaseToolConfig):
         from ...web.models.mcp import MCPServer
         from ..services.connector_team_scope import visible_mcp_server_clause
 
-        return (
-            self.db.query(MCPServer)
-            .filter(visible_mcp_server_clause(self._user_id, team_mcp_ids))
-            .order_by(MCPServer.id)
+        query = self.db.query(MCPServer).filter(
+            visible_mcp_server_clause(self._user_id, team_mcp_ids)
         )
+        actor_policy = self._mcp_runtime_authorization_policy
+        if actor_policy is not None:
+            query = query.filter(MCPServer.id.in_(actor_policy.allowed_server_ids))
+        return query.order_by(MCPServer.id)
 
     async def _load_mcp_server_configs(self) -> List[Dict[str, Any]]:
         """Load MCP server configurations visible to this run: the user's
@@ -3548,10 +3605,15 @@ class WebToolConfig(BaseToolConfig):
         # with a WARNING and no tool set at all.
         from ..services.connector_team_scope import resolve_team_connector_ids_or_raise
 
-        team_mcp_ids = frozenset(
-            resolve_team_connector_ids_or_raise(
-                self.db, team_id=self._connector_team_id, log_subject=self._user_id
-            )["mcp"]
+        actor_policy = self._mcp_runtime_authorization_policy
+        team_mcp_ids = (
+            frozenset()
+            if actor_policy is not None
+            else frozenset(
+                resolve_team_connector_ids_or_raise(
+                    self.db, team_id=self._connector_team_id, log_subject=self._user_id
+                )["mcp"]
+            )
         )
 
         try:
@@ -3572,11 +3634,16 @@ class WebToolConfig(BaseToolConfig):
                 self._connector_team_id,
             )
 
-            # Prefetch shared runtime state once before entering the isolated
-            # per-server formatter.
-            user_env_by_id = load_user_env_overrides(self.db, self._user_id)
-            shared_env_by_id = load_shared_env_overrides(self.db, self._user_id)
-            env_source_by_id = load_user_env_sources(self.db, self._user_id)
+            # Actor-required OAuth never reads static/user/team env layers.
+            # Generic callers retain the existing prefetch and precedence.
+            if actor_policy is not None:
+                user_env_by_id = {}
+                shared_env_by_id = {}
+                env_source_by_id = {}
+            else:
+                user_env_by_id = load_user_env_overrides(self.db, self._user_id)
+                shared_env_by_id = load_shared_env_overrides(self.db, self._user_id)
+                env_source_by_id = load_user_env_sources(self.db, self._user_id)
 
             # Re-key the shared env layer, for team-owned ids only, onto the
             # governing team's own row -- never the run owner's team, and

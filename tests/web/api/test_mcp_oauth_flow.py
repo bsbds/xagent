@@ -832,6 +832,55 @@ async def test_connect_sweep_is_bounded_and_drains_across_requests(
 
 
 @pytest.mark.asyncio
+async def test_trusted_connect_retains_explicit_resource_owner_key(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    server = _add_mcp_oauth_server(db, user)
+
+    async def fake_discover(*args, **kwargs):
+        return _discovery()
+
+    monkeypatch.setattr(mcp_api, "discover_mcp_oauth_metadata", fake_discover)
+
+    await mcp_api.start_mcp_oauth_for_resource_owner(
+        server.id,
+        MCPOAuthConnectRequest(redirect_after="/settings/mcp"),
+        user,
+        db,
+        resource_owner_key="toby:slack:41:U123",
+    )
+
+    flow_state = db.query(MCPOAuthFlowState).one()
+    assert flow_state.resource_owner_key == "toby:slack:41:U123"
+
+
+@pytest.mark.asyncio
+async def test_trusted_connect_rejects_blank_resource_owner_key(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    server = _add_mcp_oauth_server(db, user)
+
+    async def fake_discover(*args, **kwargs):
+        return _discovery()
+
+    monkeypatch.setattr(mcp_api, "discover_mcp_oauth_metadata", fake_discover)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await mcp_api.start_mcp_oauth_for_resource_owner(
+            server.id,
+            MCPOAuthConnectRequest(),
+            user,
+            db,
+            resource_owner_key="   ",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert db.query(MCPOAuthFlowState).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_connect_dynamically_registers_public_client_when_client_id_is_empty(
     db_session, monkeypatch
 ):

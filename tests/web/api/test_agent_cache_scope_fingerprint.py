@@ -36,6 +36,7 @@ from xagent.web.models.agent import AgentStatus
 from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.user import User
 from xagent.web.services.llm_utils import AgentRuntimeFields
+from xagent.web.services.mcp_runtime import MCPRuntimeAuthorizationPolicy
 from xagent.web.services.task_setup_snapshot import (
     RuntimeUserFields,
     TaskSetupSnapshot,
@@ -406,6 +407,48 @@ async def test_cached_agent_service_is_resynced_with_the_turn_execution_scope() 
     assert result is cached_agent
     assert tool_config.scope is scope_b
     assert tool_config.set_calls == [scope_b]
+    assert cached_agent.invalidate_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_agent_switches_mcp_turn_and_actor_policy_together() -> None:
+    policy = MCPRuntimeAuthorizationPolicy(
+        resource_owner_key="toby:slack:41:U1",
+        allowed_server_ids=frozenset({7}),
+    )
+
+    class TrackingConfig:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str | None, MCPRuntimeAuthorizationPolicy | None]] = []
+
+        def set_mcp_runtime_context(
+            self,
+            *,
+            turn_id: str | None,
+            authorization_policy: MCPRuntimeAuthorizationPolicy | None,
+        ) -> bool:
+            self.calls.append((turn_id, authorization_policy))
+            return True
+
+    config = TrackingConfig()
+    cached_agent = _CachedAgentWithToolConfig(config)  # type: ignore[arg-type]
+    manager = AgentServiceManager()
+    manager._agents[42] = cached_agent
+    manager._agent_owner_ids[42] = 1
+    manager._agent_scope_fingerprints[42] = scope_fingerprint(SCOPE_A)
+
+    result = await manager.get_agent_for_task(
+        task_id=42,
+        db=_build_db_mock(_make_task_row()),
+        user=_make_user(),
+        task_setup_snapshot=_build_snapshot(),
+        connector_runtime_turn_id="turn-actor-1",
+        mcp_runtime_authorization_policy=policy,
+        resolved_execution_scope=SCOPE_A,
+    )
+
+    assert result is cached_agent
+    assert config.calls == [("turn-actor-1", policy)]
     assert cached_agent.invalidate_calls == 1
 
 

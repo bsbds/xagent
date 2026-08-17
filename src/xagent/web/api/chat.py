@@ -96,6 +96,7 @@ from ..services.hot_path_cache import (
 )
 from ..services.llm_utils import resolve_llms_from_names
 from ..services.managed_file_ref import ensure_uploaded_file_local_path
+from ..services.mcp_runtime import MCPRuntimeAuthorizationPolicy
 from ..services.model_service import _get_visible_user_ids
 from ..services.task_deletion import purge_task_rows
 from ..services.task_execution_context_service import (
@@ -589,6 +590,7 @@ async def create_default_tools(
     scope: Optional[ExecutionScope] = None,
     task_runtime_context: TaskRuntimeContext | None = None,
     connector_runtime_turn_id: Optional[str] = None,
+    mcp_runtime_authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
     mcp_failure_policy: MCPFailurePolicy = MCPFailurePolicy.BEST_EFFORT,
     mcp_load_summary_tracer: Optional[Any] = None,
     mcp_load_summary_trace_task_id: Optional[str] = None,
@@ -695,6 +697,7 @@ async def create_default_tools(
         parent_tracer=parent_tracer,
         agent_call_stack=agent_call_stack,
         connector_runtime_turn_id=connector_runtime_turn_id,
+        mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
         mcp_failure_policy=mcp_failure_policy,
         mcp_load_summary_tracer=mcp_load_summary_tracer,
         mcp_load_summary_trace_task_id=mcp_load_summary_trace_task_id,
@@ -1949,6 +1952,8 @@ class AgentServiceManager:
         parent_tracer: Optional[Any] = None,
         scope: Optional[ExecutionScope] = None,
         task_setup_snapshot: Optional[TaskSetupSnapshot] = None,
+        connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
     ) -> tuple[list[Any], Any]:
         """Build the tool set configured for a web task."""
         if task_setup_snapshot is not None:
@@ -2081,7 +2086,8 @@ class AgentServiceManager:
             agent_call_stack=workforce_runtime.agent_call_stack
             if workforce_runtime
             else None,
-            connector_runtime_turn_id=None,
+            connector_runtime_turn_id=connector_runtime_turn_id,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
             mcp_failure_policy=_mcp_failure_policy_for_task_source(task.source),
             mcp_load_summary_tracer=parent_tracer,
             mcp_load_summary_trace_task_id=str(task_id),
@@ -2100,6 +2106,7 @@ class AgentServiceManager:
         task_setup_snapshot: Optional[TaskSetupSnapshot] = None,
         task_owner_user_id: Optional[int] = None,
         connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
         resolved_execution_scope: Union[
             ExecutionScope, None, ExecutionScopeNotProvided
         ] = EXECUTION_SCOPE_NOT_PROVIDED,
@@ -2116,6 +2123,7 @@ class AgentServiceManager:
                 task_setup_snapshot=task_setup_snapshot,
                 task_owner_user_id=task_owner_user_id,
                 connector_runtime_turn_id=connector_runtime_turn_id,
+                mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
                 resolved_execution_scope=resolved_execution_scope,
             )
 
@@ -2127,6 +2135,7 @@ class AgentServiceManager:
         task_setup_snapshot: Optional[TaskSetupSnapshot] = None,
         task_owner_user_id: Optional[int] = None,
         connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
         resolved_execution_scope: Union[
             ExecutionScope, None, ExecutionScopeNotProvided
         ] = EXECUTION_SCOPE_NOT_PROVIDED,
@@ -2407,11 +2416,17 @@ class AgentServiceManager:
                                 db,
                                 scope=scope,
                                 task_setup_snapshot=task_setup_snapshot,
+                                connector_runtime_turn_id=connector_runtime_turn_id,
+                                mcp_runtime_authorization_policy=(
+                                    mcp_runtime_authorization_policy
+                                ),
                             )
                             self._agent_owner_ids[task_id] = runtime_user_id
                             self._agent_scope_fingerprints[task_id] = fingerprint
-                            self._sync_connector_runtime_turn(
-                                task_id, connector_runtime_turn_id
+                            self._sync_mcp_runtime_context(
+                                task_id,
+                                connector_runtime_turn_id,
+                                mcp_runtime_authorization_policy,
                             )
                             self._sync_execution_scope(task_id, scope)
                             return self._agents[task_id]
@@ -2728,6 +2743,9 @@ class AgentServiceManager:
                     if workforce_runtime
                     else None,
                     connector_runtime_turn_id=connector_runtime_turn_id,
+                    mcp_runtime_authorization_policy=(
+                        mcp_runtime_authorization_policy
+                    ),
                     mcp_failure_policy=_mcp_failure_policy_for_task_source(
                         task.source if task is not None else None
                     ),
@@ -2866,16 +2884,23 @@ class AgentServiceManager:
 
         self._agent_owner_ids[task_id] = runtime_user_id
         self._agent_scope_fingerprints[task_id] = fingerprint
-        self._sync_connector_runtime_turn(task_id, connector_runtime_turn_id)
+        self._sync_mcp_runtime_context(
+            task_id,
+            connector_runtime_turn_id,
+            mcp_runtime_authorization_policy,
+        )
         self._sync_execution_scope(task_id, scope)
         return self._agents[task_id]
 
-    def _sync_connector_runtime_turn(
-        self, task_id: int, connector_runtime_turn_id: Optional[str]
+    def _sync_mcp_runtime_context(
+        self,
+        task_id: int,
+        connector_runtime_turn_id: Optional[str],
+        authorization_policy: MCPRuntimeAuthorizationPolicy | None,
     ) -> None:
-        if not connector_runtime_turn_id:
+        if not connector_runtime_turn_id and authorization_policy is None:
             logger.debug(
-                "Skipping connector runtime turn sync for task %s: no turn id",
+                "Skipping MCP runtime context sync for task %s: no turn context",
                 task_id,
             )
             return
@@ -2883,7 +2908,8 @@ class AgentServiceManager:
         agent = self._agents.get(task_id)
         if agent is None:
             logger.debug(
-                "Skipping connector runtime turn sync for task %s turn %s: agent is not cached",
+                "Skipping MCP runtime context sync for task %s turn %s: "
+                "agent is not cached",
                 task_id,
                 connector_runtime_turn_id,
             )
@@ -2892,23 +2918,35 @@ class AgentServiceManager:
         tool_config = agent.tool_config
         if tool_config is None:
             logger.debug(
-                "Skipping connector runtime turn sync for task %s turn %s: "
+                "Skipping MCP runtime context sync for task %s turn %s: "
                 "agent has no tool config",
                 task_id,
                 connector_runtime_turn_id,
             )
             return
 
-        if tool_config.set_connector_runtime_turn_id(connector_runtime_turn_id):
+        setter = getattr(tool_config, "set_mcp_runtime_context", None)
+        if callable(setter):
+            changed = setter(
+                turn_id=connector_runtime_turn_id,
+                authorization_policy=authorization_policy,
+            )
+        elif authorization_policy is None:
+            changed = tool_config.set_connector_runtime_turn_id(
+                connector_runtime_turn_id
+            )
+        else:
+            raise RuntimeError("Tool config cannot enforce MCP actor policy")
+        if changed:
             logger.info(
-                "Refreshing connector runtime tools for task %s turn %s",
+                "Refreshing MCP runtime tools for task %s turn %s",
                 task_id,
                 connector_runtime_turn_id,
             )
             agent.invalidate_tools()
         else:
             logger.debug(
-                "Connector runtime tools already use task %s turn %s",
+                "MCP runtime tools already use task %s turn %s",
                 task_id,
                 connector_runtime_turn_id,
             )
@@ -3535,6 +3573,8 @@ class AgentServiceManager:
         db: Optional[Session],
         scope: Optional[ExecutionScope] = None,
         task_setup_snapshot: Optional[TaskSetupSnapshot] = None,
+        connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
     ) -> None:
         """Reconstruct from the detached task-runtime snapshot.
 
@@ -3601,6 +3641,8 @@ class AgentServiceManager:
                 parent_tracer=tracer,
                 scope=scope,
                 task_setup_snapshot=snapshot,
+                connector_runtime_turn_id=connector_runtime_turn_id,
+                mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
             )
 
             from .agents import enhance_system_prompt_with_kb

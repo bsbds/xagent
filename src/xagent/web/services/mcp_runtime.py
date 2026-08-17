@@ -15,6 +15,36 @@ HTTP_MCP_TRANSPORTS = frozenset({"sse", "websocket", "streamable_http"})
 
 
 @dataclass(frozen=True)
+class MCPRuntimeAuthorizationPolicy:
+    """Server-owned authorization boundary for actor-scoped MCP execution.
+
+    The policy carries only immutable identifiers. Tokens and grant rows remain
+    inside the OAuth runtime resolver and are revalidated immediately before
+    the connection is built.
+    """
+
+    resource_owner_key: str
+    allowed_server_ids: frozenset[int]
+    require_explicit_owner: bool = True
+    allow_non_oauth: bool = False
+
+    def __post_init__(self) -> None:
+        owner_key = self.resource_owner_key.strip()
+        if not owner_key:
+            raise ValueError("resource_owner_key must not be blank")
+        server_ids = frozenset(self.allowed_server_ids)
+        if any(
+            isinstance(server_id, bool)
+            or not isinstance(server_id, int)
+            or server_id <= 0
+            for server_id in server_ids
+        ):
+            raise ValueError("allowed_server_ids must contain positive integer IDs")
+        object.__setattr__(self, "resource_owner_key", owner_key)
+        object.__setattr__(self, "allowed_server_ids", server_ids)
+
+
+@dataclass(frozen=True)
 class MCPRuntimeConnectionBuild:
     """Executable MCP connection plus any runtime authorization diagnostic."""
 
@@ -391,12 +421,56 @@ async def build_mcp_runtime_connection(
     user_env_overrides: dict[int, dict] | None = None,
     shared_env_overrides: dict[int, dict] | None = None,
     env_source_overrides: dict[int, str] | None = None,
+    authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
 ) -> MCPRuntimeConnectionBuild:
     """Build an executable MCP connection for a specific user runtime.
 
     Static MCP connection serialization belongs to the MCP server model. Per-user
     MCP OAuth grant selection belongs here, at the web runtime boundary.
     """
+    server_id = getattr(server, "id", None)
+    auth_config = server._decrypt_auth_config(getattr(server, "auth", None))
+    if authorization_policy is not None:
+        if (
+            not isinstance(server_id, int)
+            or server_id not in authorization_policy.allowed_server_ids
+        ):
+            return MCPRuntimeConnectionBuild(
+                connection=None,
+                diagnostic=mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_server_not_allowed",
+                    message="MCP server is not authorized for this actor",
+                ),
+            )
+        if (
+            not authorization_policy.allow_non_oauth
+            and not _is_mcp_oauth_http_server(server, auth_config)
+        ):
+            return MCPRuntimeConnectionBuild(
+                connection=None,
+                diagnostic=mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_requires_oauth",
+                    message="Actor-scoped MCP execution requires remote OAuth",
+                ),
+            )
+        selection = mcp_oauth_selection(mcp_auth_context, server_id)
+        conflicting_keys = set(selection) - {"resource_owner_key"}
+        selected_owner = selection.get("resource_owner_key")
+        if conflicting_keys or (
+            selected_owner is not None
+            and selected_owner != authorization_policy.resource_owner_key
+        ):
+            return MCPRuntimeConnectionBuild(
+                connection=None,
+                diagnostic=mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_conflict",
+                    message="MCP authorization selector conflicts with actor policy",
+                ),
+            )
+
     connection = server.to_connection_dict()
 
     # Resolve which env layer to apply for this user, per their env_source pick
@@ -422,11 +496,9 @@ async def build_mcp_runtime_connection(
         if caller_env:
             connection["env"] = {**(connection.get("env") or {}), **caller_env}
 
-    auth_config = server._decrypt_auth_config(getattr(server, "auth", None))
     if not _is_mcp_oauth_http_server(server, auth_config):
         return MCPRuntimeConnectionBuild(connection=connection)
 
-    server_id = getattr(server, "id", None)
     if not isinstance(server_id, int) or not isinstance(user_id, int) or db is None:
         return MCPRuntimeConnectionBuild(
             connection=None,
@@ -441,7 +513,10 @@ async def build_mcp_runtime_connection(
         )
 
     selection = mcp_oauth_selection(mcp_auth_context, server_id)
-    resource_owner_key = selection.get("resource_owner_key") or f"xagent:user:{user_id}"
+    if authorization_policy is not None:
+        resource_owner_key = authorization_policy.resource_owner_key
+    else:
+        resource_owner_key = selection.get("resource_owner_key") or f"xagent:user:{user_id}"
     try:
         runtime_auth = await resolve_mcp_oauth_runtime_auth(
             db,

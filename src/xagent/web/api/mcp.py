@@ -4043,8 +4043,48 @@ async def connect_mcp_oauth(
     db: Session = Depends(get_db),
     accept: Annotated[str | None, Header()] = None,
 ) -> RedirectResponse | JSONResponse:
-    """Start MCP OAuth Authorization Code + PKCE for the current user."""
+    """Start MCP OAuth with the generic current-user ownership policy."""
     user_id = cast(int, current_user.id)
+    return await start_mcp_oauth_for_resource_owner(
+        server_id,
+        request_data,
+        current_user,
+        db,
+        resource_owner_key=_default_resource_owner_key(user_id),
+        accept=accept,
+    )
+
+
+async def start_mcp_oauth_for_resource_owner(
+    server_id: int,
+    request_data: MCPOAuthConnectRequest,
+    current_user: User,
+    db: Session,
+    *,
+    resource_owner_key: str,
+    accept: str | None = None,
+) -> RedirectResponse | JSONResponse:
+    """Start MCP OAuth for a server-owned resource-owner identity.
+
+    This helper is intentionally not an HTTP endpoint. Product integrations may
+    supply a trusted owner key after authenticating their own actor, while the
+    public endpoint above retains the generic ``xagent:user:<id>`` policy.
+    """
+    user_id = cast(int, current_user.id)
+    resource_owner_key = resource_owner_key.strip()
+    if not resource_owner_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "invalid_resource_owner",
+                "message": "Resource owner identity is required",
+            },
+        )
+    resource_owner_key = _bounded_mcp_oauth_value(
+        resource_owner_key,
+        field_name="resource_owner_key",
+        max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
+    )
     _, server = _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
     )
@@ -4117,11 +4157,6 @@ async def connect_mcp_oauth(
             client_secret = None
             token_endpoint_auth_method = registration.token_endpoint_auth_method
     selected_scope = _scope_string(auth_config.get("scope") or discovery.scopes)
-    resource_owner_key = _bounded_mcp_oauth_value(
-        _default_resource_owner_key(user_id),
-        field_name="resource_owner_key",
-        max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
-    )
     selected_resource = _bounded_mcp_oauth_value(
         str(discovery.resource), field_name="resource"
     )

@@ -819,6 +819,38 @@ async def _refresh_runtime_grant_in_dedicated_session(  # noqa: PLR0913
         refresh_db.close()
 
 
+def select_mcp_oauth_grants_for_resource_owner(  # noqa: PLR0913
+    db: Any,
+    *,
+    server_id: int,
+    user_id: int,
+    auth_config: dict[str, Any],
+    resource_owner_key: str,
+    resource: str | None = None,
+    issuer: str | None = None,
+    scope: str | None = None,
+) -> list[Any]:
+    """Select grants for one required server-owned resource identity.
+
+    The generic selector below intentionally permits an omitted owner for
+    existing account-scoped callers. Actor-aware products must use this wrapper
+    so a blank identity can never broaden into all grants for the shared user.
+    """
+    resource_owner_key = resource_owner_key.strip()
+    if not resource_owner_key:
+        raise ValueError("resource_owner_key must not be blank")
+    return select_mcp_oauth_grants(
+        db,
+        server_id=server_id,
+        user_id=user_id,
+        auth_config=auth_config,
+        resource_owner_key=resource_owner_key,
+        resource=resource,
+        issuer=issuer,
+        scope=scope,
+    )
+
+
 def select_mcp_oauth_grants(  # noqa: PLR0913
     db: Any,
     *,
