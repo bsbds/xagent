@@ -121,8 +121,9 @@ export function createPublicFileAccessPolicy(accessToken: string): FileAccessPol
     request: (url, options = {}) => {
       const headers = new Headers(options.headers)
       headers.delete("Authorization")
-      // Same-origin cookies carry deployment routing state, not file authority;
-      // the scoped query token remains the public endpoint's credential.
+      // Same-origin requests carry ambient cookies, including the edge's
+      // selected_region routing cookie. Public routes authorize on the scoped
+      // query token alone, never on cookies.
       return fetch(url, { ...options, headers, credentials: "same-origin" })
     },
     // The guest token rides the query string, so media elements can load
