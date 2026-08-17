@@ -17,6 +17,10 @@ export interface FileAccessPolicy {
   inlineDownloadUrl: (fileId: string) => string
   relativePreviewUrl: (fileId: string, relativePath: string) => string
   pdfPreviewUrl?: (fileId: string) => string
+  /**
+   * Execute under this policy's credential boundary. Implementations may
+   * override caller credentials and remove or attach authorization headers.
+   */
   request: FileAccessRequest
   listFiles?: (query: string) => Promise<Response>
   /**
