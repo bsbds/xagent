@@ -2940,16 +2940,48 @@ async def connect_mcp_oauth_app(
     db: Session = Depends(get_db),
     accept: Annotated[str | None, Header()] = None,
 ) -> RedirectResponse | JSONResponse:
-    """Connect a remote-MCP OAuth (DCR-capable) catalog app for the current user.
+    """Connect a catalog app with the generic current-user owner key."""
+    return await connect_mcp_oauth_app_for_resource_owner(
+        app_id=app_id,
+        request_data=request_data,
+        current_user=current_user,
+        db=db,
+        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
+        accept=accept,
+    )
 
-    Ensures the shared server row and this user's association exist, then
-    delegates to connect_mcp_oauth's Authorization Code + PKCE flow — the
-    per-user DCR/token machinery is identical to a self-added custom MCP
-    server; only the server row's origin (catalog vs. a user-typed URL)
-    differs.
-    """
+
+async def connect_mcp_oauth_app_for_resource_owner(
+    *,
+    app_id: str,
+    request_data: MCPOAuthConnectRequest,
+    current_user: User,
+    db: Session,
+    resource_owner_key: str,
+    accept: str | None = None,
+) -> RedirectResponse | JSONResponse:
+    """Connect a catalog app for a trusted server-owned resource identity."""
     server, app_info = _ensure_catalog_mcp_oauth_server(db, app_id)
+    _ensure_user_mcp_oauth_app_association(db, current_user, server)
+    logger.info(
+        "User %s starting actor-bound OAuth connect for MCP app '%s'",
+        current_user.id,
+        app_info["id"],
+    )
+    return await start_mcp_oauth_for_resource_owner(
+        cast(int, server.id),
+        request_data,
+        current_user,
+        db,
+        resource_owner_key=resource_owner_key,
+        accept=accept,
+    )
 
+
+def _ensure_user_mcp_oauth_app_association(
+    db: Session, current_user: User, server: MCPServer
+) -> None:
+    """Create or reactivate the shared user/server association idempotently."""
     assoc: Any = (
         db.query(UserMCPServer)
         .filter(
@@ -2959,20 +2991,20 @@ async def connect_mcp_oauth_app(
         .first()
     )
     if assoc is None:
-        assoc = UserMCPServer(
-            user_id=current_user.id,
-            mcpserver_id=server.id,
-            is_active=True,
-            is_owner=False,
-            can_edit=False,
-            can_delete=True,
+        db.add(
+            UserMCPServer(
+                user_id=current_user.id,
+                mcpserver_id=server.id,
+                is_active=True,
+                is_owner=False,
+                can_edit=False,
+                can_delete=True,
+            )
         )
-        db.add(assoc)
         try:
             db.commit()
+            return
         except IntegrityError:
-            # Concurrent same-user connect (double-click/client retry): another
-            # request already inserted the (user_id, mcpserver_id) association.
             db.rollback()
             assoc = (
                 db.query(UserMCPServer)
@@ -2984,18 +3016,9 @@ async def connect_mcp_oauth_app(
             )
             if assoc is None:
                 raise
-    elif not assoc.is_active:
-        # A reconnect after the user previously disconnected their own
-        # association — re-activate it rather than leaving it dormant.
+    if not assoc.is_active:
         assoc.is_active = True
         db.commit()
-
-    logger.info(
-        f"User {current_user.id} starting OAuth connect for MCP app '{app_info['id']}'"
-    )
-    return await connect_mcp_oauth(
-        cast(int, server.id), request_data, current_user, db, accept
-    )
 
 
 @mcp_router.post(
