@@ -96,7 +96,11 @@ from ..services.hot_path_cache import (
 )
 from ..services.llm_utils import resolve_llms_from_names
 from ..services.managed_file_ref import ensure_uploaded_file_local_path
-from ..services.mcp_runtime import MCPRuntimeAuthorizationPolicy
+from ..services.mcp_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
+    MCPRuntimeAuthorizationPolicy,
+    MCPRuntimeAuthorizationPolicyRequiredError,
+)
 from ..services.model_service import _get_visible_user_ids
 from ..services.task_deletion import purge_task_rows
 from ..services.task_execution_context_service import (
@@ -1282,6 +1286,10 @@ class AgentServiceManager:
         # different scope between turns must evict and rebuild instead of
         # silently executing in the old scope's namespace.
         self._agent_scope_fingerprints: Dict[int, Optional[ScopeFingerprint]] = {}
+        # Tasks whose server-owned config requires an ephemeral actor policy.
+        # The set covers warm cache reuse; a cold process re-derives the same
+        # requirement from Task.agent_config before building an agent.
+        self._mcp_policy_required_task_ids: set[int] = set()
         # Recently evicted fingerprints per task (bounded): resolving back
         # to any of them points at a resolver cycling between scopes, which
         # silently rebuilds the agent every turn and defeats the cache. The
@@ -2177,6 +2185,23 @@ class AgentServiceManager:
                 db,
             )
 
+        if task_setup_snapshot is not None:
+            task_agent_config = task_setup_snapshot.task.agent_config
+            if (
+                isinstance(task_agent_config, Mapping)
+                and task_agent_config.get(MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY)
+                is True
+            ):
+                self._mcp_policy_required_task_ids.add(task_id)
+        if (
+            task_id in self._mcp_policy_required_task_ids
+            and mcp_runtime_authorization_policy is None
+        ):
+            raise MCPRuntimeAuthorizationPolicyRequiredError(
+                f"Task {task_id} requires an MCP runtime authorization policy; "
+                "resume and cold reconstruction without that policy are unsupported"
+            )
+
         # Resolve the runtime identity (OWNER). Everything below — snapshot
         # load, model resolution, tool config, UserContext — runs as this
         # identity, never the acting principal. Precedence: explicit owner →
@@ -2996,6 +3021,8 @@ class AgentServiceManager:
         else:
             # If agent is not in memory, clean up workspace directory directly
             self._cleanup_workspace_directory(task_id, user_id)
+
+        self._mcp_policy_required_task_ids.discard(task_id)
 
         # Do not replace a lock held by an in-flight builder: a fresh lock would
         # let a second caller bypass single-flight and race the existing build.

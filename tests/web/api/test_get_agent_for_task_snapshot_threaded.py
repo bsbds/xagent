@@ -49,6 +49,10 @@ from xagent.web.models.uploaded_file import UploadedFile
 from xagent.web.models.user import User
 from xagent.web.services import uploaded_file_store as uploaded_file_store_module
 from xagent.web.services.managed_file_ref import ensure_uploaded_file_local_path
+from xagent.web.services.mcp_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
+    MCPRuntimeAuthorizationPolicy,
+)
 from xagent.web.services.task_setup_snapshot import (
     RuntimeUserFields,
     TaskSetupSnapshot,
@@ -89,6 +93,74 @@ def _build_snapshot(
         agent_config=None,
         excluded_agent_id=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_required_task_fails_closed_on_cold_build() -> None:
+    snapshot = _build_snapshot(
+        source="external",
+        agent_config={MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True},
+    )
+    manager = AgentServiceManager()
+    create_tools = AsyncMock(return_value=([], MagicMock()))
+
+    with (
+        patch.object(manager, "_load_persisted_conversation_history"),
+        patch.object(manager, "_load_persisted_execution_context", new=AsyncMock()),
+        patch("xagent.web.api.chat.create_task_tracer", return_value=MagicMock()),
+        patch("xagent.web.api.chat.create_default_tools", new=create_tools),
+        patch("xagent.web.sandbox_manager.get_sandbox_manager", return_value=None),
+        patch("xagent.web.api.chat.AgentService", return_value=MagicMock()),
+        pytest.raises(RuntimeError, match="requires an MCP runtime authorization policy"),
+    ):
+        await manager.get_agent_for_task(
+            task_id=42,
+            task_setup_snapshot=snapshot,
+            task_owner_user_id=1,
+            resolved_execution_scope=None,
+        )
+
+    create_tools.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_required_task_fails_closed_on_warm_reuse() -> None:
+    snapshot = _build_snapshot(
+        source="external",
+        agent_config={MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True},
+    )
+    manager = AgentServiceManager()
+    create_tools = AsyncMock(return_value=([], MagicMock()))
+    policy = MCPRuntimeAuthorizationPolicy(
+        resource_owner_key="actor:alice",
+        allowed_server_ids=frozenset(),
+        require_explicit_owner=True,
+        allow_non_oauth=False,
+    )
+
+    with (
+        patch.object(manager, "_load_persisted_conversation_history"),
+        patch.object(manager, "_load_persisted_execution_context", new=AsyncMock()),
+        patch("xagent.web.api.chat.create_task_tracer", return_value=MagicMock()),
+        patch("xagent.web.api.chat.create_default_tools", new=create_tools),
+        patch("xagent.web.sandbox_manager.get_sandbox_manager", return_value=None),
+        patch("xagent.web.api.chat.AgentService", return_value=MagicMock()),
+    ):
+        await manager.get_agent_for_task(
+            task_id=42,
+            task_setup_snapshot=snapshot,
+            task_owner_user_id=1,
+            mcp_runtime_authorization_policy=policy,
+            resolved_execution_scope=None,
+        )
+        with pytest.raises(RuntimeError, match="requires an MCP runtime authorization policy"):
+            await manager.get_agent_for_task(
+                task_id=42,
+                task_owner_user_id=1,
+                resolved_execution_scope=None,
+            )
+
+    create_tools.assert_awaited_once()
 
 
 @pytest.mark.asyncio

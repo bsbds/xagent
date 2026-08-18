@@ -13,6 +13,19 @@ from .mcp_oauth import MCPOAuthRuntimeError, resolve_mcp_oauth_runtime_auth
 
 HTTP_MCP_TRANSPORTS = frozenset({"sse", "websocket", "streamable_http"})
 
+# Server-owned Task.agent_config marker. A task carrying it may execute only
+# when its caller supplies the actor policy for that exact run. The policy
+# itself remains ephemeral; persisting only this boolean makes an unsupported
+# resume or cold reconstruction fail closed instead of reverting to ordinary
+# owner-level connector behavior.
+MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY = (
+    "__xagent_mcp_runtime_authorization_policy_required"
+)
+
+
+class MCPRuntimeAuthorizationPolicyRequiredError(RuntimeError):
+    """A marked task was invoked without its ephemeral actor policy."""
+
 
 @dataclass(frozen=True)
 class MCPRuntimeAuthorizationPolicy:

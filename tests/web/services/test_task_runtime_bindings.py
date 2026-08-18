@@ -293,6 +293,7 @@ def test_the_reserved_key_set_has_exactly_the_audited_members() -> None:
             "execution_scope",
             "selected_file_ids",
             "__xagent_file_operation_access_version",
+            "__xagent_mcp_runtime_authorization_policy_required",
             # Public-channel identity/quota markers (#1108).
             "auth_mode",
             "guest_id",

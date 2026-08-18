@@ -85,6 +85,8 @@ Two partial unique indexes replace `uq_user_provider_account`. One index protect
 
 A mixed-version deployment is unsafe after actor-owned rows exist. An old worker can read an actor-owned credential without the new owner filter.
 
+Actor-aware callers stamp a server-owned task marker when the runtime policy must be present. The policy remains ephemeral. Resume and cold reconstruction without it fail closed instead of falling back to ordinary connector authorization.
+
 ### Prerequisites and configuration
 
 This change has no new environment variable or dependency.
@@ -128,7 +130,7 @@ WHERE tablename = 'user_oauth'
 
 The query must return all three index names on PostgreSQL.
 
-After actor OAuth starts, connect the same connector for two actors. Make sure that each task receives only its actor credential.
+After actor OAuth starts, connect the same connector for two actors. Make sure that each task receives only its actor credential. Attempt to resume a marked task without its actor policy and verify that agent construction rejects it.
 
 Monitor `actor_policy_conflict`, `actor_policy_server_not_allowed`, and `oauth_token_required` diagnostics. An increase can show an incorrect actor policy or missing credential.
 
