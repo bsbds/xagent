@@ -60,7 +60,9 @@ class UploadStorageGate:
                 self._loop = loop
                 return
             if not self._loop.is_closed():
-                raise RuntimeError("Upload storage gate does not support concurrent event loops")
+                raise RuntimeError(
+                    "Upload storage gate does not support concurrent event loops"
+                )
             if self._active or self._waiting:
                 raise RuntimeError(
                     "Upload storage gate cannot leave a closed event loop until "
