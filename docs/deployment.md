@@ -79,7 +79,7 @@ Marked tasks do not remain isolated when executed by an older worker. Keep publi
 
 ### Deployment impact
 
-Chat attachments now enter a process-local durable-upload admission gate before object storage registration. The frontend also limits one browser composer to three active attachment requests. This reduces connection bursts from multi-file selections while retaining the existing retryable HTTP 503 contract.
+Chat attachments now enter a process-local durable-upload admission gate before object storage registration. The frontend also limits one browser composer to three active attachment requests. This reduces connection bursts from multi-file selections while retaining the existing retryable HTTP 503 contract. The browser limit is demand reduction, not a server security or capacity boundary.
 
 S3 clients now default to standard retry mode with three total attempts when `XAGENT_FILE_STORAGE_OPTIONS` does not provide an explicit retry configuration. There is no database migration, backfill, new dependency, or infrastructure requirement.
 
@@ -93,6 +93,8 @@ XAGENT_FILE_UPLOAD_QUEUE_TIMEOUT_SECONDS=30
 ```
 
 Both variables are optional. The deployment-wide maximum is approximately the configured concurrency multiplied by the number of backend processes. Tune the value against the object-storage connection pool and the number of backend processes; it is not a cluster-wide limit.
+
+`XAGENT_FILE_UPLOAD_MAX_CONCURRENCY` bounds active durable registrations only. It does not bound waiting requests, parsed multipart bodies, previews, local staged files, or aggregate staged bytes. Estimate staging capacity from peak accepted upload traffic over `XAGENT_FILE_UPLOAD_QUEUE_TIMEOUT_SECONDS`, including the backend per-file limit and proxy request limits. Configure an upstream upload request-rate or concurrency ceiling when the calculated exposure can exceed available staging resources.
 
 Existing `XAGENT_FILE_STORAGE_OPTIONS` retry settings remain authoritative. When retries are not explicitly configured, the backend uses standard mode with three total attempts.
 
