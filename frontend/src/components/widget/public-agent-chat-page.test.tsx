@@ -315,18 +315,22 @@ describe("PublicAgentChatPage", () => {
 
     renderWidgetPage({ widgetKey: "widget-secret" })
     await screen.findByRole("button", { name: "start:Support Agent" })
+    const signal = new AbortController().signal
     await app.provider?.transport?.uploadFiles?.([file], {
       taskId: 71,
       taskType: "task",
+      signal,
     })
 
-    expect(uploads.deferred).toHaveBeenCalledWith([file], {
+    expect(uploads.deferred).toHaveBeenCalledWith([file], expect.objectContaining({
       url: "https://api.example/api/widget/files/upload",
       accessToken: "public-access-token",
       taskType: "task",
       taskId: 71,
       fallbackError: "files.uploadFailed",
-    })
+      signal,
+      uploadContext: expect.any(Object),
+    }))
   })
 
   it("fails closed for an invalid direct widget key", async () => {
@@ -509,6 +513,7 @@ describe("PublicAgentChatPage", () => {
       "https://api.example/api/widget/chat/task/create",
       {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: {
           "Content-Type": "application/json",
           Authorization: "Bearer public-access-token",
@@ -556,12 +561,14 @@ describe("PublicAgentChatPage", () => {
     await waitFor(() => {
       expect(app.setTaskId).toHaveBeenCalledWith(43, { navigate: false })
     })
-    expect(uploads.deferred).toHaveBeenCalledWith([file], {
+    expect(uploads.deferred).toHaveBeenCalledWith([file], expect.objectContaining({
       url: "https://api.example/api/widget/files/upload",
       accessToken: "public-access-token",
       taskType: "task",
       fallbackError: "files.uploadFailed",
-    })
+      signal: expect.any(AbortSignal),
+      uploadContext: expect.any(Object),
+    }))
     expect(app.sendMessage).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -582,6 +589,7 @@ describe("PublicAgentChatPage", () => {
       "https://api.example/api/widget/chat/task/create",
       {
         method: "POST",
+        signal: expect.any(AbortSignal),
         headers: {
           "Content-Type": "application/json",
           Authorization: "Bearer public-access-token",
@@ -596,6 +604,37 @@ describe("PublicAgentChatPage", () => {
     await waitFor(() => {
       expect(localStorage.getItem("widget_task_wf8_guest-1")).toBe("43")
     })
+  })
+
+  it("aborts workforce opening uploads on unmount before task creation", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
+    uploads.deferred.mockImplementation((_files: File[], options: { signal: AbortSignal }) => (
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => reject(options.signal.reason),
+          { once: true },
+        )
+      })
+    ))
+    const file = new File(["opening"], "opening.txt", { type: "text/plain" })
+    const { unmount } = renderWidgetPage({
+      searchAgentId: null,
+      widgetKey: "widget-secret",
+    })
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+    const sendOutcome = app.startScreenProps!.onSend("first message", [file])
+      .then(() => "resolved", error => `rejected:${(error as Error).name}`)
+
+    await waitFor(() => expect(uploads.deferred).toHaveBeenCalledOnce())
+    unmount()
+
+    await expect(sendOutcome).resolves.toBe("rejected:AbortError")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/chat/task/create"),
+      expect.anything(),
+    )
   })
 
   it("authenticates a share link and persists the guest token for reuse", async () => {

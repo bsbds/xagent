@@ -12,25 +12,72 @@ interface UploadPublicChatFileOptions {
   taskType: string
   taskId?: number | string | null
   fallbackError: string
+  signal?: AbortSignal
 }
 
-type UploadDeferredPublicChatFilesOptions = Omit<UploadPublicChatFileOptions, "file">
-type PublicChatFileWithUploadId = File & { file_id?: string }
+interface UploadDeferredPublicChatFilesOptions extends Omit<UploadPublicChatFileOptions, "file"> {
+  /**
+   * Stable identity for the credential/session generation that owns this
+   * upload. Object identity scopes cached ids without retaining raw tokens.
+   */
+  uploadContext: object
+  /** Timeout after scheduler admission. It covers fetch and body parsing. */
+  timeoutMs?: number
+}
 
 type ScheduledUpload = {
-  run: () => Promise<PublicChatUploadedFile>
+  run: (signal: AbortSignal) => Promise<PublicChatUploadedFile>
   resolve: (file: PublicChatUploadedFile) => void
   reject: (reason: unknown) => void
+  signal?: AbortSignal
+  timeoutMs: number
+  abortQueued: () => void
+}
+
+interface CachedUploadState {
+  currentAttempt?: symbol
+  uploaded?: PublicChatUploadedFile
 }
 
 const MAX_ACTIVE_DEFERRED_UPLOADS = 3
+const DEFAULT_DEFERRED_UPLOAD_TIMEOUT_MS = 30_000
 const deferredUploadQueue: ScheduledUpload[] = []
+const deferredUploadCache = new WeakMap<
+  File,
+  WeakMap<object, Map<string, CachedUploadState>>
+>()
 let activeDeferredUploads = 0
 
+const abortReason = (signal: AbortSignal): unknown =>
+  signal.reason ?? new DOMException("The operation was aborted.", "AbortError")
+
+const timeoutError = () =>
+  new DOMException("File upload timed out.", "TimeoutError")
+
+/** Reject an async transport or parsing operation as soon as its signal fires. */
+function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation
+  if (signal.aborted) return Promise.reject(abortReason(signal))
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal))
+    signal.addEventListener("abort", onAbort, { once: true })
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
 /**
- * Drain the process-wide browser queue in admission order. A single queue keeps
- * separate public-chat send paths from collectively exceeding the three-upload
- * ceiling when their lifetimes overlap.
+ * Drain the module-wide browser queue in admission order. The timeout begins
+ * here—not while queued—and every settled/aborted job releases its global slot.
  */
 function drainDeferredUploadQueue() {
   while (
@@ -38,14 +85,27 @@ function drainDeferredUploadQueue() {
     && deferredUploadQueue.length > 0
   ) {
     const scheduled = deferredUploadQueue.shift()
-    if (!scheduled) {
-      return
+    if (!scheduled) return
+
+    scheduled.signal?.removeEventListener("abort", scheduled.abortQueued)
+    if (scheduled.signal?.aborted) {
+      scheduled.reject(abortReason(scheduled.signal))
+      continue
     }
 
     activeDeferredUploads += 1
-    void scheduled.run()
+    const controller = new AbortController()
+    const abortActive = () => controller.abort(abortReason(scheduled.signal as AbortSignal))
+    scheduled.signal?.addEventListener("abort", abortActive, { once: true })
+    const timeout = setTimeout(() => {
+      controller.abort(timeoutError())
+    }, scheduled.timeoutMs)
+
+    void scheduled.run(controller.signal)
       .then(scheduled.resolve, scheduled.reject)
       .finally(() => {
+        clearTimeout(timeout)
+        scheduled.signal?.removeEventListener("abort", abortActive)
         activeDeferredUploads -= 1
         drainDeferredUploadQueue()
       })
@@ -53,10 +113,29 @@ function drainDeferredUploadQueue() {
 }
 
 function scheduleDeferredUpload(
-  run: () => Promise<PublicChatUploadedFile>,
+  run: (signal: AbortSignal) => Promise<PublicChatUploadedFile>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
 ): Promise<PublicChatUploadedFile> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal))
+
   const scheduled = new Promise<PublicChatUploadedFile>((resolve, reject) => {
-    deferredUploadQueue.push({ run, resolve, reject })
+    const job: ScheduledUpload = {
+      run,
+      resolve,
+      reject,
+      signal,
+      timeoutMs,
+      abortQueued: () => {
+        const index = deferredUploadQueue.indexOf(job)
+        if (index < 0) return
+        deferredUploadQueue.splice(index, 1)
+        signal?.removeEventListener("abort", job.abortQueued)
+        reject(abortReason(signal as AbortSignal))
+      },
+    }
+    signal?.addEventListener("abort", job.abortQueued, { once: true })
+    deferredUploadQueue.push(job)
   })
   drainDeferredUploadQueue()
   return scheduled
@@ -77,6 +156,7 @@ export async function uploadPublicChatFile({
   taskType,
   taskId,
   fallbackError,
+  signal,
 }: UploadPublicChatFileOptions): Promise<PublicChatUploadedFile> {
   const formData = new FormData()
   formData.append("file", file)
@@ -85,12 +165,16 @@ export async function uploadPublicChatFile({
     formData.append("task_id", taskId.toString())
   }
 
-  const response = await fetch(url, {
+  const response = await raceWithAbort(fetch(url, {
     method: "POST",
     headers: { "Authorization": `Bearer ${accessToken}` },
     body: formData,
-  })
-  const data = await response.json().catch(() => null) as PublicChatUploadResponse | null
+    signal,
+  }), signal)
+  const data = await raceWithAbort(
+    response.json().catch(() => null) as Promise<PublicChatUploadResponse | null>,
+    signal,
+  )
   const fileId = typeof data?.file_id === "string" ? data.file_id : null
 
   if (!response.ok || data?.success !== true || !fileId) {
@@ -110,43 +194,81 @@ export async function uploadPublicChatFile({
   }
 }
 
+const uploadScopeKey = ({
+  url,
+  taskType,
+  taskId,
+}: UploadDeferredPublicChatFilesOptions): string =>
+  `${url}\u0000${taskType}\u0000${taskId == null ? "taskless" : `${typeof taskId}:${taskId}`}`
+
+function getCachedUploadState(
+  file: File,
+  uploadContext: object,
+  scopeKey: string,
+): CachedUploadState {
+  let contexts = deferredUploadCache.get(file)
+  if (!contexts) {
+    contexts = new WeakMap()
+    deferredUploadCache.set(file, contexts)
+  }
+  let scopes = contexts.get(uploadContext)
+  if (!scopes) {
+    scopes = new Map()
+    contexts.set(uploadContext, scopes)
+  }
+  let state = scopes.get(scopeKey)
+  if (!state) {
+    state = {}
+    scopes.set(scopeKey, state)
+  }
+  return state
+}
+
 /**
  * Upload a deferred selection with bounded FIFO admission.
  *
- * Every selected file is allowed to settle even when another upload fails.
- * Successful ids are written back to their source File, matching the chat
- * transport's pre-uploaded-file convention so a user retry reuses completed
- * work instead of issuing another POST.
+ * Successful ids are retained only for the same caller-owned credential,
+ * endpoint, task binding, and task type. Each invocation supersedes older
+ * in-flight attempts in that scope, preventing late results from publishing
+ * over the current attempt while preserving successful partial retries.
  */
 export async function uploadDeferredPublicChatFiles(
   files: File[],
   options: UploadDeferredPublicChatFilesOptions,
 ): Promise<PublicChatUploadedFile[]> {
+  const attempt = Symbol("deferred-public-upload-attempt")
+  const scopeKey = uploadScopeKey(options)
+  const timeoutMs = options.timeoutMs !== undefined
+    && Number.isFinite(options.timeoutMs)
+    && options.timeoutMs > 0
+    ? options.timeoutMs
+    : DEFAULT_DEFERRED_UPLOAD_TIMEOUT_MS
   const uploads = files.map((file) => {
-    const sourceFile = file as PublicChatFileWithUploadId
-    if (sourceFile.file_id) {
-      return Promise.resolve({
-        file_id: sourceFile.file_id,
-        name: file.name,
-        size: file.size,
-        type: file.type,
-      })
-    }
+    const state = getCachedUploadState(file, options.uploadContext, scopeKey)
+    if (state.uploaded) return Promise.resolve(state.uploaded)
 
-    return scheduleDeferredUpload(async () => {
-      const uploaded = await uploadPublicChatFile({ ...options, file })
-      sourceFile.file_id = uploaded.file_id
-      return uploaded
-    })
+    state.currentAttempt = attempt
+    return scheduleDeferredUpload(async (signal) => {
+      try {
+        const uploaded = await uploadPublicChatFile({ ...options, file, signal })
+        if (state.currentAttempt === attempt) {
+          state.uploaded = uploaded
+          state.currentAttempt = undefined
+        }
+        return uploaded
+      } catch (error) {
+        if (state.currentAttempt === attempt) state.currentAttempt = undefined
+        throw error
+      }
+    }, options.signal, timeoutMs)
   })
   const settled = await Promise.allSettled(uploads)
   const failed = settled.find(
     (result): result is PromiseRejectedResult => result.status === "rejected",
   )
 
-  if (failed) {
-    throw failed.reason
-  }
-
-  return settled.map((result) => (result as PromiseFulfilledResult<PublicChatUploadedFile>).value)
+  if (failed) throw failed.reason
+  return settled.map(
+    (result) => (result as PromiseFulfilledResult<PublicChatUploadedFile>).value,
+  )
 }

@@ -78,14 +78,17 @@ describe("uploadPublicChatFile", () => {
 
 describe("uploadDeferredPublicChatFiles", () => {
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
+  const uploadContext = {}
   const options = {
     url: "http://api.local/api/share/files/upload",
     accessToken: "guest-token",
     taskType: "task",
     fallbackError: "Upload failed",
+    uploadContext,
   }
 
   it("admits uploads FIFO with at most three active requests through drainage", async () => {
@@ -159,10 +162,8 @@ describe("uploadDeferredPublicChatFiles", () => {
     requests[3].resolve(jsonResponse({ success: true, file_id: "id-3" }))
 
     await expect(upload).rejects.toThrow("storage unavailable")
-    expect((files[0] as File & { file_id?: string }).file_id).toBe("id-0")
-    expect((files[1] as File & { file_id?: string }).file_id).toBeUndefined()
-    expect((files[2] as File & { file_id?: string }).file_id).toBe("id-2")
-    expect((files[3] as File & { file_id?: string }).file_id).toBe("id-3")
+    // Cache state is context-scoped rather than published as a bare File id.
+    expect(files.every(file => !("file_id" in file))).toBe(true)
   })
 
   it("skips files that succeeded when the same selection is retried", async () => {
@@ -190,5 +191,170 @@ describe("uploadDeferredPublicChatFiles", () => {
       "retry.txt",
       "retry.txt",
     ])
+  })
+
+  it("does not reuse ids across task or taskless upload scopes", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "task-a" }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "task-b" }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "taskless" }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "task-bound" }))
+    const taskFile = new File(["same"], "task.txt")
+    const bindingFile = new File(["same"], "binding.txt")
+
+    await expect(uploadDeferredPublicChatFiles([taskFile], {
+      ...options,
+      taskId: 1,
+    })).resolves.toEqual([expect.objectContaining({ file_id: "task-a" })])
+    await expect(uploadDeferredPublicChatFiles([taskFile], {
+      ...options,
+      taskId: 2,
+    })).resolves.toEqual([expect.objectContaining({ file_id: "task-b" })])
+    await expect(uploadDeferredPublicChatFiles([bindingFile], options))
+      .resolves.toEqual([expect.objectContaining({ file_id: "taskless" })])
+    await expect(uploadDeferredPublicChatFiles([bindingFile], {
+      ...options,
+      taskId: 3,
+    })).resolves.toEqual([expect.objectContaining({ file_id: "task-bound" })])
+
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it("does not let a late obsolete attempt publish over the current attempt", async () => {
+    const first = deferred<Response>()
+    const second = deferred<Response>()
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const file = new File(["same"], "late.txt")
+
+    const staleUpload = uploadDeferredPublicChatFiles([file], options)
+    const currentUpload = uploadDeferredPublicChatFiles([file], options)
+    second.resolve(jsonResponse({ success: true, file_id: "current" }))
+    await expect(currentUpload).resolves.toEqual([
+      expect.objectContaining({ file_id: "current" }),
+    ])
+    first.resolve(jsonResponse({ success: true, file_id: "stale" }))
+    await expect(staleUpload).resolves.toEqual([
+      expect.objectContaining({ file_id: "stale" }),
+    ])
+
+    await expect(uploadDeferredPublicChatFiles([file], options)).resolves.toEqual([
+      expect.objectContaining({ file_id: "current" }),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("removes an aborted queued upload without fetching it", async () => {
+    const active = Array.from({ length: 3 }, () => deferred<Response>())
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      () => active[fetchMock.mock.calls.length - 1].promise,
+    )
+    const occupied = uploadDeferredPublicChatFiles(
+      Array.from({ length: 3 }, (_, index) => new File(["x"], `active-${index}.txt`)),
+      options,
+    )
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    const controller = new AbortController()
+    const queued = uploadDeferredPublicChatFiles(
+      [new File(["queued"], "queued.txt")],
+      { ...options, signal: controller.signal },
+    )
+
+    controller.abort()
+    await expect(queued).rejects.toMatchObject({ name: "AbortError" })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    active.forEach((request, index) => request.resolve(
+      jsonResponse({ success: true, file_id: `active-${index}` }),
+    ))
+    await occupied
+  })
+
+  it("aborts an active upload and drains its slot", async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => (
+      new Promise<Response>((resolve, reject) => {
+        const file = (init?.body as FormData).get("file") as File
+        if (file.name === "replacement.txt") {
+          resolve(jsonResponse({ success: true, file_id: "replacement" }))
+          return
+        }
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
+      })
+    ))
+    const occupied = uploadDeferredPublicChatFiles(
+      [
+        new File(["x"], "cancel.txt"),
+        new File(["x"], "stall-1.txt"),
+        new File(["x"], "stall-2.txt"),
+      ],
+      { ...options, signal: controller.signal },
+    )
+    const replacement = uploadDeferredPublicChatFiles(
+      [new File(["x"], "replacement.txt")],
+      options,
+    )
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+
+    controller.abort()
+    await expect(occupied).rejects.toMatchObject({ name: "AbortError" })
+    await expect(replacement).resolves.toEqual([
+      expect.objectContaining({ file_id: "replacement" }),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it("applies the admitted timeout to response parsing", async () => {
+    vi.useFakeTimers()
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: () => new Promise<unknown>(() => undefined),
+    } as Response)
+    const upload = uploadDeferredPublicChatFiles(
+      [new File(["x"], "parsing.txt")],
+      { ...options, timeoutMs: 1_000 },
+    )
+    const expectation = expect(upload).rejects.toMatchObject({
+      name: "TimeoutError",
+    })
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    await expectation
+    vi.useRealTimers()
+  })
+
+  it("times out admitted uploads and cannot wedge later work", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => (
+      new Promise<Response>((resolve, reject) => {
+        const file = (init?.body as FormData).get("file") as File
+        if (file.name === "later.txt") {
+          resolve(jsonResponse({ success: true, file_id: "later" }))
+          return
+        }
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
+      })
+    ))
+    const stalled = uploadDeferredPublicChatFiles(
+      Array.from({ length: 3 }, (_, index) => new File(["x"], `stall-${index}.txt`)),
+      { ...options, timeoutMs: 1_000 },
+    )
+    const later = uploadDeferredPublicChatFiles(
+      [new File(["x"], "later.txt")],
+      options,
+    )
+    const stalledExpectation = expect(stalled).rejects.toMatchObject({
+      name: "TimeoutError",
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    await stalledExpectation
+    await expect(later).resolves.toEqual([
+      expect.objectContaining({ file_id: "later" }),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    vi.useRealTimers()
   })
 })
