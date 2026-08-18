@@ -111,7 +111,9 @@ async def test_actor_policy_required_task_fails_closed_on_cold_build() -> None:
         patch("xagent.web.api.chat.create_default_tools", new=create_tools),
         patch("xagent.web.sandbox_manager.get_sandbox_manager", return_value=None),
         patch("xagent.web.api.chat.AgentService", return_value=MagicMock()),
-        pytest.raises(RuntimeError, match="requires an MCP runtime authorization policy"),
+        pytest.raises(
+            RuntimeError, match="requires an MCP runtime authorization policy"
+        ),
     ):
         await manager.get_agent_for_task(
             task_id=42,
@@ -153,7 +155,9 @@ async def test_actor_policy_required_task_fails_closed_on_warm_reuse() -> None:
             mcp_runtime_authorization_policy=policy,
             resolved_execution_scope=None,
         )
-        with pytest.raises(RuntimeError, match="requires an MCP runtime authorization policy"):
+        with pytest.raises(
+            RuntimeError, match="requires an MCP runtime authorization policy"
+        ):
             await manager.get_agent_for_task(
                 task_id=42,
                 task_owner_user_id=1,
