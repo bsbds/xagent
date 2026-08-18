@@ -522,8 +522,14 @@ class TestFileUpload:
         assert "x-accel-redirect" not in preview.headers
         assert preview.content == b"<h1>preview</h1>"
 
-    def test_upload_remote_storage_outage_returns_503_and_rolls_back(
-        self, client, test_db, temp_uploads_dir, auth_headers, monkeypatch
+    def test_upload_remote_storage_outage_returns_503_and_logs_cause(
+        self,
+        client,
+        test_db,
+        temp_uploads_dir,
+        auth_headers,
+        monkeypatch,
+        caplog,
     ):
         from xagent.core.file_storage.storage import FsspecFileStorage
 
@@ -542,7 +548,16 @@ class TestFileUpload:
         )
 
         assert response.status_code == 503
-        assert "durable storage" in response.json()["detail"].lower()
+        assert response.json() == {
+            "detail": "Durable storage is temporarily unavailable"
+        }
+        assert "simulated remote write outage" in caplog.text
+        assert any(
+            record.exc_info is not None
+            for record in caplog.records
+            if record.name == "xagent.web.api.files"
+            and "Durable storage unavailable during upload" in record.getMessage()
+        )
         assert not list(temp_uploads_dir.rglob("outage.txt"))
 
         db = next(test_app.dependency_overrides[get_db]())
