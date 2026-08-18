@@ -1357,6 +1357,136 @@ describe("ChatInput", () => {
     expect(container.querySelector('button[type="submit"]')).toBeDisabled()
   })
 
+  it("caps attachment uploads across repeated selections", async () => {
+    const pending: Array<(value: { file_id: string }) => void> = []
+    const uploadFile = vi.fn(() => new Promise<{ file_id: string }>((resolve) => {
+      pending.push(resolve)
+    }))
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+      return (
+        <ChatInput
+          hideConfig
+          files={files}
+          onFilesChange={setFiles}
+          onSend={vi.fn()}
+          uploadFile={uploadFile}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    const firstBatch = Array.from({ length: 5 }, (_, index) => (
+      new File([String(index)], `first-${index}.txt`, { type: "text/plain" })
+    ))
+    const secondBatch = Array.from({ length: 2 }, (_, index) => (
+      new File([String(index)], `second-${index}.txt`, { type: "text/plain" })
+    ))
+
+    fireEvent.change(fileInput, { target: { files: firstBatch } })
+    await waitFor(() => expect(uploadFile).toHaveBeenCalled())
+    expect(uploadFile).toHaveBeenCalledTimes(3)
+
+    fireEvent.change(fileInput, { target: { files: secondBatch } })
+    await act(async () => Promise.resolve())
+    expect(uploadFile).toHaveBeenCalledTimes(3)
+
+    while (uploadFile.mock.calls.length < 7) {
+      const next = pending.shift()
+      expect(next).toBeDefined()
+      await act(async () => next?.({ file_id: `file-${uploadFile.mock.calls.length}` }))
+    }
+    await act(async () => {
+      pending.splice(0).forEach((resolve, index) => {
+        resolve({ file_id: `remaining-${index}` })
+      })
+      await Promise.resolve()
+    })
+    await waitFor(() => {
+      expect(container.querySelector('button[type="submit"]')).not.toBeDisabled()
+    })
+  })
+
+  it("cancels duplicate-metadata files by object identity", async () => {
+    const signals: AbortSignal[] = []
+    apiRequestMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "http://upload.local/api/files/upload") {
+        signals.push(init?.signal as AbortSignal)
+        return new Promise<Response>(() => {})
+      }
+      return Promise.resolve(emptyJsonResponse())
+    })
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+      return (
+        <ChatInput
+          hideConfig
+          files={files}
+          onFilesChange={setFiles}
+          onSend={vi.fn()}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    const lastModified = Date.now()
+    const first = new File(["first"], "duplicate.txt", { lastModified })
+    const second = new File(["second"], "duplicate.txt", { lastModified })
+
+    fireEvent.change(fileInput, { target: { files: [first, second] } })
+    await waitFor(() => expect(signals).toHaveLength(2))
+
+    fireEvent.click(screen.getAllByTitle("common.cancel")[0])
+
+    expect(signals[0].aborted).toBe(true)
+    expect(signals[1].aborted).toBe(false)
+  })
+
+  it("keeps successful attachments when another upload fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const uploadFile = vi.fn(async (file: File) => {
+      if (file.name === "failed.txt") throw new Error("storage unavailable")
+      return { file_id: `id-${file.name}` }
+    })
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+      return (
+        <ChatInput
+          hideConfig
+          files={files}
+          onFilesChange={setFiles}
+          onSend={vi.fn()}
+          uploadFile={uploadFile}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    const successful = new File(["ok"], "successful.txt")
+    const failed = new File(["bad"], "failed.txt")
+
+    fireEvent.change(fileInput, { target: { files: [successful, failed] } })
+
+    await waitFor(() => {
+      expect(screen.getByText("successful.txt")).toBeInTheDocument()
+      expect(screen.queryByText("failed.txt")).not.toBeInTheDocument()
+    })
+    expect((successful as File & { file_id?: string }).file_id).toBe(
+      "id-successful.txt"
+    )
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "storage unavailable: failed.txt",
+      expect.anything(),
+    )
+    consoleError.mockRestore()
+  })
+
   it("keeps pause hidden while running draft files are still uploading", async () => {
     const onPause = vi.fn()
     const uploadFile = vi.fn(() => new Promise<{ file_id: string }>(() => {}))
