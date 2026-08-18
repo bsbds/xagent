@@ -118,7 +118,6 @@ from ..services.file_turn import (
     normalize_filename,
     resolve_turn_file_infos,
 )
-from ..services.mcp_runtime import MCPRuntimeAuthorizationPolicy
 from ..services.hot_path_cache import (
     cache_get,
     cache_set,
@@ -126,6 +125,7 @@ from ..services.hot_path_cache import (
     task_cache_ttl_seconds,
     web_task_history_key,
 )
+from ..services.mcp_runtime import MCPRuntimeAuthorizationPolicy
 from ..services.task_command_transport import (
     COMMAND_FAILED,
     COMMAND_ID_PATTERN,
