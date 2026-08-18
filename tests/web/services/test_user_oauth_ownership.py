@@ -1,0 +1,130 @@
+"""Owner-scoped lookup and revocation for builtin OAuth credentials."""
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from xagent.web.models.database import Base
+from xagent.web.models.user import User
+from xagent.web.models.user_oauth import UserOAuth
+from xagent.web.services.user_oauth import (
+    delete_scoped_user_oauth_accounts,
+    get_scoped_user_oauth_account,
+    list_scoped_user_oauth_accounts,
+)
+
+ALICE = "toby:slack:41:UALICE"
+BOB = "toby:slack:41:UBOB"
+
+
+def _db(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'oauth-service.db'}")
+    Base.metadata.create_all(engine)
+    local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = local()
+    user = User(username="owner", password_hash="hash")
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    rows = [
+        UserOAuth(
+            user_id=int(user.id),
+            provider="gmail",
+            resource_owner_key=None,
+            provider_user_id="ordinary",
+            access_token="ordinary",
+        ),
+        UserOAuth(
+            user_id=int(user.id),
+            provider="gmail",
+            resource_owner_key=ALICE,
+            provider_user_id="alice",
+            access_token="alice",
+        ),
+        UserOAuth(
+            user_id=int(user.id),
+            provider="gmail",
+            resource_owner_key=BOB,
+            provider_user_id="bob",
+            access_token="bob",
+        ),
+    ]
+    db.add_all(rows)
+    db.commit()
+    for row in rows:
+        db.refresh(row)
+    return engine, db, user, rows
+
+
+def test_listing_never_crosses_owner_namespaces(tmp_path) -> None:
+    engine, db, user, _rows = _db(tmp_path)
+    try:
+        ordinary = list_scoped_user_oauth_accounts(
+            db, user_id=int(user.id), resource_owner_key=None
+        )
+        alice = list_scoped_user_oauth_accounts(
+            db, user_id=int(user.id), resource_owner_key=ALICE
+        )
+
+        assert [row.access_token for row in ordinary] == ["ordinary"]
+        assert [row.access_token for row in alice] == ["alice"]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_direct_id_lookup_requires_the_expected_owner(tmp_path) -> None:
+    engine, db, user, rows = _db(tmp_path)
+    alice_row = rows[1]
+    try:
+        assert (
+            get_scoped_user_oauth_account(
+                db,
+                user_id=int(user.id),
+                account_id=int(alice_row.id),
+                resource_owner_key=ALICE,
+            )
+            is not None
+        )
+        assert (
+            get_scoped_user_oauth_account(
+                db,
+                user_id=int(user.id),
+                account_id=int(alice_row.id),
+                resource_owner_key=BOB,
+            )
+            is None
+        )
+        assert (
+            get_scoped_user_oauth_account(
+                db,
+                user_id=int(user.id),
+                account_id=int(alice_row.id),
+                resource_owner_key=None,
+            )
+            is None
+        )
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_actor_revocation_leaves_ordinary_and_other_actor_rows(tmp_path) -> None:
+    engine, db, user, _rows = _db(tmp_path)
+    try:
+        deleted = delete_scoped_user_oauth_accounts(
+            db,
+            user_id=int(user.id),
+            resource_owner_key=ALICE,
+            providers=["gmail"],
+        )
+        db.commit()
+
+        assert deleted == 1
+        remaining = {
+            (row.resource_owner_key, row.access_token)
+            for row in db.query(UserOAuth).all()
+        }
+        assert remaining == {(None, "ordinary"), (BOB, "bob")}
+    finally:
+        db.close()
+        engine.dispose()

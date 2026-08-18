@@ -36,6 +36,7 @@ from ..models.user import User
 from ..models.user_oauth import UserOAuth
 from ..services import gmail_provisioning
 from ..services.auth_email import send_password_reset_email
+from ..services.user_oauth import normalize_user_oauth_resource_owner_key
 
 logger = logging.getLogger(__name__)
 
@@ -1187,7 +1188,62 @@ def generic_oauth_login(
     db: Optional[Session] = None,
     db_provider: Optional[Any] = None,
 ) -> Any:
-    """Start generic OAuth flow"""
+    """Start the public builtin OAuth flow in the ordinary owner namespace."""
+    return _generic_oauth_login(
+        provider,
+        token=token,
+        app_id=app_id,
+        redirect=redirect,
+        db=db,
+        db_provider=db_provider,
+        trusted_user_id=None,
+        resource_owner_key=None,
+    )
+
+
+def start_builtin_oauth_for_resource_owner(
+    *,
+    provider: str,
+    app_id: str | None,
+    user: User,
+    resource_owner_key: str,
+    redirect: str | None = None,
+    db: Session,
+    db_provider: Any,
+) -> Any:
+    """Start builtin OAuth for one trusted server-owned actor namespace.
+
+    The owner key is placed only inside signed OAuth state. No generic HTTP
+    route accepts it, and the callback trusts only the verified state claim.
+    """
+    owner_key = normalize_user_oauth_resource_owner_key(resource_owner_key)
+    if owner_key is None:
+        raise ValueError("resource_owner_key must not be null")
+    if user.id is None:
+        raise ValueError("user must be persisted before starting OAuth")
+    return _generic_oauth_login(
+        provider,
+        token=None,
+        app_id=app_id,
+        redirect=redirect,
+        db=db,
+        db_provider=db_provider,
+        trusted_user_id=int(user.id),
+        resource_owner_key=owner_key,
+    )
+
+
+def _generic_oauth_login(
+    provider: str,
+    *,
+    token: str | None,
+    app_id: str | None,
+    redirect: str | None,
+    db: Session | None,
+    db_provider: Any | None,
+    trusted_user_id: int | None,
+    resource_owner_key: str | None,
+) -> Any:
     if db is None:
         raise RuntimeError("db session is required")
     if not db_provider:
@@ -1204,14 +1260,14 @@ def generic_oauth_login(
 
     redirect_uri = _resolve_oauth_redirect_uri(provider, db_provider)
 
-    user_id = None
-    if token:
+    user_id = trusted_user_id
+    if user_id is None and token:
         payload = verify_token(token)
         if payload and payload.get("type") == "access":
             username = payload.get("sub")
             user = db.query(User).filter(User.username == username).first()
             if user:
-                user_id = user.id
+                user_id = int(user.id)
 
     if not user_id:
         return HTMLResponse(
@@ -1225,6 +1281,7 @@ def generic_oauth_login(
         "provider": provider,
         "app_id": app_id,
         "redirect": redirect,
+        "resource_owner_key": resource_owner_key,
     }
     state = create_access_token(data=state_payload, expires_delta=timedelta(minutes=10))
 
@@ -1450,6 +1507,14 @@ def generic_oauth_callback(
 
     user_id = payload.get("user_id")
     app_id = payload.get("app_id")
+    try:
+        resource_owner_key = normalize_user_oauth_resource_owner_key(
+            payload.get("resource_owner_key")
+        )
+    except ValueError:
+        return HTMLResponse(
+            content="<h1>Error: Invalid or expired state</h1>", status_code=400
+        )
 
     if app_id:
         # Reject a hidden app before spending the authorization code against
@@ -1600,12 +1665,15 @@ def generic_oauth_callback(
 
         if user_id:
             db.query(UserOAuth).filter(
-                UserOAuth.user_id == user_id, UserOAuth.provider == (app_id or provider)
+                UserOAuth.user_id == user_id,
+                UserOAuth.provider == (app_id or provider),
+                UserOAuth.resource_owner_key == resource_owner_key,
             ).delete()
 
             oauth_account = UserOAuth(
                 user_id=user_id,
                 provider=(app_id or provider),
+                resource_owner_key=resource_owner_key,
                 provider_user_id=str(provider_user_id) if provider_user_id else None,
             )
             db.add(oauth_account)
@@ -1707,9 +1775,10 @@ def generic_oauth_callback(
             # Everything past the commit belongs in the helper, which cannot
             # change what this callback returns. Add new post-commit work
             # there, not here.
-            _run_post_commit_oauth_side_effects(
-                db, user_id=user_id, connector_key=(app_id or provider)
-            )
+            if resource_owner_key is None:
+                _run_post_commit_oauth_side_effects(
+                    db, user_id=user_id, connector_key=(app_id or provider)
+                )
 
         import json
         from urllib.parse import urlparse
