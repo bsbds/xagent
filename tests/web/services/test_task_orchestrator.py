@@ -59,6 +59,7 @@ from xagent.web.services.connector_runtime import (
     pop_ephemeral_runtime_values,
     store_ephemeral_runtime_values,
 )
+from xagent.web.services.mcp_runtime import MCPRuntimeAuthorizationPolicy
 from xagent.web.services.task_execution_controller import task_execution_controller
 from xagent.web.services.task_lease_service import (
     TaskLease,
@@ -2551,6 +2552,12 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
     )
     _store_runtime_secret_for_turn(payload.turn_id)
     assert get_ephemeral_runtime_values(payload.turn_id) is not None
+    authorization_policy = MCPRuntimeAuthorizationPolicy(
+        resource_owner_key="actor:alice",
+        allowed_server_ids=frozenset({7}),
+        require_explicit_owner=True,
+        allow_non_oauth=False,
+    )
 
     with (
         patch(
@@ -2581,6 +2588,7 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
             payload=payload,
             force_fresh=False,
             context={"turn_id": "caller-turn", "existing": "value"},
+            mcp_runtime_authorization_policy=authorization_policy,
         )
         await bg_task
 
@@ -2597,6 +2605,7 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
     ), "execution_message must reach execute_task_background.llm_user_message"
     assert kwargs["context"]["turn_id"] == payload.turn_id
     assert kwargs["context"]["existing"] == "value"
+    assert kwargs["mcp_runtime_authorization_policy"] is authorization_policy
     assert get_ephemeral_runtime_values(payload.turn_id) is None
     assert pop_ephemeral_runtime_values(payload.turn_id) is None
 

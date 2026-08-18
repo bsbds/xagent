@@ -118,6 +118,7 @@ from ..services.file_turn import (
     normalize_filename,
     resolve_turn_file_infos,
 )
+from ..services.mcp_runtime import MCPRuntimeAuthorizationPolicy
 from ..services.hot_path_cache import (
     cache_get,
     cache_set,
@@ -2413,6 +2414,7 @@ async def execute_task_background(
     resolved_execution_scope: Union[
         ExecutionScope, None, ExecutionScopeNotProvided
     ] = EXECUTION_SCOPE_NOT_PROVIDED,
+    mcp_runtime_authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
 ) -> None:
     """Execute one task without checking out a DB connection on the event loop.
 
@@ -2484,6 +2486,7 @@ async def execute_task_background(
                 connector_runtime_turn_id=context_dict.get("turn_id")
                 if isinstance(context_dict.get("turn_id"), str)
                 else None,
+                mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
                 resolved_execution_scope=execution_scope,
             )
             if hasattr(agent_service, "set_outbound_message_handler"):
