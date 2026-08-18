@@ -1358,10 +1358,21 @@ describe("ChatInput", () => {
   })
 
   it("caps attachment uploads across repeated selections", async () => {
-    const pending: Array<(value: { file_id: string }) => void> = []
-    const uploadFile = vi.fn(() => new Promise<{ file_id: string }>((resolve) => {
-      pending.push(resolve)
-    }))
+    const controlledUploads: Array<{
+      file: File
+      resolve: (value: { file_id: string }) => void
+    }> = []
+    let activeUploads = 0
+    let maxActiveUploads = 0
+    const uploadFile = vi.fn((file: File) => {
+      activeUploads += 1
+      maxActiveUploads = Math.max(maxActiveUploads, activeUploads)
+      return new Promise<{ file_id: string }>((resolve) => {
+        controlledUploads.push({ file, resolve })
+      }).finally(() => {
+        activeUploads -= 1
+      })
+    })
 
     function Harness() {
       const [files, setFiles] = React.useState<File[]>([])
@@ -1384,26 +1395,53 @@ describe("ChatInput", () => {
     const secondBatch = Array.from({ length: 2 }, (_, index) => (
       new File([String(index)], `second-${index}.txt`, { type: "text/plain" })
     ))
+    const expectedUploadOrder = [...firstBatch, ...secondBatch].map(file => file.name)
 
     fireEvent.change(fileInput, { target: { files: firstBatch } })
-    await waitFor(() => expect(uploadFile).toHaveBeenCalled())
-    expect(uploadFile).toHaveBeenCalledTimes(3)
+    await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(3))
+    expect(activeUploads).toBe(3)
+    expect(maxActiveUploads).toBe(3)
 
     fireEvent.change(fileInput, { target: { files: secondBatch } })
     await act(async () => Promise.resolve())
     expect(uploadFile).toHaveBeenCalledTimes(3)
 
-    while (uploadFile.mock.calls.length < 7) {
-      const next = pending.shift()
-      expect(next).toBeDefined()
-      await act(async () => next?.({ file_id: `file-${uploadFile.mock.calls.length}` }))
-    }
-    await act(async () => {
-      pending.splice(0).forEach((resolve, index) => {
-        resolve({ file_id: `remaining-${index}` })
+    let resolvedUploads = 0
+    while (uploadFile.mock.calls.length < expectedUploadOrder.length) {
+      const uploadsStarted = uploadFile.mock.calls.length
+      const controlledUpload = controlledUploads[resolvedUploads]
+      expect(controlledUpload).toBeDefined()
+
+      await act(async () => {
+        controlledUpload.resolve({ file_id: `id-${controlledUpload.file.name}` })
       })
-      await Promise.resolve()
-    })
+      resolvedUploads += 1
+
+      await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(uploadsStarted + 1))
+      expect(activeUploads).toBe(3)
+      expect(maxActiveUploads).toBeLessThanOrEqual(3)
+    }
+
+    expect(uploadFile.mock.calls.map(([file]) => file.name)).toEqual(
+      expectedUploadOrder
+    )
+
+    while (resolvedUploads < controlledUploads.length) {
+      const controlledUpload = controlledUploads[resolvedUploads]
+      await act(async () => {
+        controlledUpload.resolve({ file_id: `id-${controlledUpload.file.name}` })
+      })
+      resolvedUploads += 1
+
+      await waitFor(() => {
+        expect(activeUploads).toBe(expectedUploadOrder.length - resolvedUploads)
+      })
+      expect(uploadFile).toHaveBeenCalledTimes(expectedUploadOrder.length)
+      expect(maxActiveUploads).toBeLessThanOrEqual(3)
+    }
+
+    expect(activeUploads).toBe(0)
+    expect(maxActiveUploads).toBe(3)
     await waitFor(() => {
       expect(container.querySelector('button[type="submit"]')).not.toBeDisabled()
     })
@@ -1446,12 +1484,17 @@ describe("ChatInput", () => {
     expect(signals[1].aborted).toBe(false)
   })
 
-  it("keeps successful attachments when another upload fails", async () => {
+  it("keeps successful attachments when other uploads fail", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
-    const uploadFile = vi.fn(async (file: File) => {
-      if (file.name === "failed.txt") throw new Error("storage unavailable")
-      return { file_id: `id-${file.name}` }
-    })
+    const controlledUploads = new Map<string, {
+      resolve: (value: { file_id: string }) => void
+      reject: (reason: unknown) => void
+    }>()
+    const uploadFile = vi.fn((file: File) => new Promise<{ file_id: string }>(
+      (resolve, reject) => {
+        controlledUploads.set(file.name, { resolve, reject })
+      }
+    ))
 
     function Harness() {
       const [files, setFiles] = React.useState<File[]>([])
@@ -1469,19 +1512,37 @@ describe("ChatInput", () => {
     const { container } = render(<Harness />)
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
     const successful = new File(["ok"], "successful.txt")
-    const failed = new File(["bad"], "failed.txt")
+    const firstFailure = new File(["bad-1"], "failed-one.txt")
+    const secondFailure = new File(["bad-2"], "failed-two.txt")
 
-    fireEvent.change(fileInput, { target: { files: [successful, failed] } })
+    fireEvent.change(fileInput, {
+      target: { files: [successful, firstFailure, secondFailure] },
+    })
+    await waitFor(() => expect(controlledUploads.size).toBe(3))
+
+    await act(async () => {
+      controlledUploads.get(successful.name)?.resolve({
+        file_id: `id-${successful.name}`,
+      })
+      controlledUploads.get(firstFailure.name)?.reject(
+        new Error("storage unavailable")
+      )
+      controlledUploads.get(secondFailure.name)?.reject(
+        new Error("storage unavailable")
+      )
+    })
 
     await waitFor(() => {
-      expect(screen.getByText("successful.txt")).toBeInTheDocument()
-      expect(screen.queryByText("failed.txt")).not.toBeInTheDocument()
+      expect(screen.getByText(successful.name)).toBeInTheDocument()
+      expect(screen.queryByText(firstFailure.name)).not.toBeInTheDocument()
+      expect(screen.queryByText(secondFailure.name)).not.toBeInTheDocument()
     })
     expect((successful as File & { file_id?: string }).file_id).toBe(
       "id-successful.txt"
     )
+    expect(toastErrorMock).toHaveBeenCalledTimes(1)
     expect(toastErrorMock).toHaveBeenCalledWith(
-      "storage unavailable (1): failed.txt",
+      "storage unavailable (2): failed-one.txt, failed-two.txt",
       expect.anything(),
     )
     consoleError.mockRestore()
