@@ -5623,7 +5623,7 @@ export function AppProvider({
               const uploadResponse = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
                 method: 'POST',
                 body: formData
-              })
+              }, { retryTransport: false })
 
               const parsed = await parseApiResponse(uploadResponse)
 

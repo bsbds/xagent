@@ -1208,7 +1208,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
                 'Authorization': `Bearer ${tokenRef.current ?? localStorage.getItem('token') ?? ''}`,
               },
               body: formData,
-            })
+            }, { retryTransport: false })
             const parsed = await parseApiResponse(response)
             if (!response.ok || !isJsonRecord(parsed.data)) {
               throw deliveryError(getUploadErrorMessage(response, parsed, {

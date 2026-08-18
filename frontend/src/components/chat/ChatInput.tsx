@@ -491,7 +491,7 @@ export function ChatInput({
             method: 'POST',
             body: formData,
             signal: controller.signal
-          });
+          }, { retryTransport: false });
           const parsed = await parseApiResponse(response);
 
           if (response.ok && isJsonRecord(parsed.data)) {

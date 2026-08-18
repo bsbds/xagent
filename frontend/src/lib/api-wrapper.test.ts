@@ -224,6 +224,20 @@ describe("api-wrapper auth refresh", () => {
     mockNavigatorLocks()
   })
 
+  it("does not replay an upload after an ambiguous transport failure", async () => {
+    writeAuthCache(user, "access-token", "refresh-token", 120, 240)
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValue(new TypeError("network connection lost"))
+
+    await expect(apiRequest(
+      "http://api.local/api/files/upload",
+      { method: "POST", body: new FormData() },
+      { retryTransport: false },
+    )).rejects.toThrow("network connection lost")
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it("replays once when the profile advances after the refreshed credential is committed", async () => {
     writeAuthCache(user, "old-access", "old-refresh", 120, 240)
     const updateProfileAfterRefresh = () => {
