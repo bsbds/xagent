@@ -283,6 +283,15 @@ function PublicConversationContent({
     bootstrapControllerRef.current?.abort()
     const bootstrapController = new AbortController()
     bootstrapControllerRef.current = bootstrapController
+    const ensureActiveBootstrap = () => {
+      if (
+        bootstrapControllerRef.current !== bootstrapController
+        || bootstrapController.signal.aborted
+      ) {
+        throw bootstrapController.signal.reason
+          ?? new DOMException("Task bootstrap was cancelled", "AbortError")
+      }
+    }
     setIsBootstrappingTask(true)
     try {
       const taskPayload: Record<string, string | number | string[]> = {
@@ -308,9 +317,7 @@ function PublicConversationContent({
           signal: bootstrapController.signal,
           uploadContext: workforceUploadContext,
         })
-        if (bootstrapController.signal.aborted) {
-          throw bootstrapController.signal.reason
-        }
+        ensureActiveBootstrap()
         taskPayload.files = uploaded.map((item) => item.file_id)
       }
 
@@ -323,8 +330,14 @@ function PublicConversationContent({
         },
         body: JSON.stringify(taskPayload),
       })
+      // Aborting fetch does not prevent an already-resolved Response body from
+      // settling later. Fence both the controller generation and its signal at
+      // every boundary so a replaced bootstrap cannot publish stale results.
+      ensureActiveBootstrap()
 
       if (!response.ok) {
+        const errorData = await response.json().catch(() => null)
+        ensureActiveBootstrap()
         // A share task-create carries no task id, so 401/403 here means the
         // guest token itself is no longer valid (rotated/disabled link, or a
         // legacy token rejected post-#973). Drop the persisted token and force
@@ -333,13 +346,13 @@ function PublicConversationContent({
           safeRemoveItem(storageKey)
           onAuthInvalidated?.()
         }
-        const errorData = await response.json().catch(() => null)
         const errorMessage = errorData?.detail || t("widgetChat.messages.error_init")
         setCreateTaskError(errorMessage)
         throw new Error(errorMessage)
       }
 
       const taskData = await response.json()
+      ensureActiveBootstrap()
       const newTaskId = taskData.task_id
       if (typeof newTaskId !== "number") {
         throw new Error("Task creation failed")
@@ -366,6 +379,7 @@ function PublicConversationContent({
 
       if (!workforceId) {
         await sendMessage(message, { ...config, targetTaskId: newTaskId }, files)
+        ensureActiveBootstrap()
       }
       // Workforce share sessions already started their first turn (with the
       // files threaded in above) inside task creation — the connection
@@ -374,7 +388,9 @@ function PublicConversationContent({
       setDraftMessage("")
       setDraftFiles([])
     } catch (error) {
-      setIsBootstrappingTask(false)
+      if (bootstrapControllerRef.current === bootstrapController) {
+        setIsBootstrappingTask(false)
+      }
       throw error
     } finally {
       if (bootstrapControllerRef.current === bootstrapController) {

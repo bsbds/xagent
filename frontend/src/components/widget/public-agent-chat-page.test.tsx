@@ -1,5 +1,5 @@
 import React from "react"
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AppProviderTransportConfig } from "@/contexts/app-context-chat"
 
@@ -25,6 +25,8 @@ const app = vi.hoisted(() => ({
       files: File[],
       config?: Record<string, string>,
     ) => Promise<void>
+    inputValue: string
+    onInputChange: (value: string) => void
     voiceInputEnabled?: boolean
   },
 }))
@@ -72,12 +74,15 @@ vi.mock("@/components/chat/ChatStartScreen", () => ({
   ChatStartScreen: (props: {
     onSend: (message: string, files: File[], config?: Record<string, string>) => Promise<void>
     title: string
+    inputValue: string
+    onInputChange: (value: string) => void
     voiceInputEnabled?: boolean
   }) => {
     app.startScreenProps = props
     return (
       <button
         type="button"
+        data-input-value={props.inputValue}
         onClick={() => {
           void props.onSend("first message", [], { mode: "balanced" }).catch(() => undefined)
         }}
@@ -131,6 +136,14 @@ function jsonResponse(payload: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json" },
   })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
 }
 
 function renderWidgetPage(overrides: Partial<React.ComponentProps<typeof PublicAgentChatPage>> = {}) {
@@ -545,6 +558,89 @@ describe("PublicAgentChatPage", () => {
 
     expect(await screen.findByTestId("conversation-panel")).toBeInTheDocument()
     expect(app.setTaskId).toHaveBeenCalledWith(42, { navigate: false })
+  })
+
+  it("ignores a replaced bootstrap after successful task JSON resolves", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(successfulAgentAuth))
+    renderWidgetPage({ widgetKey: "widget-secret" })
+
+    const startButton = await screen.findByRole("button", { name: "start:Support Agent" })
+    app.setTaskId.mockClear()
+    // Keep the start screen mounted even if stale code attempts publication so
+    // draft clearing is independently observable rather than hidden by the
+    // mocked provider switching to the conversation panel.
+    app.setTaskId.mockImplementation(() => undefined)
+    app.dispatch.mockClear()
+    const staleJson = deferred<ReturnType<typeof widgetTaskResponse>>()
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => staleJson.promise,
+    } as Response)
+    fetchMock.mockReturnValueOnce(new Promise(() => undefined))
+
+    act(() => app.startScreenProps?.onInputChange("keep active draft"))
+    const staleSend = app.startScreenProps!.onSend("stale message", [])
+      .catch(error => error)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const activeSend = app.startScreenProps!.onSend("active message", [])
+      .catch(error => error)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+
+    await act(async () => {
+      staleJson.resolve(widgetTaskResponse(42, "pending"))
+      await staleSend
+    })
+
+    expect(app.setTaskId).not.toHaveBeenCalled()
+    expect(app.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: "SET_CURRENT_TASK",
+    }))
+    expect(app.sendMessage).not.toHaveBeenCalled()
+    expect(startButton).toHaveAttribute("data-input-value", "keep active draft")
+    expect(screen.queryByText("widgetChat.messages.error_init")).toBeNull()
+    void activeSend
+  })
+
+  it("ignores a replaced bootstrap after non-ok task JSON resolves", async () => {
+    localStorage.clear()
+    localStorage.setItem(SHARE_AUTH_KEY, JSON.stringify(successfulAgentAuth))
+    renderSharePage()
+
+    const startButton = await screen.findByRole("button", { name: "start:Support Agent" })
+    app.setTaskId.mockClear()
+    app.dispatch.mockClear()
+    const staleJson = deferred<{ detail: string }>()
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      json: () => staleJson.promise,
+    } as Response)
+    fetchMock.mockReturnValueOnce(new Promise(() => undefined))
+
+    act(() => app.startScreenProps?.onInputChange("keep active draft"))
+    const staleSend = app.startScreenProps!.onSend("stale message", [])
+      .catch(error => error)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    const activeSend = app.startScreenProps!.onSend("active message", [])
+      .catch(error => error)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      staleJson.resolve({ detail: "stale task error" })
+      await staleSend
+    })
+
+    expect(localStorage.getItem(SHARE_AUTH_KEY)).not.toBeNull()
+    expect(app.setTaskId).not.toHaveBeenCalled()
+    expect(app.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: "SET_CURRENT_TASK",
+    }))
+    expect(app.sendMessage).not.toHaveBeenCalled()
+    expect(startButton).toHaveAttribute("data-input-value", "keep active draft")
+    expect(screen.queryByText("stale task error")).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    void activeSend
   })
 
   it("uses the shared deferred uploader when workforce task creation starts the opening turn", async () => {
