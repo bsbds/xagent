@@ -574,6 +574,68 @@ class TestFileUpload:
         finally:
             db.close()
 
+    def test_upload_capacity_timeout_returns_503_and_cleans_staging(
+        self,
+        client,
+        test_db,
+        temp_uploads_dir,
+        auth_headers,
+        monkeypatch,
+        caplog,
+    ):
+        import xagent.web.api.files as files_api
+        from xagent.web.services.upload_storage_gate import (
+            UploadStorageCapacityError,
+        )
+
+        admin_user, test_app = test_db
+
+        class RejectedLease:
+            async def __aenter__(self):
+                raise UploadStorageCapacityError("capacity exhausted")
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        class RejectingGate:
+            def lease(self):
+                return RejectedLease()
+
+        monkeypatch.setattr(
+            files_api,
+            "get_upload_storage_gate",
+            lambda: RejectingGate(),
+            raising=False,
+        )
+
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("queued.txt", b"queued content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+
+        assert response.status_code == 503
+        assert response.json() == {
+            "detail": "Durable storage is temporarily unavailable"
+        }
+        assert "Timed out waiting for durable upload capacity" in caplog.text
+        assert not list(temp_uploads_dir.rglob("queued.txt"))
+
+        db = next(test_app.dependency_overrides[get_db]())
+        try:
+            assert (
+                db.query(UploadedFile)
+                .filter(
+                    UploadedFile.user_id == admin_user.id,
+                    UploadedFile.filename == "queued.txt",
+                )
+                .first()
+                is None
+            )
+        finally:
+            db.close()
+
     def test_download_serves_existing_local_file_during_remote_outage(
         self, client, temp_uploads_dir, auth_headers, monkeypatch
     ):
