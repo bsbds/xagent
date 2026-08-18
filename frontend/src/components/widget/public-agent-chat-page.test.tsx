@@ -20,11 +20,17 @@ const app = vi.hoisted(() => ({
     transport?: AppProviderTransportConfig
   },
   startScreenProps: null as null | {
+    onSend: (
+      message: string,
+      files: File[],
+      config?: Record<string, string>,
+    ) => Promise<void>
     voiceInputEnabled?: boolean
   },
 }))
 
 const i18n = vi.hoisted(() => ({ t: (key: string) => key }))
+const uploads = vi.hoisted(() => ({ deferred: vi.fn() }))
 
 vi.mock("@/contexts/app-context-chat", () => ({
   AppProvider: ({
@@ -56,6 +62,10 @@ vi.mock("@/contexts/app-context-chat", () => ({
 
 vi.mock("@/contexts/i18n-context", () => ({
   useI18n: () => i18n,
+}))
+
+vi.mock("@/lib/public-chat-file-upload", () => ({
+  uploadDeferredPublicChatFiles: uploads.deferred,
 }))
 
 vi.mock("@/components/chat/ChatStartScreen", () => ({
@@ -236,6 +246,14 @@ describe("PublicAgentChatPage", () => {
     app.startScreenProps = null
     sessionStorage.clear()
     fetchMock.mockReset()
+    uploads.deferred.mockReset()
+    uploads.deferred.mockImplementation(async (files: File[]) =>
+      files.map((file, index) => ({
+        file_id: `uploaded-${index}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      })))
     vi.stubGlobal("fetch", fetchMock)
   })
 
@@ -289,6 +307,26 @@ describe("PublicAgentChatPage", () => {
       },
     )
     expectPublicProviderToken()
+  })
+
+  it("uses the shared deferred uploader for existing-task transport uploads", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(successfulAgentAuth))
+    const file = new File(["existing"], "existing.txt", { type: "text/plain" })
+
+    renderWidgetPage({ widgetKey: "widget-secret" })
+    await screen.findByRole("button", { name: "start:Support Agent" })
+    await app.provider?.transport?.uploadFiles?.([file], {
+      taskId: 71,
+      taskType: "task",
+    })
+
+    expect(uploads.deferred).toHaveBeenCalledWith([file], {
+      url: "https://api.example/api/widget/files/upload",
+      accessToken: "public-access-token",
+      taskType: "task",
+      taskId: 71,
+      fallbackError: "files.uploadFailed",
+    })
   })
 
   it("fails closed for an invalid direct widget key", async () => {
@@ -504,17 +542,25 @@ describe("PublicAgentChatPage", () => {
     expect(app.setTaskId).toHaveBeenCalledWith(42, { navigate: false })
   })
 
-  it("lets workforce task creation start the opening turn without sending it again", async () => {
+  it("uses the shared deferred uploader when workforce task creation starts the opening turn", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
       .mockResolvedValueOnce(jsonResponse(widgetTaskResponse(43, "running")))
+    const file = new File(["opening"], "opening.txt", { type: "text/plain" })
 
     renderWidgetPage({ searchAgentId: null, widgetKey: "widget-secret" })
 
-    fireEvent.click(await screen.findByRole("button", { name: "start:Support Workforce" }))
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+    await app.startScreenProps?.onSend("first message", [file], { mode: "balanced" })
 
     await waitFor(() => {
       expect(app.setTaskId).toHaveBeenCalledWith(43, { navigate: false })
+    })
+    expect(uploads.deferred).toHaveBeenCalledWith([file], {
+      url: "https://api.example/api/widget/files/upload",
+      accessToken: "public-access-token",
+      taskType: "task",
+      fallbackError: "files.uploadFailed",
     })
     expect(app.sendMessage).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -543,6 +589,7 @@ describe("PublicAgentChatPage", () => {
         body: JSON.stringify({
           title: "first message",
           description: "first message",
+          files: ["uploaded-0"],
         }),
       },
     )
