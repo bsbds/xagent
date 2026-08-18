@@ -2012,6 +2012,27 @@ async def test_mcp_oauth_app_not_connected_until_grant_completes(
             mcp_server_id=server.id,
             user_id=user.id,
             mcp_oauth_client_id=client.id,
+            resource_owner_key="toby:slack:41:UALICE",
+            issuer="https://auth.example.com",
+            resource="https://mcp.example.com/mcp",
+            scope="",
+            access_token=encrypt_value("actor-access-token"),
+            status="active",
+        )
+    )
+    db.commit()
+
+    apps_with_actor_grant = list_mcp_apps(current_user=user, db=db)
+    remote_notes_with_actor = next(
+        a for a in apps_with_actor_grant if a["id"] == "remote-notes"
+    )
+    assert remote_notes_with_actor["is_connected"] is False
+
+    db.add(
+        MCPOAuthGrant(
+            mcp_server_id=server.id,
+            user_id=user.id,
+            mcp_oauth_client_id=client.id,
             resource_owner_key=f"xagent:user:{user.id}",
             issuer="https://auth.example.com",
             resource="https://mcp.example.com/mcp",
@@ -2200,6 +2221,17 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
         access_token=encrypt_value("own-access-token"),
         status="active",
     )
+    actor_grant = MCPOAuthGrant(
+        mcp_server_id=server.id,
+        user_id=user.id,
+        mcp_oauth_client_id=client.id,
+        resource_owner_key="toby:slack:41:UALICE",
+        issuer="https://auth.example.com",
+        resource="https://mcp.example.com/mcp",
+        scope="",
+        access_token=encrypt_value("actor-access-token"),
+        status="active",
+    )
     sibling_grant = MCPOAuthGrant(
         mcp_server_id=server.id,
         user_id=other_user.id,
@@ -2211,9 +2243,10 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
         access_token=encrypt_value("sibling-access-token"),
         status="active",
     )
-    db.add_all([own_grant, sibling_grant])
+    db.add_all([own_grant, actor_grant, sibling_grant])
     db.commit()
     db.refresh(own_grant)
+    db.refresh(actor_grant)
     db.refresh(sibling_grant)
 
     own_grant_id = own_grant.id
@@ -2225,11 +2258,13 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
         db.query(MCPOAuthGrant).filter(MCPOAuthGrant.id == own_grant_id).one_or_none()
         is None
     )
+    db.refresh(actor_grant)
+    assert actor_grant.status == "active"
     db.refresh(sibling_grant)
     assert sibling_grant.status == "active"
 
-    # The shared row survives (other_user is still associated); only the
-    # disconnecting user's association and grant are gone.
+    # The shared row survives. The current user's association also survives
+    # because the actor-owned grant still depends on it.
     assert (
         db.query(MCPServer).filter(MCPServer.id == server.id).one_or_none() is not None
     )
@@ -2239,7 +2274,7 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
             UserMCPServer.user_id == user.id, UserMCPServer.mcpserver_id == server.id
         )
         .one_or_none()
-        is None
+        is not None
     )
 
 
