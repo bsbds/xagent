@@ -443,9 +443,8 @@ async def build_mcp_runtime_connection(
                     message="MCP server is not authorized for this actor",
                 ),
             )
-        if (
-            not authorization_policy.allow_non_oauth
-            and not _is_mcp_oauth_http_server(server, auth_config)
+        if not authorization_policy.allow_non_oauth and not _is_mcp_oauth_http_server(
+            server, auth_config
         ):
             return MCPRuntimeConnectionBuild(
                 connection=None,
@@ -516,7 +515,9 @@ async def build_mcp_runtime_connection(
     if authorization_policy is not None:
         resource_owner_key = authorization_policy.resource_owner_key
     else:
-        resource_owner_key = selection.get("resource_owner_key") or f"xagent:user:{user_id}"
+        resource_owner_key = (
+            selection.get("resource_owner_key") or f"xagent:user:{user_id}"
+        )
     try:
         runtime_auth = await resolve_mcp_oauth_runtime_auth(
             db,

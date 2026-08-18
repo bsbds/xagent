@@ -2746,16 +2746,13 @@ def test_mcp_runtime_context_switches_turn_and_actor_policy_atomically():
     cfg._factory_runtime_snapshot = object()
 
     assert (
-        cfg.set_mcp_runtime_context(
-            turn_id="turn-1", authorization_policy=alice
-        )
+        cfg.set_mcp_runtime_context(turn_id="turn-1", authorization_policy=alice)
         is False
     )
     assert cfg._cached_mcp_configs is not None
 
     assert (
-        cfg.set_mcp_runtime_context(turn_id="turn-2", authorization_policy=bob)
-        is True
+        cfg.set_mcp_runtime_context(turn_id="turn-2", authorization_policy=bob) is True
     )
     assert cfg._connector_runtime_turn_id == "turn-2"
     assert cfg._mcp_runtime_authorization_policy == bob

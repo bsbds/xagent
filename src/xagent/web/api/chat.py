@@ -2743,9 +2743,7 @@ class AgentServiceManager:
                     if workforce_runtime
                     else None,
                     connector_runtime_turn_id=connector_runtime_turn_id,
-                    mcp_runtime_authorization_policy=(
-                        mcp_runtime_authorization_policy
-                    ),
+                    mcp_runtime_authorization_policy=(mcp_runtime_authorization_policy),
                     mcp_failure_policy=_mcp_failure_policy_for_task_source(
                         task.source if task is not None else None
                     ),

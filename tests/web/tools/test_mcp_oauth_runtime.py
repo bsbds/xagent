@@ -431,9 +431,7 @@ async def test_actor_policy_rejects_conflicting_runtime_selector(db_session):
     configs, cfg = await _load_configs(
         db,
         user,
-        mcp_auth_context={
-            str(server.id): {"resource_owner_key": "toby:slack:41:U2"}
-        },
+        mcp_auth_context={str(server.id): {"resource_owner_key": "toby:slack:41:U2"}},
         mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
             resource_owner_key="toby:slack:41:U1",
             allowed_server_ids=frozenset({server.id}),

@@ -419,7 +419,9 @@ async def test_cached_agent_switches_mcp_turn_and_actor_policy_together() -> Non
 
     class TrackingConfig:
         def __init__(self) -> None:
-            self.calls: list[tuple[str | None, MCPRuntimeAuthorizationPolicy | None]] = []
+            self.calls: list[
+                tuple[str | None, MCPRuntimeAuthorizationPolicy | None]
+            ] = []
 
         def set_mcp_runtime_context(
             self,
