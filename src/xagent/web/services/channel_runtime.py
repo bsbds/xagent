@@ -615,6 +615,7 @@ def _prepare_channel_task_sync(
     channel_name: str | None,
     expected_owner_user_id: int | None,
     agent_id: int | None = None,
+    new_task_is_visible: bool = True,
 ) -> _ChannelTaskClaimSnapshot | None:
     SessionLocal = get_session_local()
     with SessionLocal() as db:
@@ -718,6 +719,7 @@ def _prepare_channel_task_sync(
                     channel_name=channel_name,
                     telegram_user_id=external_user_id if is_telegram else None,
                     agent_id=task_agent_id,
+                    is_visible=new_task_is_visible,
                 )
                 selected_refs = prepare_connector_runtime_selection_snapshot(
                     db=db,
@@ -764,8 +766,15 @@ async def prepare_channel_task(
     channel_name: str | None,
     expected_owner_user_id: int | None = None,
     agent_id: int | None = None,
+    new_task_is_visible: bool = True,
 ) -> ClaimedChannelTask | None:
-    """Authorize, resolve/create, and claim one exact channel run atomically."""
+    """Authorize, resolve or create, and claim one channel run atomically.
+
+    ``new_task_is_visible`` applies only when this call creates a task. A
+    resumed task keeps its persisted visibility. This lets internal transports
+    hide task rows in the creation transaction without changing the public
+    channel defaults.
+    """
 
     worker = asyncio.create_task(
         asyncio.to_thread(
@@ -777,6 +786,7 @@ async def prepare_channel_task(
             channel_name=channel_name,
             expected_owner_user_id=expected_owner_user_id,
             agent_id=agent_id,
+            new_task_is_visible=new_task_is_visible,
         )
     )
     snapshot, cancellation = await await_task_settlement(worker)

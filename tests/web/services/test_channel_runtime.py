@@ -110,6 +110,42 @@ async def test_prepare_channel_task_binds_owned_agent(
         assert task.agent_id == agent_id
         assert task.execution_mode == "balanced"
         assert task.connector_runtime_selected_refs == []
+        assert task.is_visible is True
+
+    assert await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prepare_channel_task_can_hide_a_new_task_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+) -> None:
+    """Internal transports can hide tasks without a visible-row race."""
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Hidden Task Agent")
+    monkeypatch.setattr(
+        "xagent.web.services.channel_runtime.get_session_local",
+        lambda: SessionLocal,
+    )
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=None,
+        text="hidden request",
+        channel_name="Internal channel",
+        agent_id=agent_id,
+        new_task_is_visible=False,
+    )
+
+    assert prepared is not None
+    with SessionLocal() as db:
+        task = db.query(Task).filter(Task.id == prepared.task_id).one()
+        assert task.is_visible is False
 
     assert await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
     engine.dispose()
