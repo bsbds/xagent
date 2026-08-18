@@ -98,10 +98,14 @@ Existing `XAGENT_FILE_STORAGE_OPTIONS` retry settings remain authoritative. When
 
 ### Deployment and migration steps
 
-1. Deploy the backend first so every new upload is protected by admission control.
-2. Verify backend health and one single-file upload.
-3. Upload more than three files from one composer and verify that the requests complete without an unrestricted burst.
-4. Deploy the matching frontend.
+Roll out the change in these stages:
+
+1. Deploy exception-chain logging before changing admission or retry behavior.
+2. Reproduce or observe the storage failure. Use the logged `operation`, `backend`, and exception chain to classify it as transient/throttling, pool pressure, configuration/permission failure, or local capacity failure.
+3. Repair configuration, permissions, or local capacity before continuing when the failure is not transient. Do not enable additional retries for those failures.
+4. Deploy backend admission control, verify backend health, and complete one single-file upload. Start with four active registrations and a 30-second queue timeout per process.
+5. Only when Stage 2 confirms transient or throttling failures, enable the standard S3 retry default of three total attempts. Operators deploying one combined backend build must keep their existing explicit retry policy in `XAGENT_FILE_STORAGE_OPTIONS` until this gate is satisfied.
+6. Upload more than three files from one composer and verify that requests complete without an unrestricted burst, then deploy the matching frontend.
 
 No maintenance window or data migration is required. Mixed frontend versions are compatible with the new backend because the upload API request and response shapes are unchanged.
 
@@ -109,7 +113,7 @@ No maintenance window or data migration is required. Mixed frontend versions are
 
 Monitor backend logs for these messages:
 
-- `Durable storage unavailable during upload` indicates a provider or filesystem failure and now includes the chained exception.
+- `Durable storage unavailable during upload` identifies `operation=register_local_uploads`, the configured storage `backend`, and the chained provider or filesystem exception.
 - `Timed out waiting for durable upload capacity` indicates that the process-local admission queue exceeded its configured wait.
 
 Verify that persistent provider failures still return `503` with `Durable storage is temporarily unavailable`, and that successful attachments remain available when another selected file fails.

@@ -552,12 +552,16 @@ class TestFileUpload:
             "detail": "Durable storage is temporarily unavailable"
         }
         assert "simulated remote write outage" in caplog.text
-        assert any(
-            record.exc_info is not None
+        failure_records = [
+            record
             for record in caplog.records
             if record.name == "xagent.web.api.files"
             and "Durable storage unavailable during upload" in record.getMessage()
-        )
+        ]
+        assert len(failure_records) == 1
+        assert failure_records[0].exc_info is not None
+        assert "operation=register_local_uploads" in failure_records[0].getMessage()
+        assert "backend=file" in failure_records[0].getMessage()
         assert not list(temp_uploads_dir.rglob("outage.txt"))
 
         db = next(test_app.dependency_overrides[get_db]())
