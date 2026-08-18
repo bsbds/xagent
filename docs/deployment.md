@@ -74,3 +74,46 @@ If one task must recover before its policy inconsistency can be repaired, quiesc
 Gate new widget and shared-link task creation before rolling back any worker. Roll back all API and task-execution workers together. Do not re-enable public task creation while versions are mixed.
 
 Marked tasks do not remain isolated when executed by an older worker. Keep public execution gated during rollback, or complete the forward rollout before those tasks resume.
+
+## 2026-08-18 — Bounded durable attachment uploads
+
+### Deployment impact
+
+Chat attachments now enter a process-local durable-upload admission gate before object storage registration. The frontend also limits one browser composer to three active attachment requests. This reduces connection bursts from multi-file selections while retaining the existing retryable HTTP 503 contract.
+
+S3 clients now default to standard retry mode with three total attempts when `XAGENT_FILE_STORAGE_OPTIONS` does not provide an explicit retry configuration. There is no database migration, backfill, new dependency, or infrastructure requirement.
+
+### Prerequisites and configuration
+
+The defaults permit four active durable upload registrations per backend process and let a staged request wait 30 seconds for capacity:
+
+```text
+XAGENT_FILE_UPLOAD_MAX_CONCURRENCY=4
+XAGENT_FILE_UPLOAD_QUEUE_TIMEOUT_SECONDS=30
+```
+
+Both variables are optional. The deployment-wide maximum is approximately the configured concurrency multiplied by the number of backend processes. Tune the value against the object-storage connection pool and the number of backend processes; it is not a cluster-wide limit.
+
+Existing `XAGENT_FILE_STORAGE_OPTIONS` retry settings remain authoritative. When retries are not explicitly configured, the backend uses standard mode with three total attempts.
+
+### Deployment and migration steps
+
+1. Deploy the backend first so every new upload is protected by admission control.
+2. Verify backend health and one single-file upload.
+3. Upload more than three files from one composer and verify that the requests complete without an unrestricted burst.
+4. Deploy the matching frontend.
+
+No maintenance window or data migration is required. Mixed frontend versions are compatible with the new backend because the upload API request and response shapes are unchanged.
+
+### Verification and monitoring
+
+Monitor backend logs for these messages:
+
+- `Durable storage unavailable during upload` indicates a provider or filesystem failure and now includes the chained exception.
+- `Timed out waiting for durable upload capacity` indicates that the process-local admission queue exceeded its configured wait.
+
+Verify that persistent provider failures still return `503` with `Durable storage is temporarily unavailable`, and that successful attachments remain available when another selected file fails.
+
+### Rollback
+
+The frontend and backend can be rolled back independently because no persisted schema or API shape changed. Rolling back the backend removes admission control and restores the previous default retry configuration. As an operational mitigation before rollback, increase `XAGENT_FILE_UPLOAD_MAX_CONCURRENCY` or supply the previous retry policy through `XAGENT_FILE_STORAGE_OPTIONS`; monitor storage pressure while doing so.
