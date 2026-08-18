@@ -3104,11 +3104,21 @@ class WebToolConfig(BaseToolConfig):
         *,
         provider_name: object,
         app_id: object,
+        resource_owner_key: str | None = None,
     ) -> _LegacyOAuthTokenResolution:
-        """Resolve and persist one legacy OAuth account in an isolated transaction."""
+        """Resolve one exact builtin OAuth owner in an isolated transaction."""
         from ...web.mcp_apps import restrict_to_app_scoped_oauth_grant
         from ...web.models.user_oauth import UserOAuth
+        from ...web.services.user_oauth import (
+            normalize_user_oauth_resource_owner_key,
+        )
 
+        owner_key = normalize_user_oauth_resource_owner_key(resource_owner_key)
+        owner_clause = (
+            UserOAuth.resource_owner_key.is_(None)
+            if owner_key is None
+            else UserOAuth.resource_owner_key == owner_key
+        )
         oauth_db = self._new_legacy_oauth_session()
         try:
             if app_id:
@@ -3123,7 +3133,7 @@ class WebToolConfig(BaseToolConfig):
                     oauth_db.query(UserOAuth)
                     .filter(
                         UserOAuth.user_id == self._user_id,
-                        UserOAuth.resource_owner_key.is_(None),
+                        owner_clause,
                         UserOAuth.provider.in_(providers_to_check),
                     )
                     .first()
@@ -3139,7 +3149,7 @@ class WebToolConfig(BaseToolConfig):
                     oauth_db.query(UserOAuth)
                     .filter(
                         UserOAuth.user_id == self._user_id,
-                        UserOAuth.resource_owner_key.is_(None),
+                        owner_clause,
                         UserOAuth.provider == provider_name,
                     )
                     .first()
@@ -3179,7 +3189,7 @@ class WebToolConfig(BaseToolConfig):
                     oauth_db.query(UserOAuth)
                     .filter(
                         UserOAuth.id == account_id,
-                        UserOAuth.resource_owner_key.is_(None),
+                        owner_clause,
                     )
                     .first()
                 )
@@ -3216,16 +3226,38 @@ class WebToolConfig(BaseToolConfig):
         )
         actor_policy = self._mcp_runtime_authorization_policy
         if actor_policy is not None:
+            server_id = getattr(server, "id", None)
+            if (
+                not isinstance(server_id, int)
+                or server_id not in actor_policy.allowed_server_ids
+            ):
+                policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_server_not_allowed",
+                    message="MCP server is not authorized for this actor",
+                )
+                self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                return self._build_unavailable_mcp_config(
+                    server=server,
+                    reason="actor_policy_server_not_allowed",
+                    diagnostic=policy_diagnostic,
+                )
             auth_config = server._decrypt_auth_config(getattr(server, "auth", None))
-            if not actor_policy.allow_non_oauth and (
-                server.transport not in HTTP_MCP_TRANSPORTS
-                or not isinstance(auth_config, dict)
-                or auth_config.get("type") != "mcp_oauth"
+            is_builtin_oauth = server.transport == "oauth"
+            is_native_mcp_oauth = (
+                server.transport in HTTP_MCP_TRANSPORTS
+                and isinstance(auth_config, dict)
+                and auth_config.get("type") == "mcp_oauth"
+            )
+            if (
+                not actor_policy.allow_non_oauth
+                and not is_builtin_oauth
+                and not is_native_mcp_oauth
             ):
                 policy_diagnostic = mcp_oauth_runtime_diagnostic(
                     server,
                     code="actor_policy_requires_oauth",
-                    message="Actor-scoped MCP execution requires remote OAuth",
+                    message="Actor-scoped MCP execution requires OAuth",
                 )
                 self._mcp_oauth_diagnostics.append(policy_diagnostic)
                 return self._build_unavailable_mcp_config(
@@ -3274,16 +3306,29 @@ class WebToolConfig(BaseToolConfig):
                     server=server,
                     reason="catalog_app_not_found",
                 )
-            provider_name = (
-                app_info.get("provider") if app_info else server.name.lower()
-            )
+            if (
+                actor_policy is not None
+                and app_info.get("auth_type") != "builtin_oauth"
+            ):
+                policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_requires_oauth",
+                    message="Actor-scoped MCP execution requires a supported OAuth app",
+                )
+                self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                return self._build_unavailable_mcp_config(
+                    server=server,
+                    reason="actor_policy_requires_oauth",
+                    diagnostic=policy_diagnostic,
+                )
+            provider_name = app_info.get("provider") or server.name.lower()
 
             # Some oauth records might be saved with the app_id as provider instead of the general provider_name
             # For example, "google-drive" instead of "google"
             app_id = app_info.get("id") if app_info else None
 
             hook_token: _ResolvedHookToken | None = None
-            if app_info:
+            if actor_policy is None:
                 configured_resource = _oauth_token_configured_resource(app_info)
                 providers_to_resolve = _oauth_token_provider_candidates(app_info)
                 try:
@@ -3322,9 +3367,40 @@ class WebToolConfig(BaseToolConfig):
                     hook_token.provider,
                 )
             else:
+                if actor_policy is not None:
+                    from ..services.mcp_runtime import mcp_oauth_selection
+
+                    selection = mcp_oauth_selection(
+                        self._mcp_auth_context,
+                        int(server.id),
+                    )
+                    conflicting_keys = set(selection) - {"resource_owner_key"}
+                    selected_owner = selection.get("resource_owner_key")
+                    if conflicting_keys or (
+                        selected_owner is not None
+                        and selected_owner != actor_policy.resource_owner_key
+                    ):
+                        policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                            server,
+                            code="actor_policy_conflict",
+                            message=(
+                                "MCP authorization selector conflicts with actor policy"
+                            ),
+                        )
+                        self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                        return self._build_unavailable_mcp_config(
+                            server=server,
+                            reason="actor_policy_conflict",
+                            diagnostic=policy_diagnostic,
+                        )
                 legacy_token = await self._resolve_legacy_oauth_access_token(
                     provider_name=provider_name,
                     app_id=app_id,
+                    resource_owner_key=(
+                        actor_policy.resource_owner_key
+                        if actor_policy is not None
+                        else None
+                    ),
                 )
                 if legacy_token.refresh_failed:
                     return self._build_unavailable_mcp_config(
