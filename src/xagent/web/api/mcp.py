@@ -68,7 +68,7 @@ from ..services.mcp_oauth import (
     oauth_post,
     oauth_token_expires_at,
     register_mcp_oauth_public_client,
-    select_mcp_oauth_grants,
+    select_mcp_oauth_grants_for_resource_owner,
     validate_mcp_oauth_persisted_value,
 )
 from ..services.mcp_runtime import HTTP_MCP_TRANSPORTS
@@ -4295,18 +4295,35 @@ async def get_mcp_oauth_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MCPOAuthStatusResponse:
-    """Return MCP OAuth grants owned by the current user for one MCP server."""
+    """Return grants in the public current-user owner namespace."""
+    return await get_mcp_oauth_status_for_resource_owner(
+        server_id=server_id,
+        current_user=current_user,
+        db=db,
+        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
+    )
+
+
+async def get_mcp_oauth_status_for_resource_owner(
+    *,
+    server_id: int,
+    current_user: User,
+    db: Session,
+    resource_owner_key: str,
+) -> MCPOAuthStatusResponse:
+    """Return grants for one trusted server-owned resource identity."""
     user_id = cast(int, current_user.id)
     _, server = _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
     )
     config = server.to_config_dict()
     auth_config = config.get("auth") if isinstance(config.get("auth"), dict) else {}
-    grants = select_mcp_oauth_grants(
+    grants = select_mcp_oauth_grants_for_resource_owner(
         db,
         server_id=server_id,
         user_id=user_id,
         auth_config=auth_config if isinstance(auth_config, dict) else {},
+        resource_owner_key=resource_owner_key,
     )
     return MCPOAuthStatusResponse(
         server_id=server_id,
@@ -4328,7 +4345,28 @@ async def delete_mcp_oauth_grant(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
-    """Revoke an MCP OAuth grant owned by the current user."""
+    """Revoke a grant in the public current-user owner namespace."""
+    await delete_mcp_oauth_grant_for_resource_owner(
+        server_id=server_id,
+        grant_id=grant_id,
+        current_user=current_user,
+        db=db,
+        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
+    )
+
+
+async def delete_mcp_oauth_grant_for_resource_owner(
+    *,
+    server_id: int,
+    grant_id: int,
+    current_user: User,
+    db: Session,
+    resource_owner_key: str,
+) -> None:
+    """Revoke one grant only when its trusted resource owner also matches."""
+    owner_key = resource_owner_key.strip()
+    if not owner_key:
+        raise ValueError("resource_owner_key must not be blank")
     user_id = cast(int, current_user.id)
     _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
@@ -4339,6 +4377,7 @@ async def delete_mcp_oauth_grant(
             MCPOAuthGrant.id == grant_id,
             MCPOAuthGrant.mcp_server_id == server_id,
             MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key == owner_key,
         )
         .first()
     )

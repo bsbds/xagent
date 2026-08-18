@@ -2950,11 +2950,21 @@ async def test_status_and_delete_are_scoped_to_current_user(db_session):
         mcp_server_id=server.id,
         user_id=user.id,
         mcp_oauth_client_id=client.id,
-        resource_owner_key="resource-owner-a",
+        resource_owner_key=f"xagent:user:{user.id}",
         issuer="https://auth.example.com",
         resource="https://mcp.example.com/mcp",
         scope="records.read",
         access_token=mcp_api.encrypt_value("own-access-token"),
+    )
+    actor_grant = MCPOAuthGrant(
+        mcp_server_id=server.id,
+        user_id=user.id,
+        mcp_oauth_client_id=client.id,
+        resource_owner_key="toby:slack:41:UALICE",
+        issuer="https://auth.example.com",
+        resource="https://mcp.example.com/mcp",
+        scope="records.read",
+        access_token=mcp_api.encrypt_value("actor-access-token"),
     )
     other_grant = MCPOAuthGrant(
         mcp_server_id=server.id,
@@ -2966,9 +2976,10 @@ async def test_status_and_delete_are_scoped_to_current_user(db_session):
         scope="records.read",
         access_token=mcp_api.encrypt_value("other-access-token"),
     )
-    db.add_all([own_grant, other_grant])
+    db.add_all([own_grant, actor_grant, other_grant])
     db.commit()
     db.refresh(own_grant)
+    db.refresh(actor_grant)
     db.refresh(other_grant)
 
     status_response = await get_mcp_oauth_status(server.id, user, db)
@@ -2979,6 +2990,27 @@ async def test_status_and_delete_are_scoped_to_current_user(db_session):
     with pytest.raises(mcp_api.HTTPException) as exc:
         await delete_mcp_oauth_grant(server.id, other_grant.id, user, db)
     assert exc.value.status_code == 404
+    with pytest.raises(mcp_api.HTTPException) as exc:
+        await delete_mcp_oauth_grant(server.id, actor_grant.id, user, db)
+    assert exc.value.status_code == 404
+
+    actor_status = await mcp_api.get_mcp_oauth_status_for_resource_owner(
+        server_id=server.id,
+        current_user=user,
+        db=db,
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    assert [grant.id for grant in actor_status.grants] == [actor_grant.id]
+
+    await mcp_api.delete_mcp_oauth_grant_for_resource_owner(
+        server_id=server.id,
+        grant_id=actor_grant.id,
+        current_user=user,
+        db=db,
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    db.refresh(actor_grant)
+    assert actor_grant.status == "revoked"
 
     await delete_mcp_oauth_grant(server.id, own_grant.id, user, db)
     db.refresh(own_grant)
@@ -3193,7 +3225,7 @@ async def test_status_only_reports_grants_matching_current_oauth_config(db_sessi
         mcp_server_id=server.id,
         user_id=user.id,
         mcp_oauth_client_id=stale_client.id,
-        resource_owner_key="resource-owner-a",
+        resource_owner_key=f"xagent:user:{user.id}",
         issuer="https://auth.example.com",
         resource="https://mcp.example.com/mcp",
         scope="records.read",
@@ -3203,7 +3235,7 @@ async def test_status_only_reports_grants_matching_current_oauth_config(db_sessi
         mcp_server_id=server.id,
         user_id=user.id,
         mcp_oauth_client_id=current_client.id,
-        resource_owner_key="resource-owner-b",
+        resource_owner_key=f"xagent:user:{user.id}",
         issuer="https://auth.example.com",
         resource="https://mcp.example.com/mcp",
         scope="records.write records.read",
