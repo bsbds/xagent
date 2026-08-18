@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+
 from xagent.web.services.upload_storage_gate import (
     UploadStorageCapacityError,
     UploadStorageGate,

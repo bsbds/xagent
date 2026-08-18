@@ -825,9 +825,7 @@ class TestFileStorageConfig:
 
     def test_file_upload_admission_defaults(self, monkeypatch):
         monkeypatch.delenv("XAGENT_FILE_UPLOAD_MAX_CONCURRENCY", raising=False)
-        monkeypatch.delenv(
-            "XAGENT_FILE_UPLOAD_QUEUE_TIMEOUT_SECONDS", raising=False
-        )
+        monkeypatch.delenv("XAGENT_FILE_UPLOAD_QUEUE_TIMEOUT_SECONDS", raising=False)
 
         assert config.get_file_upload_max_concurrency() == 4
         assert config.get_file_upload_queue_timeout_seconds() == 30
@@ -840,9 +838,7 @@ class TestFileStorageConfig:
         assert config.get_file_upload_queue_timeout_seconds() == 45
 
     @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
-    def test_file_upload_admission_rejects_invalid_overrides(
-        self, monkeypatch, value
-    ):
+    def test_file_upload_admission_rejects_invalid_overrides(self, monkeypatch, value):
         monkeypatch.setenv("XAGENT_FILE_UPLOAD_MAX_CONCURRENCY", value)
         monkeypatch.setenv("XAGENT_FILE_UPLOAD_QUEUE_TIMEOUT_SECONDS", value)
 
