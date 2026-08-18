@@ -871,18 +871,26 @@ def ensure_gmail_mailbox_provisioned(
     publisher_factory: PublisherFactory | None = None,
     subscriber_factory: SubscriberFactory | None = None,
 ) -> GmailWatchState:
-    """Idempotently provision Pub/Sub resources and a Gmail watch for a mailbox.
+    """Idempotently provision Pub/Sub resources for one ordinary mailbox.
 
-    Never raises for provisioning failures: the watch state converges to
-    failed with a clear last_error, and later reconcile attempts retry.
+    Actor-owned credentials are execution-only and cannot create machine-user
+    Gmail triggers. Other provisioning failures converge to a failed watch
+    state for later reconciliation.
     """
+    if oauth_account.resource_owner_key is not None:
+        raise GmailProvisioningError(
+            "actor-owned OAuth credentials cannot provision Gmail watches"
+        )
     oauth_account_id = int(oauth_account.id)
     with _gmail_watch_transition_lock(db, oauth_account_id) as transition_db:
         transition_account = (
             oauth_account
             if transition_db is db
             else transition_db.query(UserOAuth)
-            .filter(UserOAuth.id == oauth_account_id)
+            .filter(
+                UserOAuth.id == oauth_account_id,
+                UserOAuth.resource_owner_key.is_(None),
+            )
             .one()
         )
         state = _ensure_gmail_mailbox_provisioned_locked(
@@ -989,7 +997,12 @@ def _provision_in_fresh_session(oauth_account_id: int) -> None:
     db = get_session_local()()
     try:
         oauth_account = (
-            db.query(UserOAuth).filter(UserOAuth.id == oauth_account_id).first()
+            db.query(UserOAuth)
+            .filter(
+                UserOAuth.id == oauth_account_id,
+                UserOAuth.resource_owner_key.is_(None),
+            )
+            .first()
         )
         if oauth_account is None:
             return
@@ -1274,7 +1287,12 @@ def release_gmail_mailbox_if_unused(
         return False
 
     oauth_account = (
-        db.query(UserOAuth).filter(UserOAuth.id == int(oauth_account_id)).first()
+        db.query(UserOAuth)
+        .filter(
+            UserOAuth.id == int(oauth_account_id),
+            UserOAuth.resource_owner_key.is_(None),
+        )
+        .first()
     )
     if oauth_account is not None:
         try:
@@ -1359,7 +1377,10 @@ def sweep_gmail_provisioning(
             continue
         oauth_account = (
             db.query(UserOAuth)
-            .filter(UserOAuth.id == int(state.oauth_account_id))
+            .filter(
+                UserOAuth.id == int(state.oauth_account_id),
+                UserOAuth.resource_owner_key.is_(None),
+            )
             .first()
         )
         if oauth_account is None:
@@ -1420,7 +1441,11 @@ def best_effort_provision_gmail_watches_for_user(
     try:
         accounts = (
             db.query(UserOAuth)
-            .filter(UserOAuth.user_id == int(user_id), UserOAuth.provider == "gmail")
+            .filter(
+                UserOAuth.user_id == int(user_id),
+                UserOAuth.resource_owner_key.is_(None),
+                UserOAuth.provider == "gmail",
+            )
             .all()
         )
         referenced_account_ids = _referenced_gmail_oauth_account_ids(

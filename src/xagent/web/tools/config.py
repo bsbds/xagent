@@ -3123,6 +3123,7 @@ class WebToolConfig(BaseToolConfig):
                     oauth_db.query(UserOAuth)
                     .filter(
                         UserOAuth.user_id == self._user_id,
+                        UserOAuth.resource_owner_key.is_(None),
                         UserOAuth.provider.in_(providers_to_check),
                     )
                     .first()
@@ -3138,6 +3139,7 @@ class WebToolConfig(BaseToolConfig):
                     oauth_db.query(UserOAuth)
                     .filter(
                         UserOAuth.user_id == self._user_id,
+                        UserOAuth.resource_owner_key.is_(None),
                         UserOAuth.provider == provider_name,
                     )
                     .first()
@@ -3173,7 +3175,14 @@ class WebToolConfig(BaseToolConfig):
                 # A failed flush leaves the transaction unusable. Roll it back,
                 # reload the account, then persist the disconnection atomically.
                 oauth_db.rollback()
-                oauth_account = oauth_db.get(UserOAuth, account_id)
+                oauth_account = (
+                    oauth_db.query(UserOAuth)
+                    .filter(
+                        UserOAuth.id == account_id,
+                        UserOAuth.resource_owner_key.is_(None),
+                    )
+                    .first()
+                )
                 if oauth_account is not None:
                     oauth_db.delete(oauth_account)
                     oauth_db.commit()

@@ -2026,7 +2026,12 @@ def list_mcp_apps(
     from ..models.user_oauth import UserOAuth
 
     oauth_accounts = (
-        db.query(UserOAuth).filter(UserOAuth.user_id == current_user.id).all()
+        db.query(UserOAuth)
+        .filter(
+            UserOAuth.user_id == current_user.id,
+            UserOAuth.resource_owner_key.is_(None),
+        )
+        .all()
     )
 
     results = []
@@ -2407,7 +2412,12 @@ def get_mcp_servers(
         from ..models.user_oauth import UserOAuth
 
         oauth_accounts = (
-            db.query(UserOAuth).filter(UserOAuth.user_id == effective_user_id).all()
+            db.query(UserOAuth)
+            .filter(
+                UserOAuth.user_id == effective_user_id,
+                UserOAuth.resource_owner_key.is_(None),
+            )
+            .all()
         )
         oauth_emails = {
             str(oauth.provider): str(oauth.email)
@@ -2522,7 +2532,14 @@ def get_mcp_server(
         # Fetch oauth emails for this user to enrich the server info
         from ..models.user_oauth import UserOAuth
 
-        oauth_accounts = db.query(UserOAuth).filter(UserOAuth.user_id == user_id).all()
+        oauth_accounts = (
+            db.query(UserOAuth)
+            .filter(
+                UserOAuth.user_id == user_id,
+                UserOAuth.resource_owner_key.is_(None),
+            )
+            .all()
+        )
         oauth_emails = {
             oauth.provider: oauth.email
             for oauth in oauth_accounts
@@ -3422,6 +3439,7 @@ async def delete_mcp_server(
                 if providers_to_delete:
                     db.query(UserOAuth).filter(
                         UserOAuth.user_id == user_id,
+                        UserOAuth.resource_owner_key.is_(None),
                         UserOAuth.provider.in_(providers_to_delete),
                     ).delete(synchronize_session=False)
 
@@ -3456,6 +3474,7 @@ async def delete_mcp_server(
                     if not sibling_still_connected:
                         db.query(UserOAuth).filter(
                             UserOAuth.user_id == user_id,
+                            UserOAuth.resource_owner_key.is_(None),
                             UserOAuth.provider == provider,
                         ).delete(synchronize_session=False)
 
