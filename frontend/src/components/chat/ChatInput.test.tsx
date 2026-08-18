@@ -1481,7 +1481,7 @@ describe("ChatInput", () => {
       "id-successful.txt"
     )
     expect(toastErrorMock).toHaveBeenCalledWith(
-      "storage unavailable: failed.txt",
+      "storage unavailable (1): failed.txt",
       expect.anything(),
     )
     consoleError.mockRestore()

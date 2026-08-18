@@ -546,7 +546,7 @@ export function ChatInput({
     const failureMessage = failureMessages.values().next().value
       || t("files.uploadFailed")
       || "Failed to upload some files";
-    toast.error(`${failureMessage}: ${failedNames.join(', ')}`);
+    toast.error(`${failureMessage} (${failedNames.length}): ${failedNames.join(', ')}`);
   };
 
   const appendFiles = (newFiles: File[]) => {
