@@ -396,6 +396,32 @@ async def test_actor_policy_injects_only_the_exact_builtin_oauth_owner(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_actor_policy_reports_unclassified_oauth_server(db_session, monkeypatch):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    monkeypatch.setattr(
+        "xagent.web.mcp_apps.get_app_for_mcp_server",
+        lambda db, candidate: {"auth_type": "mcp_oauth"},
+    )
+    policy = MCPRuntimeAuthorizationPolicy(
+        resource_owner_key="toby:slack:41:UALICE",
+        allowed_server_ids=frozenset({int(server.id)}),
+    )
+
+    configs = await _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    ).get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_requires_builtin_oauth",
+    )
+
+
+@pytest.mark.asyncio
 async def test_actor_builtin_oauth_refresh_retains_owner_key(
     db_session,
     monkeypatch,

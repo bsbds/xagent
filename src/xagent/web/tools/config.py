@@ -86,7 +86,7 @@ UNAVAILABLE_MCP_CREDENTIAL_MESSAGE = "MCP server credentials are unavailable."
 MCP_UNAVAILABLE_REASONS = frozenset(
     {
         "actor_policy_conflict",
-        "actor_policy_requires_oauth",
+        "actor_policy_requires_builtin_oauth",
         "actor_policy_server_not_allowed",
         "authorization_required",
         "catalog_app_not_found",
