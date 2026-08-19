@@ -342,9 +342,9 @@ function PublicConversationContent({
         },
         body: JSON.stringify(taskPayload),
       })
-      // Aborting fetch does not prevent an already-resolved Response body from
-      // settling later. Fence both the controller generation and its signal at
-      // every boundary so a replaced bootstrap cannot publish stale results.
+      // Owner cancellation can race with an already-resolved response or
+      // delayed body parsing. Fence every boundary so an unmounted bootstrap
+      // cannot publish stale results.
       ensureActiveBootstrap()
 
       if (!response.ok) {
@@ -404,8 +404,6 @@ function PublicConversationContent({
       // duplicate the turn.
       setDraftMessage("")
       setDraftFiles([])
-    } catch (error) {
-      throw error
     } finally {
       if (bootstrapControllerRef.current === bootstrapController) {
         bootstrapControllerRef.current = null
