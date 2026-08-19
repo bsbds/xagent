@@ -1,10 +1,12 @@
 """Concurrency and cancellation contracts for durable-upload admission."""
 
 import asyncio
+import logging
 
 import pytest
 
 from xagent.config import get_file_upload_max_concurrency
+from xagent.web.services import upload_storage_gate
 from xagent.web.services.upload_storage_gate import (
     UploadStorageCapacityError,
     UploadStorageGate,
@@ -97,6 +99,38 @@ async def test_gate_bounds_concurrent_leases() -> None:
     release.set()
     await asyncio.gather(*tasks)
     assert gate.active == 0
+
+
+@pytest.mark.asyncio
+async def test_gate_logs_lease_lifecycle_at_debug_level(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = UploadStorageGate(max_concurrency=2, queue_timeout_seconds=4)
+    moments = iter((10.0, 11.25, 13.75))
+    monkeypatch.setattr(
+        upload_storage_gate,
+        "monotonic",
+        moments.__next__,
+        raising=False,
+    )
+    caplog.set_level(logging.DEBUG, logger=upload_storage_gate.__name__)
+
+    async with gate.lease():
+        pass
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == upload_storage_gate.__name__
+    ]
+    assert [record.levelno for record in records] == [logging.DEBUG, logging.DEBUG]
+    assert [record.getMessage() for record in records] == [
+        "Acquired durable upload capacity after 1.250 seconds "
+        "(active=1, waiting=0, max_concurrency=2, queue_timeout_seconds=4)",
+        "Released durable upload capacity after 2.500 seconds "
+        "(active=0, waiting=0, max_concurrency=2, queue_timeout_seconds=4)",
+    ]
 
 
 @pytest.mark.asyncio
