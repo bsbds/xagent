@@ -269,3 +269,221 @@ def test_upgrade_without_user_oauth_table_is_a_noop(tmp_path) -> None:
             migration.downgrade()
 
         assert "user_oauth" not in inspect(connection).get_table_names()
+
+
+def _postgresql_index_row(
+    *,
+    valid: bool = True,
+    unique: bool = True,
+    columns: tuple[str, ...] = ("user_id", "provider", "provider_user_id"),
+    predicate: str | None = "(resource_owner_key IS NULL)",
+    method: str = "btree",
+    key_count: int | None = None,
+    attribute_count: int | None = None,
+    options: list[str] | None = None,
+    nulls_not_distinct: bool = False,
+    tablespace_oid: int = 0,
+) -> dict:
+    return {
+        "schema_name": "public",
+        "index_name": ORDINARY_INDEX,
+        "is_target_table": True,
+        "is_valid": valid,
+        "is_unique": unique,
+        "access_method": method,
+        "columns": list(columns),
+        "predicate": predicate,
+        "key_count": len(columns) if key_count is None else key_count,
+        "attribute_count": (
+            len(columns) if attribute_count is None else attribute_count
+        ),
+        "nulls_not_distinct": nulls_not_distinct,
+        "is_primary": False,
+        "is_exclusion": False,
+        "tablespace_oid": tablespace_oid,
+        "options": options,
+    }
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ({}, True),
+        ({"valid": False}, False),
+        ({"unique": False}, False),
+        ({"columns": ("provider", "user_id", "provider_user_id")}, False),
+        ({"columns": ("user_id", "lower(provider)", "provider_user_id")}, False),
+        ({"predicate": "resource_owner_key IS NOT NULL"}, False),
+        ({"predicate": None}, False),
+        ({"method": "hash"}, False),
+        ({"key_count": 3, "attribute_count": 4}, False),
+        ({"options": ["fillfactor=70"]}, False),
+        ({"nulls_not_distinct": True}, False),
+        ({"tablespace_oid": 42}, False),
+    ],
+)
+def test_postgresql_exact_index_definition_rejects_every_wrong_shape(
+    override: dict, expected: bool
+) -> None:
+    migration = _migration_module()
+
+    assert (
+        migration._postgresql_index_is_exact(
+            _postgresql_index_row(**override),
+            unique=True,
+            columns=("user_id", "provider", "provider_user_id"),
+            predicate="resource_owner_key IS NULL",
+        )
+        is expected
+    )
+
+
+def test_postgresql_predicate_normalization_is_exact_but_format_insensitive() -> None:
+    migration = _migration_module()
+
+    assert (
+        migration._normalize_postgresql_predicate(
+            ' (( "resource_owner_key"   IS   NULL )) '
+        )
+        == "resource_owner_key is null"
+    )
+    assert migration._normalize_postgresql_predicate(
+        "resource_owner_key IS NOT NULL"
+    ) != migration._normalize_postgresql_predicate("resource_owner_key IS NULL")
+
+
+def test_downgrade_rejects_unsupported_dialect_before_inspection() -> None:
+    migration = _migration_module()
+    fake_op = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
+    )
+
+    with patch.object(migration, "op", fake_op):
+        with pytest.raises(RuntimeError, match="partial unique indexes"):
+            migration.downgrade()
+
+
+def test_postgresql_catalog_inspection_requests_the_complete_index_shape() -> None:
+    migration = _migration_module()
+    executed: dict[str, object] = {}
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return None
+
+    def execute(statement, parameters):
+        executed["sql"] = str(statement)
+        executed["parameters"] = parameters
+        return _Result()
+
+    fake_op = SimpleNamespace(get_bind=lambda: SimpleNamespace(execute=execute))
+    with patch.object(migration, "op", fake_op):
+        assert migration._inspect_postgresql_index(ORDINARY_INDEX) is None
+
+    sql = str(executed["sql"])
+    for required_fragment in (
+        "indisvalid",
+        "indisunique",
+        "indnullsnotdistinct",
+        "indisprimary",
+        "indisexclusion",
+        "pg_get_indexdef",
+        "pg_get_expr",
+        "indnkeyatts",
+        "indnatts",
+        "reltablespace",
+        "reloptions",
+        "to_regclass",
+    ):
+        assert required_fragment in sql
+    assert executed["parameters"] == {
+        "index_name": ORDINARY_INDEX,
+        "table_name": "user_oauth",
+    }
+
+
+def test_postgresql_repair_drops_wrong_index_then_recreates_before_validation() -> None:
+    migration = _migration_module()
+    statements: list[str] = []
+
+    class _Autocommit:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return None
+
+    fake_op = SimpleNamespace(
+        get_context=lambda: SimpleNamespace(autocommit_block=lambda: _Autocommit()),
+        execute=lambda statement: statements.append(str(statement)),
+    )
+    ordinary_exact = _postgresql_index_row()
+    actor_exact = _postgresql_index_row(
+        columns=("user_id", "resource_owner_key", "provider", "provider_user_id"),
+        predicate="resource_owner_key IS NOT NULL",
+    )
+    lookup_exact = _postgresql_index_row(
+        unique=False,
+        columns=("user_id", "resource_owner_key", "provider"),
+        predicate=None,
+    )
+    inspections = iter(
+        [
+            _postgresql_index_row(unique=False),
+            None,
+            lookup_exact,
+            ordinary_exact,
+            actor_exact,
+            lookup_exact,
+        ]
+    )
+
+    with (
+        patch.object(migration, "op", fake_op),
+        patch.object(
+            migration,
+            "_inspect_postgresql_index",
+            side_effect=lambda _name: next(inspections),
+        ),
+    ):
+        migration._create_postgresql_owner_indexes_concurrently()
+
+    assert statements == [
+        'DROP INDEX CONCURRENTLY "public"."uq_user_oauth_ordinary_account"',
+        "CREATE UNIQUE INDEX CONCURRENTLY uq_user_oauth_ordinary_account "
+        "ON user_oauth (user_id, provider, provider_user_id) "
+        "WHERE resource_owner_key IS NULL",
+        "CREATE UNIQUE INDEX CONCURRENTLY uq_user_oauth_actor_account "
+        "ON user_oauth (user_id, resource_owner_key, provider, provider_user_id) "
+        "WHERE resource_owner_key IS NOT NULL",
+    ]
+
+
+def test_postgresql_upgrade_never_drops_old_constraint_when_exact_validation_fails() -> (
+    None
+):
+    migration = _migration_module()
+    events: list[str] = []
+    fake_op = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql")),
+        drop_constraint=lambda *_args, **_kwargs: events.append("drop-constraint"),
+    )
+
+    with (
+        patch.object(migration, "op", fake_op),
+        patch.object(migration, "_table_exists", return_value=True),
+        patch.object(migration, "_column_names", return_value={migration.OWNER_COLUMN}),
+        patch.object(migration, "_constraint_names", return_value={OLD_CONSTRAINT}),
+        patch.object(
+            migration,
+            "_create_postgresql_owner_indexes_concurrently",
+            side_effect=RuntimeError("wrong definition"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="wrong definition"):
+            migration.upgrade()
+
+    assert events == []

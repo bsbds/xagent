@@ -396,6 +396,32 @@ async def test_actor_policy_injects_only_the_exact_builtin_oauth_owner(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_actor_policy_rejects_builtin_oauth_server_outside_allowlist(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    policy = MCPRuntimeAuthorizationPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_server_ids=frozenset(),
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    )
+    configs = await tool_config.get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_server_not_allowed",
+    )
+    diagnostic = tool_config.get_mcp_oauth_diagnostics()[0]
+    assert diagnostic["code"] == "actor_policy_server_not_allowed"
+    assert diagnostic["resource_owner_key"] == "toby:slack:41:UALICE"
+
+
+@pytest.mark.asyncio
 async def test_actor_policy_reports_unclassified_oauth_server(db_session, monkeypatch):
     db, user = db_session
     server = _add_oauth_server(db, user, launch_config=_launch_config())

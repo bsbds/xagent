@@ -1204,7 +1204,7 @@ def generic_oauth_login(
 def start_builtin_oauth_for_resource_owner(
     *,
     provider: str,
-    app_id: str | None,
+    app_id: str,
     user: User,
     resource_owner_key: str,
     redirect: str | None = None,

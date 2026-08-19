@@ -24,7 +24,8 @@ Revises: 20260813_trace_json_columns_to_jsonb
 Create Date: 2026-08-18
 """
 
-from typing import Sequence, Union
+import re
+from typing import Any, Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
@@ -109,36 +110,193 @@ def _create_owner_indexes() -> None:
         )
 
 
-def _create_postgresql_owner_indexes_concurrently() -> None:
-    statements = (
-        f"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS {ORDINARY_INDEX} "
-        f"ON {TABLE} (user_id, provider, provider_user_id) "
-        f"WHERE {OWNER_COLUMN} IS NULL",
-        f"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS {ACTOR_INDEX} "
-        f"ON {TABLE} (user_id, {OWNER_COLUMN}, provider, provider_user_id) "
-        f"WHERE {OWNER_COLUMN} IS NOT NULL",
-        f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {LOOKUP_INDEX} "
-        f"ON {TABLE} (user_id, {OWNER_COLUMN}, provider)",
-    )
-    with op.get_context().autocommit_block():
-        for statement in statements:
-            op.execute(sa.text(statement))
+def _normalize_postgresql_predicate(predicate: str | None) -> str | None:
+    """Normalize PostgreSQL's formatting without weakening predicate equality.
 
-    invalid = (
+    ``pg_get_expr`` is authoritative for the parsed predicate, but may add
+    redundant outer parentheses, identifier quotes, and whitespace. Only those
+    presentation differences are removed; casts, operators, and expression
+    structure remain significant and therefore fail the exact-definition check.
+    """
+    if predicate is None:
+        return None
+    normalized = re.sub(r'"([a-z_][a-z0-9_]*)"', r"\1", predicate.strip().lower())
+    normalized = re.sub(r"\s+", " ", normalized)
+    while normalized.startswith("(") and normalized.endswith(")"):
+        depth = 0
+        encloses_whole_expression = True
+        for position, character in enumerate(normalized):
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0 and position != len(normalized) - 1:
+                    encloses_whole_expression = False
+                    break
+        if not encloses_whole_expression or depth != 0:
+            break
+        normalized = normalized[1:-1].strip()
+    return normalized
+
+
+def _normalize_postgresql_index_part(part: str) -> str:
+    """Normalize one simple index key while retaining modifiers/expressions."""
+    return re.sub(r'"([a-z_][a-z0-9_]*)"', r"\1", part.strip().lower())
+
+
+def _postgresql_index_is_exact(
+    row: dict[str, Any] | None,
+    *,
+    unique: bool,
+    columns: tuple[str, ...],
+    predicate: str | None,
+) -> bool:
+    """Return whether one catalog row is the complete expected index shape."""
+    if row is None:
+        return False
+    actual_columns = tuple(
+        _normalize_postgresql_index_part(str(column))
+        for column in row.get("columns") or ()
+    )
+    expected_columns = tuple(
+        _normalize_postgresql_index_part(column) for column in columns
+    )
+    return (
+        row.get("is_target_table") is True
+        and row.get("is_valid") is True
+        and row.get("is_unique") is unique
+        and row.get("access_method") == "btree"
+        and actual_columns == expected_columns
+        and row.get("key_count") == len(columns)
+        and row.get("attribute_count") == len(columns)
+        and row.get("nulls_not_distinct") is False
+        and row.get("is_primary") is False
+        and row.get("is_exclusion") is False
+        and row.get("tablespace_oid") == 0
+        and not row.get("options")
+        and _normalize_postgresql_predicate(row.get("predicate"))
+        == _normalize_postgresql_predicate(predicate)
+    )
+
+
+def _inspect_postgresql_index(index_name: str) -> dict[str, Any] | None:
+    """Inspect a same-schema index by parsed PostgreSQL catalog properties."""
+    result = (
         op.get_bind()
         .execute(
             sa.text(
-                "SELECT c.relname FROM pg_index i "
-                "JOIN pg_class c ON c.oid = i.indexrelid "
-                "WHERE c.relname IN (:ordinary, :actor, :lookup) "
-                "AND NOT i.indisvalid"
+                "SELECT index_namespace.nspname AS schema_name, "
+                "index_relation.relname AS index_name, "
+                "index_catalog.indrelid = target_table.oid AS is_target_table, "
+                "index_catalog.indisvalid AS is_valid, "
+                "index_catalog.indisunique AS is_unique, "
+                "index_catalog.indnullsnotdistinct AS nulls_not_distinct, "
+                "index_catalog.indisprimary AS is_primary, "
+                "index_catalog.indisexclusion AS is_exclusion, "
+                "access_method.amname AS access_method, "
+                "ARRAY(SELECT pg_get_indexdef(index_catalog.indexrelid, key_position, false) "
+                "      FROM generate_series(1, index_catalog.indnkeyatts) key_position "
+                "      ORDER BY key_position) AS columns, "
+                "pg_get_expr(index_catalog.indpred, index_catalog.indrelid) AS predicate, "
+                "index_catalog.indnkeyatts AS key_count, "
+                "index_catalog.indnatts AS attribute_count, "
+                "index_relation.reltablespace AS tablespace_oid, "
+                "index_relation.reloptions AS options "
+                "FROM pg_class target_table "
+                "JOIN pg_class index_relation "
+                "  ON index_relation.relnamespace = target_table.relnamespace "
+                " AND index_relation.relname = :index_name "
+                "JOIN pg_namespace index_namespace "
+                "  ON index_namespace.oid = index_relation.relnamespace "
+                "LEFT JOIN pg_index index_catalog "
+                "  ON index_catalog.indexrelid = index_relation.oid "
+                "LEFT JOIN pg_am access_method "
+                "  ON access_method.oid = index_relation.relam "
+                "WHERE target_table.oid = to_regclass(:table_name)"
             ),
-            {"ordinary": ORDINARY_INDEX, "actor": ACTOR_INDEX, "lookup": LOOKUP_INDEX},
+            {"index_name": index_name, "table_name": TABLE},
         )
+        .mappings()
         .first()
     )
-    if invalid is not None:
-        raise RuntimeError(f"owner-aware PostgreSQL index is invalid: {invalid[0]}")
+    return dict(result) if result is not None else None
+
+
+def _quote_postgresql_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _create_postgresql_owner_indexes_concurrently() -> None:
+    """Repair all owner indexes concurrently, then validate their exact shape.
+
+    PostgreSQL's ``IF NOT EXISTS`` checks only the object name, so it can accept
+    an invalid, non-unique, reordered, expression-based, or wrong-predicate
+    index. Catalog inspection happens before and after DDL. The caller retains
+    the old unique constraint until this function returns successfully.
+    """
+    definitions = (
+        (
+            ORDINARY_INDEX,
+            True,
+            ("user_id", "provider", "provider_user_id"),
+            f"{OWNER_COLUMN} IS NULL",
+            f"CREATE UNIQUE INDEX CONCURRENTLY {ORDINARY_INDEX} "
+            f"ON {TABLE} (user_id, provider, provider_user_id) "
+            f"WHERE {OWNER_COLUMN} IS NULL",
+        ),
+        (
+            ACTOR_INDEX,
+            True,
+            ("user_id", OWNER_COLUMN, "provider", "provider_user_id"),
+            f"{OWNER_COLUMN} IS NOT NULL",
+            f"CREATE UNIQUE INDEX CONCURRENTLY {ACTOR_INDEX} "
+            f"ON {TABLE} (user_id, {OWNER_COLUMN}, provider, provider_user_id) "
+            f"WHERE {OWNER_COLUMN} IS NOT NULL",
+        ),
+        (
+            LOOKUP_INDEX,
+            False,
+            ("user_id", OWNER_COLUMN, "provider"),
+            None,
+            f"CREATE INDEX CONCURRENTLY {LOOKUP_INDEX} "
+            f"ON {TABLE} (user_id, {OWNER_COLUMN}, provider)",
+        ),
+    )
+
+    with op.get_context().autocommit_block():
+        for index_name, unique, columns, predicate, create_statement in definitions:
+            existing = _inspect_postgresql_index(index_name)
+            if _postgresql_index_is_exact(
+                existing,
+                unique=unique,
+                columns=columns,
+                predicate=predicate,
+            ):
+                continue
+            if existing is not None:
+                if existing.get("is_target_table") is not True:
+                    raise RuntimeError(
+                        f"PostgreSQL relation {index_name!r} blocks owner index "
+                        "creation but belongs to another table"
+                    )
+                qualified_name = (
+                    f"{_quote_postgresql_identifier(str(existing['schema_name']))}."
+                    f"{_quote_postgresql_identifier(index_name)}"
+                )
+                op.execute(sa.text(f"DROP INDEX CONCURRENTLY {qualified_name}"))
+            op.execute(sa.text(create_statement))
+
+    for index_name, unique, columns, predicate, _statement in definitions:
+        inspected = _inspect_postgresql_index(index_name)
+        if not _postgresql_index_is_exact(
+            inspected,
+            unique=unique,
+            columns=columns,
+            predicate=predicate,
+        ):
+            raise RuntimeError(
+                f"owner-aware PostgreSQL index has wrong definition: {index_name}"
+            )
 
 
 def upgrade() -> None:
@@ -179,6 +337,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _require_partial_unique_index_support()
     if not _table_exists():
         return
 

@@ -83,7 +83,7 @@ The `user_oauth` table gets a nullable `resource_owner_key` column. Existing row
 
 Two partial unique indexes replace `uq_user_provider_account`. One index protects ordinary rows. The other index protects actor-owned rows. SQLite and PostgreSQL are the only supported database dialects for this schema; startup and migration fail before schema creation on other dialects.
 
-On PostgreSQL the replacement indexes are created or repaired with `CONCURRENTLY`, checked through `pg_index.indisvalid`, and only then is the old unique constraint removed. On SQLite the table is rebuilt in batch mode and the partial indexes are installed in the same migration transaction.
+On PostgreSQL the migration inspects each replacement index in the system catalogs before use. A missing, invalid, non-unique, reordered, expression-based, wrong-predicate, or otherwise non-exact same-table index is dropped and recreated with `CONCURRENTLY`. The migration rechecks validity, uniqueness and null semantics, access method, ordered keys, included attributes, tablespace/storage options, and the normalized partial predicate for all three indexes before removing the old unique constraint. A same-name relation owned by another table stops the migration rather than dropping an unrelated object. On SQLite the table is rebuilt in batch mode and the partial indexes are installed in the same migration transaction.
 
 A mixed-version deployment is unsafe after actor-owned rows exist. An old worker can read an actor-owned credential without the new owner filter.
 
@@ -151,7 +151,7 @@ After actor builtin OAuth starts, connect the same builtin application for two a
 
 Make sure that existing native MCP connectors still use their account-level configuration.
 
-Monitor `actor_policy_conflict`, `actor_policy_server_not_allowed`, and `oauth_token_required` diagnostics. An increase can show an incorrect actor policy or missing credential.
+Monitor `actor_policy_conflict`, `actor_policy_requires_builtin_oauth`, `actor_policy_server_not_allowed`, and `oauth_token_required` diagnostics. An increase can show an incorrect actor policy, an incorrectly classified server, or a missing credential.
 
 ### Rollback
 

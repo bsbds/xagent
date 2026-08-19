@@ -216,6 +216,50 @@ def test_callback_persists_separate_actor_rows_for_one_xagent_user(
     )
 
 
+def test_actor_callback_does_not_reactivate_inactive_ordinary_association(
+    oauth_db, monkeypatch
+) -> None:
+    db, user = oauth_db
+    app = PublicMCPApp(
+        app_id="calendar",
+        name="Google Calendar",
+        description="Calendar",
+        transport="oauth",
+        provider_name="custom",
+        launch_config={"command": "calendar"},
+    )
+    server = MCPServer(
+        name="Google Calendar",
+        description="Calendar",
+        managed="external",
+        transport="oauth",
+        auth={"app_id": "calendar", "provider": "custom"},
+    )
+    db.add_all([app, server])
+    db.flush()
+    association = UserMCPServer(
+        user_id=int(user.id),
+        mcpserver_id=int(server.id),
+        is_owner=True,
+        is_active=False,
+    )
+    db.add(association)
+    db.commit()
+    _mock_provider_exchange(monkeypatch)
+
+    response = generic_oauth_callback(
+        "custom",
+        _callback_request(_state(_trusted_start(db, user, ACTOR_ALICE)), "alice"),
+        db,
+        _provider(),
+    )
+
+    assert response.status_code == 200
+    db.refresh(association)
+    assert association.is_active is False
+    assert db.query(UserOAuth).one().resource_owner_key == ACTOR_ALICE
+
+
 def test_callback_replaces_only_the_same_actor_namespace(oauth_db, monkeypatch) -> None:
     db, user = oauth_db
     db.add_all(
