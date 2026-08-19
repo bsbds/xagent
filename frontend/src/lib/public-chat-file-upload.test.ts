@@ -78,7 +78,6 @@ describe("uploadPublicChatFile", () => {
 
 describe("uploadDeferredPublicChatFiles", () => {
   afterEach(() => {
-    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -220,6 +219,30 @@ describe("uploadDeferredPublicChatFiles", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4)
   })
 
+  it("posts the same taskless File again for a new conversation context", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "conversation-a" }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "conversation-b" }))
+    const file = new File(["same"], "same.txt")
+    const conversationA = {}
+    const conversationB = {}
+
+    await expect(uploadDeferredPublicChatFiles([file], {
+      ...options,
+      uploadContext: conversationA,
+    })).resolves.toEqual([expect.objectContaining({ file_id: "conversation-a" })])
+    await expect(uploadDeferredPublicChatFiles([file], {
+      ...options,
+      uploadContext: conversationA,
+    })).resolves.toEqual([expect.objectContaining({ file_id: "conversation-a" })])
+    await expect(uploadDeferredPublicChatFiles([file], {
+      ...options,
+      uploadContext: conversationB,
+    })).resolves.toEqual([expect.objectContaining({ file_id: "conversation-b" })])
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it("does not let a late obsolete attempt publish over the current attempt", async () => {
     const first = deferred<Response>()
     const second = deferred<Response>()
@@ -305,56 +328,4 @@ describe("uploadDeferredPublicChatFiles", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4)
   })
 
-  it("applies the admitted timeout to response parsing", async () => {
-    vi.useFakeTimers()
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: () => new Promise<unknown>(() => undefined),
-    } as Response)
-    const upload = uploadDeferredPublicChatFiles(
-      [new File(["x"], "parsing.txt")],
-      { ...options, timeoutMs: 1_000 },
-    )
-    const expectation = expect(upload).rejects.toMatchObject({
-      name: "TimeoutError",
-    })
-
-    await vi.advanceTimersByTimeAsync(1_000)
-
-    await expectation
-    vi.useRealTimers()
-  })
-
-  it("times out admitted uploads and cannot wedge later work", async () => {
-    vi.useFakeTimers()
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => (
-      new Promise<Response>((resolve, reject) => {
-        const file = (init?.body as FormData).get("file") as File
-        if (file.name === "later.txt") {
-          resolve(jsonResponse({ success: true, file_id: "later" }))
-          return
-        }
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
-      })
-    ))
-    const stalled = uploadDeferredPublicChatFiles(
-      Array.from({ length: 3 }, (_, index) => new File(["x"], `stall-${index}.txt`)),
-      { ...options, timeoutMs: 1_000 },
-    )
-    const later = uploadDeferredPublicChatFiles(
-      [new File(["x"], "later.txt")],
-      options,
-    )
-    const stalledExpectation = expect(stalled).rejects.toMatchObject({
-      name: "TimeoutError",
-    })
-    await vi.advanceTimersByTimeAsync(1_000)
-
-    await stalledExpectation
-    await expect(later).resolves.toEqual([
-      expect.objectContaining({ file_id: "later" }),
-    ])
-    expect(fetchMock).toHaveBeenCalledTimes(4)
-    vi.useRealTimers()
-  })
 })

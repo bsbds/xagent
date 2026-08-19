@@ -1,5 +1,5 @@
 import React from "react"
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AppProviderTransportConfig } from "@/contexts/app-context-chat"
 
@@ -560,87 +560,66 @@ describe("PublicAgentChatPage", () => {
     expect(app.setTaskId).toHaveBeenCalledWith(42, { navigate: false })
   })
 
-  it("ignores a replaced bootstrap after successful task JSON resolves", async () => {
+  it("serializes reentrant opening sends into one task creation", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(successfulAgentAuth))
+    const taskCreation = deferred<Response>()
+    fetchMock.mockReturnValueOnce(taskCreation.promise)
+    app.sendMessage.mockResolvedValue(undefined)
     renderWidgetPage({ widgetKey: "widget-secret" })
 
-    const startButton = await screen.findByRole("button", { name: "start:Support Agent" })
-    app.setTaskId.mockClear()
-    // Keep the start screen mounted even if stale code attempts publication so
-    // draft clearing is independently observable rather than hidden by the
-    // mocked provider switching to the conversation panel.
-    app.setTaskId.mockImplementation(() => undefined)
-    app.dispatch.mockClear()
-    const staleJson = deferred<ReturnType<typeof widgetTaskResponse>>()
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => staleJson.promise,
-    } as Response)
-    fetchMock.mockReturnValueOnce(new Promise(() => undefined))
+    await screen.findByRole("button", { name: "start:Support Agent" })
+    const firstSend = app.startScreenProps!.onSend("first message", [])
+    const secondSend = app.startScreenProps!.onSend("second message", [])
 
-    act(() => app.startScreenProps?.onInputChange("keep active draft"))
-    const staleSend = app.startScreenProps!.onSend("stale message", [])
-      .catch(error => error)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const activeSend = app.startScreenProps!.onSend("active message", [])
-      .catch(error => error)
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock.mock.calls.filter(([url]) =>
+      url === "https://api.example/api/widget/chat/task/create")).toHaveLength(1)
+    const taskCreateSignal = (fetchMock.mock.calls[1][1] as RequestInit).signal
+    expect(taskCreateSignal?.aborted).toBe(false)
 
-    await act(async () => {
-      staleJson.resolve(widgetTaskResponse(42, "pending"))
-      await staleSend
-    })
+    taskCreation.resolve(jsonResponse(widgetTaskResponse(42, "pending")))
+    await Promise.all([firstSend, secondSend])
 
-    expect(app.setTaskId).not.toHaveBeenCalled()
-    expect(app.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
-      type: "SET_CURRENT_TASK",
-    }))
-    expect(app.sendMessage).not.toHaveBeenCalled()
-    expect(startButton).toHaveAttribute("data-input-value", "keep active draft")
-    expect(screen.queryByText("widgetChat.messages.error_init")).toBeNull()
-    void activeSend
+    expect(app.sendMessage).toHaveBeenCalledOnce()
+    expect(app.sendMessage).toHaveBeenCalledWith(
+      "first message",
+      { targetTaskId: 42 },
+      [],
+    )
   })
 
-  it("ignores a replaced bootstrap after non-ok task JSON resolves", async () => {
-    localStorage.clear()
-    localStorage.setItem(SHARE_AUTH_KEY, JSON.stringify(successfulAgentAuth))
-    renderSharePage()
+  it("gates New Conversation until the opening send has a definite outcome", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(successfulAgentAuth))
+      .mockResolvedValueOnce(jsonResponse(widgetTaskResponse(42, "pending")))
+      .mockResolvedValueOnce(jsonResponse(widgetTaskResponse(43, "pending")))
+    const openingSend = deferred<void>()
+    app.sendMessage.mockReturnValueOnce(openingSend.promise)
+    renderWidgetPage({ widgetKey: "widget-secret" })
 
-    const startButton = await screen.findByRole("button", { name: "start:Support Agent" })
+    await screen.findByRole("button", { name: "start:Support Agent" })
     app.setTaskId.mockClear()
-    app.dispatch.mockClear()
-    const staleJson = deferred<{ detail: string }>()
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 403,
-      json: () => staleJson.promise,
-    } as Response)
-    fetchMock.mockReturnValueOnce(new Promise(() => undefined))
+    const send = app.startScreenProps!.onSend("first message", [])
 
-    act(() => app.startScreenProps?.onInputChange("keep active draft"))
-    const staleSend = app.startScreenProps!.onSend("stale message", [])
-      .catch(error => error)
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
-    const activeSend = app.startScreenProps!.onSend("active message", [])
-      .catch(error => error)
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-
-    await act(async () => {
-      staleJson.resolve({ detail: "stale task error" })
-      await staleSend
+    const newConversation = await screen.findByRole("button", {
+      name: "widgetChat.newConversation",
     })
+    expect(newConversation).toBeDisabled()
+    fireEvent.click(newConversation)
+    expect(app.setTaskId).not.toHaveBeenCalledWith(null, { navigate: false })
 
-    expect(localStorage.getItem(SHARE_AUTH_KEY)).not.toBeNull()
-    expect(app.setTaskId).not.toHaveBeenCalled()
-    expect(app.dispatch).not.toHaveBeenCalledWith(expect.objectContaining({
-      type: "SET_CURRENT_TASK",
-    }))
-    expect(app.sendMessage).not.toHaveBeenCalled()
-    expect(startButton).toHaveAttribute("data-input-value", "keep active draft")
-    expect(screen.queryByText("stale task error")).toBeNull()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    void activeSend
+    openingSend.resolve()
+    await send
+    await waitFor(() => expect(newConversation).toBeEnabled())
+    fireEvent.click(newConversation)
+
+    expect(app.setTaskId).toHaveBeenCalledWith(null, { navigate: false })
+    expect(await screen.findByRole("button", { name: "start:Support Agent" })).toBeInTheDocument()
+
+    await app.startScreenProps!.onSend("next conversation", [])
+    expect(fetchMock.mock.calls.filter(([url]) =>
+      url === "https://api.example/api/widget/chat/task/create")).toHaveLength(2)
+    expect(app.setTaskId).toHaveBeenCalledWith(43, { navigate: false })
   })
 
   it("uses the shared deferred uploader when workforce task creation starts the opening turn", async () => {
@@ -700,6 +679,60 @@ describe("PublicAgentChatPage", () => {
     await waitFor(() => {
       expect(localStorage.getItem("widget_task_wf8_guest-1")).toBe("43")
     })
+  })
+
+  it("keeps the workforce taskless upload context across a partial retry", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
+      .mockResolvedValueOnce(jsonResponse(widgetTaskResponse(43, "running")))
+    uploads.deferred
+      .mockRejectedValueOnce(new Error("retry upload"))
+      .mockResolvedValueOnce([{ file_id: "uploaded-retry" }])
+    const file = new File(["opening"], "opening.txt", { type: "text/plain" })
+
+    renderWidgetPage({ searchAgentId: null, widgetKey: "widget-secret" })
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+
+    await expect(app.startScreenProps!.onSend("first message", [file]))
+      .rejects.toThrow("retry upload")
+    await expect(app.startScreenProps!.onSend("first message", [file]))
+      .resolves.toBeUndefined()
+
+    const firstContext = uploads.deferred.mock.calls[0][1].uploadContext
+    const retryContext = uploads.deferred.mock.calls[1][1].uploadContext
+    expect(retryContext).toBe(firstContext)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("rotates the workforce taskless upload context for a new conversation", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
+      .mockResolvedValueOnce(jsonResponse(widgetTaskResponse(43, "running")))
+      .mockResolvedValueOnce(jsonResponse(widgetTaskResponse(44, "running")))
+    uploads.deferred
+      .mockResolvedValueOnce([{ file_id: "conversation-a-file" }])
+      .mockResolvedValueOnce([{ file_id: "conversation-b-file" }])
+    const file = new File(["same"], "same.txt", { type: "text/plain" })
+
+    renderWidgetPage({ searchAgentId: null, widgetKey: "widget-secret" })
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+    await app.startScreenProps!.onSend("conversation A", [file])
+
+    fireEvent.click(await screen.findByRole("button", {
+      name: "widgetChat.newConversation",
+    }))
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+    await app.startScreenProps!.onSend("conversation B", [file])
+
+    expect(uploads.deferred).toHaveBeenCalledTimes(2)
+    expect(uploads.deferred.mock.calls[1][0][0]).toBe(file)
+    expect(uploads.deferred.mock.calls[1][1].uploadContext).not.toBe(
+      uploads.deferred.mock.calls[0][1].uploadContext,
+    )
+    expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string))
+      .toMatchObject({ files: ["conversation-a-file"] })
+    expect(JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string))
+      .toMatchObject({ files: ["conversation-b-file"] })
   })
 
   it("aborts workforce opening uploads on unmount before task creation", async () => {

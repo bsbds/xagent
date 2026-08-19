@@ -163,12 +163,18 @@ function PublicConversationContent({
   const [draftFiles, setDraftFiles] = useState<File[]>([])
   const [isBootstrappingTask, setIsBootstrappingTask] = useState(false)
   const [hasResolvedStoredTask, setHasResolvedStoredTask] = useState(false)
+  const [workforceUploadGeneration, setWorkforceUploadGeneration] = useState(0)
   const bootstrapControllerRef = useRef<AbortController | null>(null)
-  // Object identity scopes taskless retry ids to this public auth generation
-  // without retaining the raw credential in the upload cache.
+  // Object identity retains taskless upload successes across retries for one
+  // pending conversation, then rotates when that conversation is acknowledged.
   const workforceUploadContext = useMemo(
-    () => createPublicUploadContext(accessToken, authMode, routeToken),
-    [accessToken, authMode, routeToken],
+    () => createPublicUploadContext(
+      accessToken,
+      authMode,
+      routeToken,
+      workforceUploadGeneration,
+    ),
+    [accessToken, authMode, routeToken, workforceUploadGeneration],
   )
   const storageKey = authMode === "share"
     // Scope the persisted task-id by guest_id (decoded from the guest JWT) so a
@@ -240,8 +246,11 @@ function PublicConversationContent({
   // active taskId, and the visitor is back on the start screen; the next
   // message creates a fresh task through handleSend. #1039
   const handleNewConversation = useCallback(() => {
-    bootstrapControllerRef.current?.abort()
-    bootstrapControllerRef.current = null
+    // Task creation and the agent opening send form one bootstrap operation.
+    // Do not let a reset cancel it after the server may have created the task.
+    if (bootstrapControllerRef.current) return
+
+    setWorkforceUploadGeneration((generation) => generation + 1)
     safeRemoveItem(storageKey)
     setTaskId(null, { navigate: false })
     // Nulling taskId closes the socket, so no terminal WS event will ever
@@ -267,6 +276,10 @@ function PublicConversationContent({
     config?: PublicMessageConfig,
     files?: File[],
   ) => {
+    // This ref is set before any React state update or await. Reentrant sends
+    // are ignored without replacing or duplicating the active bootstrap.
+    if (bootstrapControllerRef.current) return
+
     if (state.taskId) {
       await sendMessage(message, config, files)
       return
@@ -280,7 +293,6 @@ function PublicConversationContent({
       return
     }
 
-    bootstrapControllerRef.current?.abort()
     const bootstrapController = new AbortController()
     bootstrapControllerRef.current = bootstrapController
     const ensureActiveBootstrap = () => {
@@ -358,6 +370,11 @@ function PublicConversationContent({
         throw new Error("Task creation failed")
       }
 
+      // A valid task id acknowledges the taskless upload generation. Future
+      // conversations must POST even when the visitor selects the same File.
+      if (workforceId) {
+        setWorkforceUploadGeneration((generation) => generation + 1)
+      }
       setTaskId(newTaskId, { navigate: false })
       dispatch({
         type: "SET_CURRENT_TASK",
@@ -388,22 +405,14 @@ function PublicConversationContent({
       setDraftMessage("")
       setDraftFiles([])
     } catch (error) {
-      if (bootstrapControllerRef.current === bootstrapController) {
-        setIsBootstrappingTask(false)
-      }
       throw error
     } finally {
       if (bootstrapControllerRef.current === bootstrapController) {
         bootstrapControllerRef.current = null
+        setIsBootstrappingTask(false)
       }
     }
   }, [accessToken, agentId, agentLogo, agentName, authMode, dispatch, onAuthInvalidated, publicApiPrefix, sendMessage, setTaskId, state.taskId, storageKey, t, workforceId, workforceUploadContext])
-
-  useEffect(() => {
-    if (state.taskId || createTaskError) {
-      setIsBootstrappingTask(false)
-    }
-  }, [createTaskError, state.taskId])
 
   const resolvedAgentName = state.currentTask?.agentName || agentName || t("widgetChat.title")
   const resolvedAgentLogo = state.currentTask?.agentLogoUrl || agentLogo || null
@@ -442,9 +451,10 @@ function PublicConversationContent({
             <button
               type="button"
               onClick={handleNewConversation}
+              disabled={isBootstrappingTask}
               title={t("widgetChat.newConversation")}
               aria-label={t("widgetChat.newConversation")}
-              className="ml-auto p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              className="ml-auto p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <MessageSquarePlus className="w-4 h-4" />
             </button>
