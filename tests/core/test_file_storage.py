@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
+from aiobotocore.config import AioConfig
 
 import xagent.core.file_storage.factory as file_storage_factory
 from xagent.core.file_storage.factory import get_unscoped_file_storage
@@ -163,6 +164,9 @@ def test_s3_file_storage_uses_standard_retries_and_bounded_timeouts(
     def fake_url_to_fs(uri: str, **options: object):
         captured["uri"] = uri
         captured["options"] = options
+        config_kwargs = options.get("config_kwargs")
+        assert isinstance(config_kwargs, dict)
+        AioConfig(**config_kwargs)
         return DummyStorage(), "bucket/root"
 
     monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", "s3://bucket/root")
