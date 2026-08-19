@@ -20,7 +20,7 @@ namespaces into the old identity can violate uniqueness and would destroy the
 security boundary, so downgrade refuses rather than deleting or merging rows.
 
 Revision ID: 20260818_user_oauth_resource_owner
-Revises: 20260813_trace_json_columns_to_jsonb
+Revises: 20260818_seed_jira_mcp_app
 Create Date: 2026-08-18
 """
 
@@ -31,7 +31,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260818_user_oauth_resource_owner"
-down_revision: Union[str, None] = "20260813_trace_json_columns_to_jsonb"
+down_revision: Union[str, None] = "20260818_seed_jira_mcp_app"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

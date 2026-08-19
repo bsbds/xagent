@@ -155,7 +155,7 @@ Monitor `actor_policy_conflict`, `actor_policy_requires_builtin_oauth`, `actor_p
 
 ### Rollback
 
-If no actor-owned row exists, stop all workers. Run `alembic downgrade 20260813_trace_json_columns_to_jsonb`, then deploy the old version.
+If no actor-owned row exists, stop all workers. Run `alembic downgrade 20260818_seed_jira_mcp_app`, then deploy the old version.
 
 CAUTION: Do not run the downgrade after an actor-owned row exists. The migration stops because the old schema cannot preserve actor isolation.
 
