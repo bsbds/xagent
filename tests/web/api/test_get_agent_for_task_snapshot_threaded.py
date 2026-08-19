@@ -136,8 +136,6 @@ async def test_actor_policy_required_task_fails_closed_on_warm_reuse() -> None:
     policy = MCPRuntimeAuthorizationPolicy(
         resource_owner_key="actor:alice",
         allowed_server_ids=frozenset(),
-        require_explicit_owner=True,
-        allow_non_oauth=False,
     )
 
     with (

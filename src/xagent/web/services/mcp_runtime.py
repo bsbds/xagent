@@ -29,17 +29,15 @@ class MCPRuntimeAuthorizationPolicyRequiredError(RuntimeError):
 
 @dataclass(frozen=True)
 class MCPRuntimeAuthorizationPolicy:
-    """Server-owned authorization boundary for actor-scoped MCP execution.
+    """Server-owned boundary for actor-scoped builtin OAuth execution.
 
-    The policy carries only immutable identifiers. Tokens and grant rows remain
-    inside the OAuth runtime resolver and are revalidated immediately before
-    the connection is built.
+    ``allowed_server_ids`` contains only builtin OAuth server IDs connected by
+    the current actor. Native MCP servers remain workspace-account
+    configuration and follow their existing shared runtime behavior.
     """
 
     resource_owner_key: str
     allowed_server_ids: frozenset[int]
-    require_explicit_owner: bool = True
-    allow_non_oauth: bool = False
 
     def __post_init__(self) -> None:
         owner_key = self.resource_owner_key.strip()
@@ -434,7 +432,6 @@ async def build_mcp_runtime_connection(
     user_env_overrides: dict[int, dict] | None = None,
     shared_env_overrides: dict[int, dict] | None = None,
     env_source_overrides: dict[int, str] | None = None,
-    authorization_policy: MCPRuntimeAuthorizationPolicy | None = None,
 ) -> MCPRuntimeConnectionBuild:
     """Build an executable MCP connection for a specific user runtime.
 
@@ -443,46 +440,6 @@ async def build_mcp_runtime_connection(
     """
     server_id = getattr(server, "id", None)
     auth_config = server._decrypt_auth_config(getattr(server, "auth", None))
-    if authorization_policy is not None:
-        if (
-            not isinstance(server_id, int)
-            or server_id not in authorization_policy.allowed_server_ids
-        ):
-            return MCPRuntimeConnectionBuild(
-                connection=None,
-                diagnostic=mcp_oauth_runtime_diagnostic(
-                    server,
-                    code="actor_policy_server_not_allowed",
-                    message="MCP server is not authorized for this actor",
-                ),
-            )
-        if not authorization_policy.allow_non_oauth and not _is_mcp_oauth_http_server(
-            server, auth_config
-        ):
-            return MCPRuntimeConnectionBuild(
-                connection=None,
-                diagnostic=mcp_oauth_runtime_diagnostic(
-                    server,
-                    code="actor_policy_requires_oauth",
-                    message="Actor-scoped MCP execution requires remote OAuth",
-                ),
-            )
-        selection = mcp_oauth_selection(mcp_auth_context, server_id)
-        conflicting_keys = set(selection) - {"resource_owner_key"}
-        selected_owner = selection.get("resource_owner_key")
-        if conflicting_keys or (
-            selected_owner is not None
-            and selected_owner != authorization_policy.resource_owner_key
-        ):
-            return MCPRuntimeConnectionBuild(
-                connection=None,
-                diagnostic=mcp_oauth_runtime_diagnostic(
-                    server,
-                    code="actor_policy_conflict",
-                    message="MCP authorization selector conflicts with actor policy",
-                ),
-            )
-
     connection = server.to_connection_dict()
 
     # Resolve which env layer to apply for this user, per their env_source pick
@@ -525,12 +482,7 @@ async def build_mcp_runtime_connection(
         )
 
     selection = mcp_oauth_selection(mcp_auth_context, server_id)
-    if authorization_policy is not None:
-        resource_owner_key = authorization_policy.resource_owner_key
-    else:
-        resource_owner_key = (
-            selection.get("resource_owner_key") or f"xagent:user:{user_id}"
-        )
+    resource_owner_key = selection.get("resource_owner_key") or f"xagent:user:{user_id}"
     try:
         runtime_auth = await resolve_mcp_oauth_runtime_auth(
             db,

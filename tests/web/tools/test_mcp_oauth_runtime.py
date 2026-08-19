@@ -176,44 +176,6 @@ def _assert_unavailable_runtime_config(
     assert "connector_runtime" not in config
 
 
-def test_exact_owner_grant_selection_never_broadens_blank_identity(db_session):
-    db, user, _ = db_session
-    server = _add_mcp_oauth_server(db, user)
-    alice = _add_grant(
-        db,
-        server=server,
-        user=user,
-        resource_owner_key="toby:slack:41:U1",
-        access_token="alice-token",
-    )
-    _add_grant(
-        db,
-        server=server,
-        user=user,
-        resource_owner_key="toby:slack:41:U2",
-        access_token="bob-token",
-    )
-    auth_config = server.to_config_dict()["auth"]
-
-    grants = mcp_oauth_service.select_mcp_oauth_grants_for_resource_owner(
-        db,
-        server_id=server.id,
-        user_id=user.id,
-        auth_config=auth_config,
-        resource_owner_key="toby:slack:41:U1",
-    )
-
-    assert [grant.id for grant in grants] == [alice.id]
-    with pytest.raises(ValueError, match="resource_owner_key"):
-        mcp_oauth_service.select_mcp_oauth_grants_for_resource_owner(
-            db,
-            server_id=server.id,
-            user_id=user.id,
-            auth_config=auth_config,
-            resource_owner_key=" ",
-        )
-
-
 def test_effective_mcp_oauth_resource_prefers_selector_verbatim(db_session):
     db, user, _ = db_session
     server = _add_mcp_oauth_server(db, user)
@@ -382,69 +344,70 @@ async def test_mcp_oauth_runtime_selects_resource_owner_grant(db_session):
 
 
 @pytest.mark.asyncio
-async def test_actor_policy_filters_servers_and_selects_exact_owner(db_session):
+async def test_actor_policy_preserves_shared_native_mcp_oauth_owner(db_session):
     db, user, _ = db_session
-    allowed = _add_mcp_oauth_server(db, user, name="actor-allowed")
-    filtered = _add_mcp_oauth_server(db, user, name="other-actor-only")
-    for server, token in ((allowed, "alice-token"), (filtered, "other-token")):
-        _add_grant(
-            db,
-            server=server,
-            user=user,
-            resource_owner_key="toby:slack:41:U1",
-            access_token=token,
-        )
+    server = _add_mcp_oauth_server(db, user, name="workspace-native-oauth")
+    _add_grant(
+        db,
+        server=server,
+        user=user,
+        resource_owner_key=f"xagent:user:{user.id}",
+        access_token="workspace-token",
+    )
+    _add_grant(
+        db,
+        server=server,
+        user=user,
+        resource_owner_key="toby:slack:41:U1",
+        access_token="personal-native-token",
+    )
 
     configs, cfg = await _load_configs(
         db,
         user,
         mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
             resource_owner_key="toby:slack:41:U1",
-            allowed_server_ids=frozenset({allowed.id}),
+            allowed_server_ids=frozenset(),
         ),
     )
 
     assert cfg.get_mcp_oauth_diagnostics() == []
-    assert [config["id"] for config in configs] == [allowed.id]
-    assert configs[0]["config"]["headers"]["Authorization"] == "Bearer alice-token"
+    assert [config["id"] for config in configs] == [server.id]
+    assert configs[0]["config"]["headers"]["Authorization"] == "Bearer workspace-token"
 
 
 @pytest.mark.asyncio
-async def test_actor_policy_rejects_conflicting_runtime_selector(db_session):
+async def test_actor_policy_preserves_native_mcp_runtime_selector(db_session):
     db, user, _ = db_session
     server = _add_mcp_oauth_server(db, user)
     _add_grant(
         db,
         server=server,
         user=user,
-        resource_owner_key="toby:slack:41:U1",
-        access_token="alice-token",
-    )
-    _add_grant(
-        db,
-        server=server,
-        user=user,
-        resource_owner_key="toby:slack:41:U2",
-        access_token="bob-token",
+        resource_owner_key="workspace-configured-owner",
+        access_token="workspace-selected-token",
     )
 
     configs, cfg = await _load_configs(
         db,
         user,
-        mcp_auth_context={str(server.id): {"resource_owner_key": "toby:slack:41:U2"}},
+        mcp_auth_context={
+            str(server.id): {"resource_owner_key": "workspace-configured-owner"}
+        },
         mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
             resource_owner_key="toby:slack:41:U1",
-            allowed_server_ids=frozenset({server.id}),
+            allowed_server_ids=frozenset(),
         ),
     )
 
-    assert configs[0]["transport"] == "unavailable"
-    assert cfg.get_mcp_oauth_diagnostics()[0]["code"] == "actor_policy_conflict"
-    assert "Authorization" not in configs[0]["config"]
+    assert cfg.get_mcp_oauth_diagnostics() == []
+    assert configs[0]["config"]["headers"]["Authorization"] == (
+        "Bearer workspace-selected-token"
+    )
 
 
 @pytest.mark.asyncio
-async def test_actor_policy_rejects_non_oauth_server_even_if_allowlisted(db_session):
+async def test_actor_policy_preserves_shared_non_oauth_server(db_session):
     db, user, _ = db_session
     server = MCPServer.from_config(
         {
@@ -467,19 +430,19 @@ async def test_actor_policy_rejects_non_oauth_server_even_if_allowlisted(db_sess
     )
     db.commit()
 
-    configs, _ = await _load_configs(
+    configs, cfg = await _load_configs(
         db,
         user,
         mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
             resource_owner_key="toby:slack:41:U1",
-            allowed_server_ids=frozenset({server.id}),
+            allowed_server_ids=frozenset(),
         ),
     )
 
-    assert configs[0]["transport"] == "unavailable"
-    assert configs[0]["config"]["reason"] == "actor_policy_requires_oauth"
-    assert "command" not in configs[0]["config"]
-    assert "env" not in configs[0]["config"]
+    assert cfg.get_mcp_oauth_diagnostics() == []
+    assert configs[0]["transport"] == "stdio"
+    assert configs[0]["config"]["command"] == "python"
+    assert configs[0]["config"]["env"]["TOKEN"] == "shared-secret"
 
 
 @pytest.mark.asyncio

@@ -68,7 +68,7 @@ from ..services.mcp_oauth import (
     oauth_post,
     oauth_token_expires_at,
     register_mcp_oauth_public_client,
-    select_mcp_oauth_grants_for_resource_owner,
+    select_mcp_oauth_grants,
     validate_mcp_oauth_persisted_value,
 )
 from ..services.mcp_runtime import HTTP_MCP_TRANSPORTS
@@ -2080,8 +2080,6 @@ def list_mcp_apps(
         for row in db.query(MCPOAuthGrant.mcp_server_id)
         .filter(
             MCPOAuthGrant.user_id == current_user.id,
-            MCPOAuthGrant.resource_owner_key
-            == _default_resource_owner_key(cast(int, current_user.id)),
             MCPOAuthGrant.status == "active",
         )
         .all()
@@ -2959,48 +2957,16 @@ async def connect_mcp_oauth_app(
     db: Session = Depends(get_db),
     accept: Annotated[str | None, Header()] = None,
 ) -> RedirectResponse | JSONResponse:
-    """Connect a catalog app with the generic current-user owner key."""
-    return await connect_mcp_oauth_app_for_resource_owner(
-        app_id=app_id,
-        request_data=request_data,
-        current_user=current_user,
-        db=db,
-        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
-        accept=accept,
-    )
+    """Connect a remote-MCP OAuth (DCR-capable) catalog app for the current user.
 
-
-async def connect_mcp_oauth_app_for_resource_owner(
-    *,
-    app_id: str,
-    request_data: MCPOAuthConnectRequest,
-    current_user: User,
-    db: Session,
-    resource_owner_key: str,
-    accept: str | None = None,
-) -> RedirectResponse | JSONResponse:
-    """Connect a catalog app for a trusted server-owned resource identity."""
+    Ensures the shared server row and this user's association exist, then
+    delegates to connect_mcp_oauth's Authorization Code + PKCE flow — the
+    per-user DCR/token machinery is identical to a self-added custom MCP
+    server; only the server row's origin (catalog vs. a user-typed URL)
+    differs.
+    """
     server, app_info = _ensure_catalog_mcp_oauth_server(db, app_id)
-    _ensure_user_mcp_oauth_app_association(db, current_user, server)
-    logger.info(
-        "User %s starting actor-bound OAuth connect for MCP app '%s'",
-        current_user.id,
-        app_info["id"],
-    )
-    return await start_mcp_oauth_for_resource_owner(
-        cast(int, server.id),
-        request_data,
-        current_user,
-        db,
-        resource_owner_key=resource_owner_key,
-        accept=accept,
-    )
 
-
-def _ensure_user_mcp_oauth_app_association(
-    db: Session, current_user: User, server: MCPServer
-) -> None:
-    """Create or reactivate the shared user/server association idempotently."""
     assoc: Any = (
         db.query(UserMCPServer)
         .filter(
@@ -3010,20 +2976,20 @@ def _ensure_user_mcp_oauth_app_association(
         .first()
     )
     if assoc is None:
-        db.add(
-            UserMCPServer(
-                user_id=current_user.id,
-                mcpserver_id=server.id,
-                is_active=True,
-                is_owner=False,
-                can_edit=False,
-                can_delete=True,
-            )
+        assoc = UserMCPServer(
+            user_id=current_user.id,
+            mcpserver_id=server.id,
+            is_active=True,
+            is_owner=False,
+            can_edit=False,
+            can_delete=True,
         )
+        db.add(assoc)
         try:
             db.commit()
-            return
         except IntegrityError:
+            # Concurrent same-user connect (double-click/client retry): another
+            # request already inserted the (user_id, mcpserver_id) association.
             db.rollback()
             assoc = (
                 db.query(UserMCPServer)
@@ -3035,9 +3001,18 @@ def _ensure_user_mcp_oauth_app_association(
             )
             if assoc is None:
                 raise
-    if not assoc.is_active:
+    elif not assoc.is_active:
+        # A reconnect after the user previously disconnected their own
+        # association — re-activate it rather than leaving it dormant.
         assoc.is_active = True
         db.commit()
+
+    logger.info(
+        f"User {current_user.id} starting OAuth connect for MCP app '{app_info['id']}'"
+    )
+    return await connect_mcp_oauth(
+        cast(int, server.id), request_data, current_user, db, accept
+    )
 
 
 @mcp_router.post(
@@ -3375,7 +3350,7 @@ async def delete_mcp_server(
     """Delete an MCP server."""
     try:
         manager = DatabaseMCPServerManager(db)
-        user_id = cast(int, current_user.id)
+        user_id = current_user.id
 
         # Check user has access to this server
         result = (
@@ -3403,7 +3378,6 @@ async def delete_mcp_server(
             )
 
         server_name = server.name
-        actor_owned_dependency = False
 
         from ..services.connector_team_scope import delete_team_connector
 
@@ -3429,18 +3403,6 @@ async def delete_mcp_server(
             if app_info:
                 provider = app_info.get("provider")
                 app_id = app_info.get("id")
-                actor_oauth_keys = _oauth_keys_for_app(app_info)
-                if actor_oauth_keys:
-                    actor_owned_dependency = (
-                        db.query(UserOAuth.id)
-                        .filter(
-                            UserOAuth.user_id == user_id,
-                            UserOAuth.resource_owner_key.isnot(None),
-                            UserOAuth.provider.in_(actor_oauth_keys),
-                        )
-                        .first()
-                        is not None
-                    )
 
                 # Delete tokens for this specific app. For apps in
                 # APPS_REQUIRING_APP_SCOPED_OAUTH_GRANT this must stay
@@ -3493,9 +3455,8 @@ async def delete_mcp_server(
                             UserOAuth.provider == provider,
                         ).delete(synchronize_session=False)
 
-        # Revoke and purge this user's ordinary MCP OAuth grants for the
-        # server. Actor-owned grants use separate trusted lifecycle helpers.
-        # On a shared (multi-user) row the server outlives this disconnect, so
+        # Revoke and purge this user's MCP OAuth grants for the server. On a
+        # shared (multi-user) row the server outlives this disconnect, so
         # without this the grant's refresh token would stay usable — and its
         # row would stay stored — until the LAST user disconnects and the
         # cascade finally removes it. Best-effort external revocation first
@@ -3503,13 +3464,11 @@ async def delete_mcp_server(
         # hard delete rather than a "revoked" status flip: a revoked grant
         # row is otherwise never swept, accumulating indefinitely as an
         # inert but secret-bearing row (F10).
-        default_resource_owner_key = _default_resource_owner_key(user_id)
         for grant in (
             db.query(MCPOAuthGrant)
             .filter(
                 MCPOAuthGrant.mcp_server_id == server_id,
                 MCPOAuthGrant.user_id == user_id,
-                MCPOAuthGrant.resource_owner_key == default_resource_owner_key,
                 MCPOAuthGrant.status == "active",
             )
             .all()
@@ -3527,36 +3486,7 @@ async def delete_mcp_server(
         db.query(MCPOAuthFlowState).filter(
             MCPOAuthFlowState.mcp_server_id == server_id,
             MCPOAuthFlowState.user_id == user_id,
-            MCPOAuthFlowState.resource_owner_key == default_resource_owner_key,
         ).delete(synchronize_session=False)
-
-        actor_owned_dependency = actor_owned_dependency or (
-            db.query(MCPOAuthGrant.id)
-            .filter(
-                MCPOAuthGrant.mcp_server_id == server_id,
-                MCPOAuthGrant.user_id == user_id,
-                MCPOAuthGrant.resource_owner_key != default_resource_owner_key,
-                MCPOAuthGrant.status == "active",
-            )
-            .first()
-            is not None
-        )
-        actor_owned_dependency = actor_owned_dependency or (
-            db.query(MCPOAuthFlowState.id)
-            .filter(
-                MCPOAuthFlowState.mcp_server_id == server_id,
-                MCPOAuthFlowState.user_id == user_id,
-                MCPOAuthFlowState.resource_owner_key != default_resource_owner_key,
-                MCPOAuthFlowState.consumed_at.is_(None),
-            )
-            .first()
-            is not None
-        )
-        if actor_owned_dependency:
-            # The association is shared configuration. Keep it while another
-            # owner namespace still has a credential or an in-flight consent.
-            db.commit()
-            return
 
         # Remove user-server association
         db.delete(user_mcp)
@@ -4132,48 +4062,8 @@ async def connect_mcp_oauth(
     db: Session = Depends(get_db),
     accept: Annotated[str | None, Header()] = None,
 ) -> RedirectResponse | JSONResponse:
-    """Start MCP OAuth with the generic current-user ownership policy."""
+    """Start MCP OAuth Authorization Code + PKCE for the current user."""
     user_id = cast(int, current_user.id)
-    return await start_mcp_oauth_for_resource_owner(
-        server_id,
-        request_data,
-        current_user,
-        db,
-        resource_owner_key=_default_resource_owner_key(user_id),
-        accept=accept,
-    )
-
-
-async def start_mcp_oauth_for_resource_owner(
-    server_id: int,
-    request_data: MCPOAuthConnectRequest,
-    current_user: User,
-    db: Session,
-    *,
-    resource_owner_key: str,
-    accept: str | None = None,
-) -> RedirectResponse | JSONResponse:
-    """Start MCP OAuth for a server-owned resource-owner identity.
-
-    This helper is intentionally not an HTTP endpoint. Product integrations may
-    supply a trusted owner key after authenticating their own actor, while the
-    public endpoint above retains the generic ``xagent:user:<id>`` policy.
-    """
-    user_id = cast(int, current_user.id)
-    resource_owner_key = resource_owner_key.strip()
-    if not resource_owner_key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "invalid_resource_owner",
-                "message": "Resource owner identity is required",
-            },
-        )
-    resource_owner_key = _bounded_mcp_oauth_value(
-        resource_owner_key,
-        field_name="resource_owner_key",
-        max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
-    )
     _, server = _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
     )
@@ -4246,6 +4136,11 @@ async def start_mcp_oauth_for_resource_owner(
             client_secret = None
             token_endpoint_auth_method = registration.token_endpoint_auth_method
     selected_scope = _scope_string(auth_config.get("scope") or discovery.scopes)
+    resource_owner_key = _bounded_mcp_oauth_value(
+        _default_resource_owner_key(user_id),
+        field_name="resource_owner_key",
+        max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
+    )
     selected_resource = _bounded_mcp_oauth_value(
         str(discovery.resource), field_name="resource"
     )
@@ -4342,35 +4237,18 @@ async def get_mcp_oauth_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MCPOAuthStatusResponse:
-    """Return grants in the public current-user owner namespace."""
-    return await get_mcp_oauth_status_for_resource_owner(
-        server_id=server_id,
-        current_user=current_user,
-        db=db,
-        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
-    )
-
-
-async def get_mcp_oauth_status_for_resource_owner(
-    *,
-    server_id: int,
-    current_user: User,
-    db: Session,
-    resource_owner_key: str,
-) -> MCPOAuthStatusResponse:
-    """Return grants for one trusted server-owned resource identity."""
+    """Return MCP OAuth grants owned by the current user for one MCP server."""
     user_id = cast(int, current_user.id)
     _, server = _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
     )
     config = server.to_config_dict()
     auth_config = config.get("auth") if isinstance(config.get("auth"), dict) else {}
-    grants = select_mcp_oauth_grants_for_resource_owner(
+    grants = select_mcp_oauth_grants(
         db,
         server_id=server_id,
         user_id=user_id,
         auth_config=auth_config if isinstance(auth_config, dict) else {},
-        resource_owner_key=resource_owner_key,
     )
     return MCPOAuthStatusResponse(
         server_id=server_id,
@@ -4392,28 +4270,7 @@ async def delete_mcp_oauth_grant(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
-    """Revoke a grant in the public current-user owner namespace."""
-    await delete_mcp_oauth_grant_for_resource_owner(
-        server_id=server_id,
-        grant_id=grant_id,
-        current_user=current_user,
-        db=db,
-        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
-    )
-
-
-async def delete_mcp_oauth_grant_for_resource_owner(
-    *,
-    server_id: int,
-    grant_id: int,
-    current_user: User,
-    db: Session,
-    resource_owner_key: str,
-) -> None:
-    """Revoke one grant only when its trusted resource owner also matches."""
-    owner_key = resource_owner_key.strip()
-    if not owner_key:
-        raise ValueError("resource_owner_key must not be blank")
+    """Revoke an MCP OAuth grant owned by the current user."""
     user_id = cast(int, current_user.id)
     _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
@@ -4424,7 +4281,6 @@ async def delete_mcp_oauth_grant_for_resource_owner(
             MCPOAuthGrant.id == grant_id,
             MCPOAuthGrant.mcp_server_id == server_id,
             MCPOAuthGrant.user_id == user_id,
-            MCPOAuthGrant.resource_owner_key == owner_key,
         )
         .first()
     )

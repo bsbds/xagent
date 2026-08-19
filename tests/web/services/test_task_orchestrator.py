@@ -2555,8 +2555,6 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
     authorization_policy = MCPRuntimeAuthorizationPolicy(
         resource_owner_key="actor:alice",
         allowed_server_ids=frozenset({7}),
-        require_explicit_owner=True,
-        allow_non_oauth=False,
     )
 
     with (

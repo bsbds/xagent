@@ -215,8 +215,6 @@ async def test_snapshot_path_skips_task_and_user_queries() -> None:
     authorization_policy = MCPRuntimeAuthorizationPolicy(
         resource_owner_key="actor:alice",
         allowed_server_ids=frozenset({7}),
-        require_explicit_owner=True,
-        allow_non_oauth=False,
     )
     with _Patches(_common_patches(db, agent_service)):
         try:

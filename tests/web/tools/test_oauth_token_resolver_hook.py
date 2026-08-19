@@ -382,7 +382,6 @@ async def test_actor_policy_injects_only_the_exact_builtin_oauth_owner(db_sessio
     policy = MCPRuntimeAuthorizationPolicy(
         resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
-        allow_non_oauth=False,
     )
 
     configs = await _tool_config(
@@ -450,7 +449,6 @@ async def test_actor_builtin_oauth_refresh_retains_owner_key(
     policy = MCPRuntimeAuthorizationPolicy(
         resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
-        allow_non_oauth=False,
     )
 
     configs = await _tool_config(
@@ -480,7 +478,6 @@ async def test_actor_policy_never_falls_back_to_ordinary_builtin_oauth(db_sessio
     policy = MCPRuntimeAuthorizationPolicy(
         resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
-        allow_non_oauth=False,
     )
 
     configs = await _tool_config(
@@ -512,7 +509,6 @@ async def test_actor_policy_rejects_conflicting_builtin_oauth_selector(db_sessio
     policy = MCPRuntimeAuthorizationPolicy(
         resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
-        allow_non_oauth=False,
     )
 
     configs = await _tool_config(
