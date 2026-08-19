@@ -18,8 +18,10 @@ export interface FileAccessPolicy {
   relativePreviewUrl: (fileId: string, relativePath: string) => string
   pdfPreviewUrl?: (fileId: string) => string
   /**
-   * Execute under this policy's credential boundary. Implementations may
-   * override caller credentials and remove or attach authorization headers.
+   * Execute under this policy's credential boundary. The built-in default
+   * attaches Bearer authorization. The public policy forces same-origin
+   * credentials, strips caller Authorization, and leaves its scoped query
+   * token on the URL. Custom policies must define an equivalent boundary.
    */
   request: FileAccessRequest
   listFiles?: (query: string) => Promise<Response>
