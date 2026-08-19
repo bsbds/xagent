@@ -199,8 +199,15 @@ def _patched_manager_and_agent():
         captured["task_owner_user_id"] = task_owner_user_id
         return agent_service
 
+    def _get_cached_agent_for_control(task_id, *, task_owner_user_id):
+        captured["task_owner_user_id"] = task_owner_user_id
+        return agent_service
+
     mgr = MagicMock()
     mgr.get_agent_for_task = AsyncMock(side_effect=_get_agent_for_task)
+    mgr.get_cached_agent_for_control = MagicMock(
+        side_effect=_get_cached_agent_for_control
+    )
 
     ws_manager = MagicMock()
     ws_manager.send_personal_message = AsyncMock()
