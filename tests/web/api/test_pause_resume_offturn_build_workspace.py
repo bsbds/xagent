@@ -40,7 +40,6 @@ from xagent.config import get_uploads_dir
 from xagent.core.execution_scope import (
     DeferToSnapshot,
     ExecutionScope,
-    ExecutionScopeAbstentionMismatchError,
     scope_fingerprint,
     set_execution_scope_snapshot_loader,
 )
@@ -190,16 +189,9 @@ async def test_pause_cache_miss_builds_under_resolver_namespace_not_snapshot(
 
     resolver_workspace = _workspace_dir(OWNER_ID, ("from-resolver",))
     snapshot_workspace = _workspace_dir(OWNER_ID, ("from-snapshot",))
-    assert resolver_workspace.is_dir()
-    assert (resolver_workspace / "input").is_dir()
-    assert (resolver_workspace / "output").is_dir()
-    assert (resolver_workspace / "temp").is_dir()
+    assert not resolver_workspace.exists()
     assert not snapshot_workspace.exists()
-    assert manager._agent_scope_fingerprints.get(TASK_ID) == scope_fingerprint(
-        ExecutionScope(
-            sandbox_key_suffix="from-resolver", workspace_segments=("from-resolver",)
-        )
-    )
+    assert manager._agents.get(TASK_ID) is None
 
 
 @pytest.mark.asyncio
@@ -328,12 +320,11 @@ async def test_pause_abstention_mismatch_fails_closed_with_no_workspace_residue(
             patch("xagent.web.api.chat.AgentService", agent_service_spy)
         )
         _enter_build_only_patches(stack, manager)
-        with pytest.raises(ExecutionScopeAbstentionMismatchError):
-            await websocket_api._handle_pause_task_unserialized(
-                MagicMock(),
-                TASK_ID,
-                {"user": SimpleNamespace(id=OWNER_ID, is_admin=False)},
-            )
+        await websocket_api._handle_pause_task_unserialized(
+            MagicMock(),
+            TASK_ID,
+            {"user": SimpleNamespace(id=OWNER_ID, is_admin=False)},
+        )
 
     agent_service_spy.assert_not_called()
     assert manager._agents.get(TASK_ID) is None

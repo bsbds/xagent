@@ -1216,6 +1216,9 @@ def start_builtin_oauth_for_resource_owner(
     The owner key is placed only inside signed OAuth state. No generic HTTP
     route accepts it, and the callback trusts only the verified state claim.
     """
+    if not isinstance(app_id, str) or not app_id.strip():
+        raise ValueError("actor builtin OAuth app_id must be a non-empty string")
+    app_id = app_id.strip()
     owner_key = normalize_user_oauth_resource_owner_key(resource_owner_key)
     if owner_key is None:
         raise ValueError("resource_owner_key must not be null")
@@ -1376,9 +1379,13 @@ class AppNotOAuthError(ValueError):
 
 
 def _ensure_user_mcp_server(
-    db: Session, user_id: str, app_info: Dict[str, Any]
+    db: Session,
+    user_id: str,
+    app_info: Dict[str, Any],
+    *,
+    associate_user: bool = True,
 ) -> None:
-    """Ensure MCPServer and UserMCPServer records exist for an OAuth app."""
+    """Provision shared OAuth MCP metadata and optionally associate the user."""
     from sqlalchemy.exc import IntegrityError
 
     from ..models.mcp import MCPServer, UserMCPServer
@@ -1453,6 +1460,9 @@ def _ensure_user_mcp_server(
                 raise
 
     _ensure_server_matches_oauth_app(mcp_server)
+
+    if not associate_user:
+        return
 
     user_mcp = (
         db.query(UserMCPServer)
@@ -1707,7 +1717,12 @@ def generic_oauth_callback(
                     # 500 after the user already completed provider consent —
                     # symmetric with the batch branch's AppNotOAuthError catch.
                     try:
-                        _ensure_user_mcp_server(db, user_id, app_info)
+                        _ensure_user_mcp_server(
+                            db,
+                            user_id,
+                            app_info,
+                            associate_user=resource_owner_key is None,
+                        )
                     except AppNotOAuthError:
                         db.rollback()
                         return HTMLResponse(

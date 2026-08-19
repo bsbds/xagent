@@ -522,6 +522,26 @@ class TestCreateAgentTool:
 
         assert tool._file_operation_access_version == 1
 
+    def test_published_agent_builder_propagates_actor_mcp_policy(self) -> None:
+        policy = object()
+        tools = build_published_agent_tools_from_records(
+            [
+                PublishedAgentToolRecord(
+                    id=1,
+                    name="Worker",
+                    description="Worker",
+                    instructions=None,
+                    status="published",
+                )
+            ],
+            session_factory=lambda: None,
+            user_id=7,
+            mcp_runtime_authorization_policy=policy,
+        )
+
+        assert len(tools) == 1
+        assert tools[0]._mcp_runtime_authorization_policy is policy
+
     def test_published_agent_builder_propagates_file_operation_policy(self) -> None:
         assert (
             "file_operation_access_version"

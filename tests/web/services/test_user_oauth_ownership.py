@@ -1,5 +1,6 @@
 """Owner-scoped lookup and revocation for builtin OAuth credentials."""
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -104,6 +105,70 @@ def test_direct_id_lookup_requires_the_expected_owner(tmp_path) -> None:
             is None
         )
     finally:
+        db.close()
+        engine.dispose()
+
+
+def test_destructive_provider_filter_must_be_explicit(tmp_path) -> None:
+    engine, db, user, _rows = _db(tmp_path)
+    try:
+        with pytest.raises(TypeError):
+            delete_scoped_user_oauth_accounts(
+                db,
+                user_id=int(user.id),
+                resource_owner_key=ALICE,
+            )
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_empty_provider_filter_deletes_nothing(tmp_path) -> None:
+    engine, db, user, _rows = _db(tmp_path)
+    try:
+        assert (
+            delete_scoped_user_oauth_accounts(
+                db,
+                user_id=int(user.id),
+                resource_owner_key=ALICE,
+                providers=[],
+            )
+            == 0
+        )
+        assert db.query(UserOAuth).count() == 3
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_none_provider_filter_deletes_all_for_owner_without_committing(
+    tmp_path,
+) -> None:
+    engine, db, user, _rows = _db(tmp_path)
+    other_db = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    try:
+        assert (
+            delete_scoped_user_oauth_accounts(
+                db,
+                user_id=int(user.id),
+                resource_owner_key=ALICE,
+                providers=None,
+            )
+            == 1
+        )
+        assert (
+            db.query(UserOAuth).filter(UserOAuth.resource_owner_key == ALICE).count()
+            == 0
+        )
+        assert (
+            other_db.query(UserOAuth)
+            .filter(UserOAuth.resource_owner_key == ALICE)
+            .count()
+            == 1
+        )
+    finally:
+        other_db.close()
+        db.rollback()
         db.close()
         engine.dispose()
 

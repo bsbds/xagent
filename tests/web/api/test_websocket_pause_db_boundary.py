@@ -85,7 +85,7 @@ async def test_pause_handler_keeps_database_work_off_the_event_loop(
     agent_service = MagicMock()
     agent_service.pause_execution = AsyncMock(return_value=True)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_cached_agent_for_control.return_value = agent_service
     connection_manager = MagicMock()
     connection_manager.send_personal_message = AsyncMock()
     connection_manager.broadcast_to_task = AsyncMock()
@@ -115,17 +115,11 @@ async def test_pause_handler_keeps_database_work_off_the_event_loop(
     finally:
         websocket_api._clear_task_pause_accepted(task_id)
 
-    assert set(worker_threads) == {"snapshot", "scope", "finalize"}
+    assert set(worker_threads) == {"snapshot", "finalize"}
     assert all(thread_id != event_loop_thread for thread_id in worker_threads.values())
-    agent_manager.get_agent_for_task.assert_awaited_once()
-    call = agent_manager.get_agent_for_task.await_args
-    assert call.args == (task_id, None)
-    assert call.kwargs == {
-        "user": runtime_user,
-        "task_setup_snapshot": snapshot,
-        "task_owner_user_id": owner_id,
-        "resolved_execution_scope": None,
-    }
+    agent_manager.get_cached_agent_for_control.assert_called_once_with(
+        task_id, task_owner_user_id=owner_id
+    )
     agent_service.pause_execution.assert_awaited_once_with()
     connection_manager.broadcast_to_task.assert_awaited_once()
 
@@ -163,7 +157,7 @@ async def test_pause_survives_a_scope_authority_mismatch(
     agent_service = MagicMock()
     agent_service.pause_execution = AsyncMock(return_value=True)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_cached_agent_for_control.return_value = agent_service
     connection_manager = MagicMock()
     connection_manager.send_personal_message = AsyncMock()
     connection_manager.broadcast_to_task = AsyncMock()
@@ -187,13 +181,11 @@ async def test_pause_survives_a_scope_authority_mismatch(
     finally:
         websocket_api._clear_task_pause_accepted(task_id)
 
-    # The pause went through on the resolver's answer instead of raising.
+    # The pause uses the live cached runtime without resolving or rebuilding
+    # any namespace.
     agent_service.pause_execution.assert_awaited_once_with()
-    assert (
-        agent_manager.get_agent_for_task.await_args.kwargs[
-            "resolved_execution_scope"
-        ].sandbox_key_suffix
-        == "from-resolver"
+    agent_manager.get_cached_agent_for_control.assert_called_once_with(
+        task_id, task_owner_user_id=owner_id
     )
 
 

@@ -134,7 +134,7 @@ async def test_actor_policy_required_task_fails_closed_on_warm_reuse() -> None:
     manager = AgentServiceManager()
     create_tools = AsyncMock(return_value=([], MagicMock()))
     policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="actor:alice",
+        builtin_oauth_resource_owner_key="actor:alice",
         allowed_server_ids=frozenset(),
     )
 

@@ -380,7 +380,7 @@ async def test_actor_policy_injects_only_the_exact_builtin_oauth_owner(db_sessio
 
     set_oauth_token_resolver_hook(forbidden_resolver)
     policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:UALICE",
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
     )
 
@@ -404,20 +404,24 @@ async def test_actor_policy_reports_unclassified_oauth_server(db_session, monkey
         lambda db, candidate: {"auth_type": "mcp_oauth"},
     )
     policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:UALICE",
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
     )
 
-    configs = await _tool_config(
+    tool_config = _tool_config(
         db,
         user,
         mcp_runtime_authorization_policy=policy,
-    ).get_mcp_server_configs()
+    )
+    configs = await tool_config.get_mcp_server_configs()
 
     _assert_unavailable_mcp_config(
         configs[0],
         server,
         reason="actor_policy_requires_builtin_oauth",
+    )
+    assert tool_config.get_mcp_oauth_diagnostics()[0]["resource_owner_key"] == (
+        "toby:slack:41:UALICE"
     )
 
 
@@ -473,7 +477,7 @@ async def test_actor_builtin_oauth_refresh_retains_owner_key(
         SuccessfulAsyncClient,
     )
     policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:UALICE",
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
     )
 
@@ -492,6 +496,57 @@ async def test_actor_builtin_oauth_refresh_retains_owner_key(
 
 
 @pytest.mark.asyncio
+async def test_actor_builtin_oauth_drops_task_runtime_after_binding_resolution(
+    db_session, monkeypatch
+):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    server.runtime_bindings = [
+        {
+            "source": "secrets.access_token",
+            "target": "transport_headers.Authorization",
+        }
+    ]
+    db.commit()
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="alice-token",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    monkeypatch.setattr(
+        "xagent.web.services.connector_runtime.load_connector_runtime_view",
+        lambda **_kwargs: {
+            f"mcp:{server.id}": {
+                "context": {"region": "us-east-1"},
+                "secrets": {"access_token": "task-supplied-token"},
+                "auth_selector": {},
+            }
+        },
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
+            builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+            allowed_server_ids=frozenset({int(server.id)}),
+        ),
+    )
+    tool_config._task_id = "1"
+    raw_config = await tool_config._build_mcp_server_config(
+        server=server,
+        user_env_by_id={},
+        shared_env_by_id={},
+        env_source_by_id={},
+    )
+
+    assert raw_config["config"]["env"]["GOOGLE_ACCESS_TOKEN"] == "alice-token"
+    assert "connector_runtime" not in raw_config
+
+
+@pytest.mark.asyncio
 async def test_actor_policy_never_falls_back_to_ordinary_builtin_oauth(db_session):
     db, user = db_session
     server = _add_oauth_server(db, user, launch_config=_launch_config())
@@ -502,7 +557,7 @@ async def test_actor_policy_never_falls_back_to_ordinary_builtin_oauth(db_sessio
         access_token="ordinary-token",
     )
     policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:UALICE",
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
     )
 
@@ -533,7 +588,7 @@ async def test_actor_policy_rejects_conflicting_builtin_oauth_selector(db_sessio
         resource_owner_key="toby:slack:41:UALICE",
     )
     policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:UALICE",
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
         allowed_server_ids=frozenset({int(server.id)}),
     )
 

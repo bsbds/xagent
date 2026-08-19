@@ -366,7 +366,7 @@ async def test_actor_policy_preserves_shared_native_mcp_oauth_owner(db_session):
         db,
         user,
         mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
-            resource_owner_key="toby:slack:41:U1",
+            builtin_oauth_resource_owner_key="toby:slack:41:U1",
             allowed_server_ids=frozenset(),
         ),
     )
@@ -395,7 +395,7 @@ async def test_actor_policy_preserves_native_mcp_runtime_selector(db_session):
             str(server.id): {"resource_owner_key": "workspace-configured-owner"}
         },
         mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
-            resource_owner_key="toby:slack:41:U1",
+            builtin_oauth_resource_owner_key="toby:slack:41:U1",
             allowed_server_ids=frozenset(),
         ),
     )
@@ -434,7 +434,7 @@ async def test_actor_policy_preserves_shared_non_oauth_server(db_session):
         db,
         user,
         mcp_runtime_authorization_policy=MCPRuntimeAuthorizationPolicy(
-            resource_owner_key="toby:slack:41:U1",
+            builtin_oauth_resource_owner_key="toby:slack:41:U1",
             allowed_server_ids=frozenset(),
         ),
     )

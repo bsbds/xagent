@@ -2728,11 +2728,11 @@ def test_failed_mcp_config_refresh_never_reuses_stale_cache():
 
 def test_mcp_runtime_context_switches_turn_and_actor_policy_atomically():
     alice = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:U1",
+        builtin_oauth_resource_owner_key="toby:slack:41:U1",
         allowed_server_ids=frozenset({1}),
     )
     bob = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:U2",
+        builtin_oauth_resource_owner_key="toby:slack:41:U2",
         allowed_server_ids=frozenset({2}),
     )
     cfg = WebToolConfig(

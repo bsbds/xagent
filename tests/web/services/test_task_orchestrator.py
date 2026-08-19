@@ -2553,7 +2553,7 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
     _store_runtime_secret_for_turn(payload.turn_id)
     assert get_ephemeral_runtime_values(payload.turn_id) is not None
     authorization_policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="actor:alice",
+        builtin_oauth_resource_owner_key="actor:alice",
         allowed_server_ids=frozenset({7}),
     )
 

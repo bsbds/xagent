@@ -3343,6 +3343,55 @@ def _catalog_server_has_platform_key(db: Session, server: MCPServer) -> bool:
     return False
 
 
+def _has_non_default_owner_dependencies(
+    db: Session, *, server: MCPServer, user_id: int
+) -> bool:
+    """Preflight every owner-scoped dependency before disconnect mutation."""
+    default_owner = _default_resource_owner_key(user_id)
+    if (
+        db.query(MCPOAuthGrant.id)
+        .filter(
+            MCPOAuthGrant.mcp_server_id == server.id,
+            MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key != default_owner,
+            MCPOAuthGrant.status == "active",
+        )
+        .first()
+        is not None
+    ):
+        return True
+    if (
+        db.query(MCPOAuthFlowState.id)
+        .filter(
+            MCPOAuthFlowState.mcp_server_id == server.id,
+            MCPOAuthFlowState.user_id == user_id,
+            MCPOAuthFlowState.resource_owner_key != default_owner,
+            MCPOAuthFlowState.consumed_at.is_(None),
+        )
+        .first()
+        is not None
+    ):
+        return True
+    if server.transport != "oauth":
+        return False
+
+    from ..models.user_oauth import UserOAuth
+
+    app_info = get_app_by_name(db, str(server.name))
+    actor_oauth_keys = _oauth_keys_for_app(app_info) if app_info else []
+    return bool(
+        actor_oauth_keys
+        and db.query(UserOAuth.id)
+        .filter(
+            UserOAuth.user_id == user_id,
+            UserOAuth.resource_owner_key.isnot(None),
+            UserOAuth.provider.in_(actor_oauth_keys),
+        )
+        .first()
+        is not None
+    )
+
+
 @mcp_router.delete("/servers/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_mcp_server(
     server_id: int,
@@ -3380,7 +3429,11 @@ async def delete_mcp_server(
             )
 
         server_name = server.name
-        non_default_owner_dependency = False
+        if _has_non_default_owner_dependencies(db, server=server, user_id=int(user_id)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="MCP server has non-default owner dependencies",
+            )
 
         from ..services.connector_team_scope import delete_team_connector
 
@@ -3406,19 +3459,6 @@ async def delete_mcp_server(
             if app_info:
                 provider = app_info.get("provider")
                 app_id = app_info.get("id")
-                actor_oauth_keys = _oauth_keys_for_app(app_info)
-                if actor_oauth_keys:
-                    non_default_owner_dependency = (
-                        db.query(UserOAuth.id)
-                        .filter(
-                            UserOAuth.user_id == user_id,
-                            UserOAuth.resource_owner_key.isnot(None),
-                            UserOAuth.provider.in_(actor_oauth_keys),
-                        )
-                        .first()
-                        is not None
-                    )
-
                 # Delete tokens for this specific app. For apps in
                 # APPS_REQUIRING_APP_SCOPED_OAUTH_GRANT this must stay
                 # symmetric with the app-scoped read path (_oauth_keys_for_app):
@@ -3507,32 +3547,6 @@ async def delete_mcp_server(
             MCPOAuthFlowState.user_id == user_id,
             MCPOAuthFlowState.resource_owner_key == default_resource_owner_key,
         ).delete(synchronize_session=False)
-
-        non_default_owner_dependency = non_default_owner_dependency or (
-            db.query(MCPOAuthGrant.id)
-            .filter(
-                MCPOAuthGrant.mcp_server_id == server_id,
-                MCPOAuthGrant.user_id == user_id,
-                MCPOAuthGrant.resource_owner_key != default_resource_owner_key,
-                MCPOAuthGrant.status == "active",
-            )
-            .first()
-            is not None
-        )
-        non_default_owner_dependency = non_default_owner_dependency or (
-            db.query(MCPOAuthFlowState.id)
-            .filter(
-                MCPOAuthFlowState.mcp_server_id == server_id,
-                MCPOAuthFlowState.user_id == user_id,
-                MCPOAuthFlowState.resource_owner_key != default_resource_owner_key,
-                MCPOAuthFlowState.consumed_at.is_(None),
-            )
-            .first()
-            is not None
-        )
-        if non_default_owner_dependency:
-            db.commit()
-            return
 
         # Remove user-server association
         db.delete(user_mcp)

@@ -21,6 +21,8 @@ from xagent.web.api.auth import (
     verify_token,
 )
 from xagent.web.models.database import Base
+from xagent.web.models.mcp import MCPServer, UserMCPServer
+from xagent.web.models.public_mcp import PublicMCPApp
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
 
@@ -108,6 +110,20 @@ def _mock_provider_exchange(
     )
 
 
+@pytest.mark.parametrize("app_id", [None, "", "   "])
+def test_actor_builtin_oauth_start_requires_nonempty_app_id(oauth_db, app_id) -> None:
+    db, user = oauth_db
+    with pytest.raises(ValueError, match="app_id"):
+        start_builtin_oauth_for_resource_owner(
+            provider="custom",
+            app_id=app_id,
+            user=user,
+            resource_owner_key=ACTOR_ALICE,
+            db=db,
+            db_provider=_provider(),
+        )
+
+
 def _trusted_start(db: Session, user: User, owner: str):
     return start_builtin_oauth_for_resource_owner(
         provider="custom",
@@ -160,6 +176,17 @@ def test_callback_persists_separate_actor_rows_for_one_xagent_user(
     oauth_db, monkeypatch
 ) -> None:
     db, user = oauth_db
+    db.add(
+        PublicMCPApp(
+            app_id="calendar",
+            name="Google Calendar",
+            description="Calendar",
+            transport="oauth",
+            provider_name="custom",
+            launch_config={"command": "calendar"},
+        )
+    )
+    db.commit()
     _mock_provider_exchange(monkeypatch)
 
     for owner, code in ((ACTOR_ALICE, "alice"), (ACTOR_BOB, "bob")):
@@ -177,6 +204,16 @@ def test_callback_persists_separate_actor_rows_for_one_xagent_user(
         (ACTOR_BOB, "access:bob"),
     ]
     assert {row.provider_user_id for row in rows} == {"provider-account"}
+    server = db.query(MCPServer).filter(MCPServer.name == "Google Calendar").one()
+    assert (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user.id,
+            UserMCPServer.mcpserver_id == server.id,
+        )
+        .one_or_none()
+        is None
+    )
 
 
 def test_callback_replaces_only_the_same_actor_namespace(oauth_db, monkeypatch) -> None:

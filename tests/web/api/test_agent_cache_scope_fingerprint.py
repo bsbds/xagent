@@ -413,7 +413,7 @@ async def test_cached_agent_service_is_resynced_with_the_turn_execution_scope() 
 @pytest.mark.asyncio
 async def test_cached_agent_switches_mcp_turn_and_actor_policy_together() -> None:
     policy = MCPRuntimeAuthorizationPolicy(
-        resource_owner_key="toby:slack:41:U1",
+        builtin_oauth_resource_owner_key="toby:slack:41:U1",
         allowed_server_ids=frozenset({7}),
     )
 
@@ -452,6 +452,38 @@ async def test_cached_agent_switches_mcp_turn_and_actor_policy_together() -> Non
     assert result is cached_agent
     assert config.calls == [("turn-actor-1", policy)]
     assert cached_agent.invalidate_calls == 1
+
+
+def test_cached_modern_config_clears_actor_policy_without_turn_context() -> None:
+    class TrackingConfig:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object]] = []
+
+        def set_mcp_runtime_context(self, *, turn_id, authorization_policy) -> bool:
+            self.calls.append((turn_id, authorization_policy))
+            return True
+
+    config = TrackingConfig()
+    cached_agent = _CachedAgentWithToolConfig(config)  # type: ignore[arg-type]
+    manager = AgentServiceManager()
+    manager._agents[42] = cached_agent
+
+    manager._sync_mcp_runtime_context(42, None, None)
+
+    assert config.calls == [(None, None)]
+    assert cached_agent.invalidate_calls == 1
+
+
+def test_cached_legacy_config_keeps_none_none_sync_as_safe_noop() -> None:
+    config = MagicMock(spec=["set_connector_runtime_turn_id"])
+    cached_agent = _CachedAgentWithToolConfig(config)  # type: ignore[arg-type]
+    manager = AgentServiceManager()
+    manager._agents[42] = cached_agent
+
+    manager._sync_mcp_runtime_context(42, None, None)
+
+    config.set_connector_runtime_turn_id.assert_not_called()
+    assert cached_agent.invalidate_calls == 0
 
 
 @pytest.mark.asyncio

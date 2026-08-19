@@ -10,6 +10,7 @@ from ...core.tools.adapters.vibe.connector_runtime import (
     ConnectorRuntimeError,
 )
 from .mcp_oauth import MCPOAuthRuntimeError, resolve_mcp_oauth_runtime_auth
+from .user_oauth import normalize_user_oauth_resource_owner_key
 
 HTTP_MCP_TRANSPORTS = frozenset({"sse", "websocket", "streamable_http"})
 
@@ -36,13 +37,15 @@ class MCPRuntimeAuthorizationPolicy:
     configuration and follow their existing shared runtime behavior.
     """
 
-    resource_owner_key: str
+    builtin_oauth_resource_owner_key: str
     allowed_server_ids: frozenset[int]
 
     def __post_init__(self) -> None:
-        owner_key = self.resource_owner_key.strip()
-        if not owner_key:
-            raise ValueError("resource_owner_key must not be blank")
+        owner_key = normalize_user_oauth_resource_owner_key(
+            self.builtin_oauth_resource_owner_key
+        )
+        if owner_key is None:
+            raise ValueError("builtin_oauth_resource_owner_key must not be null")
         server_ids = frozenset(self.allowed_server_ids)
         if any(
             isinstance(server_id, bool)
@@ -51,7 +54,7 @@ class MCPRuntimeAuthorizationPolicy:
             for server_id in server_ids
         ):
             raise ValueError("allowed_server_ids must contain positive integer IDs")
-        object.__setattr__(self, "resource_owner_key", owner_key)
+        object.__setattr__(self, "builtin_oauth_resource_owner_key", owner_key)
         object.__setattr__(self, "allowed_server_ids", server_ids)
 
 

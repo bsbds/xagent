@@ -91,9 +91,16 @@ def delete_scoped_user_oauth_accounts(
     *,
     user_id: int,
     resource_owner_key: str | None,
-    providers: Sequence[str] | None = None,
+    providers: Sequence[str] | None,
 ) -> int:
-    """Delete matching local credentials without committing the caller's session."""
+    """Delete matching local credentials without committing the session.
+
+    ``providers=None`` explicitly deletes every credential in the selected
+    owner namespace, an empty sequence deletes nothing, and a non-empty
+    sequence deletes only those providers. Requiring the argument prevents an
+    omitted filter from silently becoming a delete-all operation. Transaction
+    ownership remains with the caller; this function never commits.
+    """
     query = scoped_user_oauth_query(
         db,
         user_id=user_id,

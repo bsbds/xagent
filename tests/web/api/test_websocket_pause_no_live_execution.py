@@ -47,7 +47,7 @@ async def _run_pause_with_no_live_execution(
     agent_service = MagicMock()
     agent_service.pause_execution = AsyncMock(return_value=False)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_cached_agent_for_control.return_value = agent_service
     connection_manager = MagicMock()
     connection_manager.send_personal_message = AsyncMock()
     connection_manager.broadcast_to_task = AsyncMock()

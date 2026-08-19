@@ -7527,43 +7527,20 @@ async def _handle_pause_task_unserialized(
         task_fields = task_setup_snapshot.task
         task_owner_user_id = int(task_fields.user_id)
         expected_run_id = task_fields.run_id
-        # Off-turn: on an agent-cache hit this only locates the already-
-        # running agent's existing workspace/sandbox to pause it. On a miss,
-        # get_agent_for_task below builds a fresh agent from this value,
-        # which can materialize a workspace directory tree and acquire a
-        # sandbox lease. resolve_execution_scope_off_turn resolves this value
-        # through three distinct outcomes:
-        # - resolver authoritative, snapshot disagrees on a namespace field:
-        #   downgrades to the resolver's own answer (with a warning) instead
-        #   of raising, so the pause still proceeds -- the value here is the
-        #   trusted resolver answer, not the snapshot.
-        # - resolver abstains, snapshot widens the abstention's fallback:
-        #   ExecutionScopeAbstentionMismatchError is re-raised rather than
-        #   downgraded, so the pause is refused outright -- an abstention
-        #   never produced an authoritative value to fall back to.
-        # - resolver abstains, snapshot narrows the abstention's fallback:
-        #   the returned value IS the snapshot (policy fields overlaid from
-        #   the fallback). That is persisted, client-influenceable data, and
-        #   it is trusted here only because it was already validated as a
-        #   narrowing of what the resolver granted, so anything the build
-        #   below materializes from it still lands inside the authorised
-        #   subtree.
-        # Pause schedules no turn, so nothing downstream re-resolves or
-        # corrects a build that happens here.
-        execution_scope = await run_db_io_cancellation_safe(
-            lambda: resolve_execution_scope_off_turn(task_id)
-        )
-
-        # Get agent service (as the task owner)
-        logger.info(f"Getting agent service for task {task_id}")
-        agent_service = await get_agent_manager().get_agent_for_task(
+        # Pause is control-only: never reconstruct tools or MCP connections on
+        # a cache miss. The live executor, if any, is already owner-bound.
+        logger.info(f"Getting cached agent service for task {task_id}")
+        agent_service = get_agent_manager().get_cached_agent_for_control(
             task_id,
-            None,
-            user=task_setup_snapshot.runtime_user,
-            task_setup_snapshot=task_setup_snapshot,
             task_owner_user_id=task_owner_user_id,
-            resolved_execution_scope=execution_scope,
         )
+        if agent_service is None:
+            pause_failure = "No live execution found to pause"
+            message_data["_durable_command_error"] = pause_failure
+            await manager.send_personal_message(
+                {"type": "error", "message": pause_failure}, websocket
+            )
+            return
         logger.info(f"Agent service obtained: {type(agent_service).__name__}")
 
         # Check if agent supports pause functionality

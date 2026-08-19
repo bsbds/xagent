@@ -1596,6 +1596,12 @@ class WebToolConfig(BaseToolConfig):
         """Return structured MCP OAuth runtime diagnostics from the last load."""
         return list(self._mcp_oauth_diagnostics)
 
+    def get_mcp_runtime_authorization_policy(
+        self,
+    ) -> MCPRuntimeAuthorizationPolicy | None:
+        """Return the trusted ephemeral actor policy for delegated execution."""
+        return self._mcp_runtime_authorization_policy
+
     def _get_connector_runtime_for(
         self, connector_type: str, connector_id: int
     ) -> Optional[Dict[str, Any]]:
@@ -3270,6 +3276,7 @@ class WebToolConfig(BaseToolConfig):
                         server,
                         code="actor_policy_requires_builtin_oauth",
                         message="Actor-scoped execution requires a builtin OAuth app",
+                        resource_owner_key=actor_policy.builtin_oauth_resource_owner_key,
                     )
                     self._mcp_oauth_diagnostics.append(policy_diagnostic)
                     return self._build_unavailable_mcp_config(
@@ -3282,6 +3289,7 @@ class WebToolConfig(BaseToolConfig):
                         server,
                         code="actor_policy_server_not_allowed",
                         message="Builtin OAuth server is not authorized for this actor",
+                        resource_owner_key=actor_policy.builtin_oauth_resource_owner_key,
                     )
                     self._mcp_oauth_diagnostics.append(policy_diagnostic)
                     return self._build_unavailable_mcp_config(
@@ -3289,9 +3297,12 @@ class WebToolConfig(BaseToolConfig):
                         reason="actor_policy_server_not_allowed",
                         diagnostic=policy_diagnostic,
                     )
-                # A personal builtin must not consume task-supplied connector
-                # runtime credentials or selectors.
+                # A personal builtin must not consume or retain any
+                # task-supplied connector runtime values. The config mapping
+                # was initialized before catalog classification, so clear both
+                # the local binding input and its detached public snapshot.
                 runtime_values = None
+                config.pop("connector_runtime", None)
             provider_name = app_info.get("provider") or server.name.lower()
 
             # Some oauth records might be saved with the app_id as provider instead of the general provider_name
@@ -3349,7 +3360,8 @@ class WebToolConfig(BaseToolConfig):
                     selected_owner = selection.get("resource_owner_key")
                     if conflicting_keys or (
                         selected_owner is not None
-                        and selected_owner != actor_policy.resource_owner_key
+                        and selected_owner
+                        != actor_policy.builtin_oauth_resource_owner_key
                     ):
                         policy_diagnostic = mcp_oauth_runtime_diagnostic(
                             server,
@@ -3357,6 +3369,7 @@ class WebToolConfig(BaseToolConfig):
                             message=(
                                 "MCP authorization selector conflicts with actor policy"
                             ),
+                            resource_owner_key=actor_policy.builtin_oauth_resource_owner_key,
                         )
                         self._mcp_oauth_diagnostics.append(policy_diagnostic)
                         return self._build_unavailable_mcp_config(
@@ -3368,7 +3381,7 @@ class WebToolConfig(BaseToolConfig):
                     provider_name=provider_name,
                     app_id=app_id,
                     resource_owner_key=(
-                        actor_policy.resource_owner_key
+                        actor_policy.builtin_oauth_resource_owner_key
                         if actor_policy is not None
                         else None
                     ),

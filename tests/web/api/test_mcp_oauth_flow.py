@@ -2201,13 +2201,16 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
     db.refresh(sibling_grant)
 
     own_grant_id = own_grant.id
-    await delete_mcp_server(server.id, current_user=user, db=db)
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_mcp_server(server.id, current_user=user, db=db)
 
-    # F10: a disconnected grant must not just flip to "revoked" and linger —
-    # the row itself (still holding the encrypted access token) is purged.
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "MCP server has non-default owner dependencies"
+    # The conflict is atomic: even the ordinary grant that would normally be
+    # revoked and removed remains untouched.
     assert (
         db.query(MCPOAuthGrant).filter(MCPOAuthGrant.id == own_grant_id).one_or_none()
-        is None
+        is not None
     )
     db.refresh(actor_grant)
     assert actor_grant.status == "active"

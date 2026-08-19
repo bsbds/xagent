@@ -2915,19 +2915,26 @@ class AgentServiceManager:
         self._sync_execution_scope(task_id, scope)
         return self._agents[task_id]
 
+    def get_cached_agent_for_control(
+        self, task_id: int, *, task_owner_user_id: int
+    ) -> Optional[AgentService]:
+        """Return only an owner-matched cached agent for pause/control paths.
+
+        This lookup never reconstructs tools, resolves MCP connections, or
+        mutates per-turn authorization state. A cold pause therefore reports
+        that no live execution exists instead of materializing an untrusted
+        policyless runtime.
+        """
+        if self._agent_owner_ids.get(task_id) != task_owner_user_id:
+            return None
+        return self._agents.get(task_id)
+
     def _sync_mcp_runtime_context(
         self,
         task_id: int,
         connector_runtime_turn_id: Optional[str],
         authorization_policy: MCPRuntimeAuthorizationPolicy | None,
     ) -> None:
-        if not connector_runtime_turn_id and authorization_policy is None:
-            logger.debug(
-                "Skipping MCP runtime context sync for task %s: no turn context",
-                task_id,
-            )
-            return
-
         agent = self._agents.get(task_id)
         if agent is None:
             logger.debug(
@@ -2938,7 +2945,7 @@ class AgentServiceManager:
             )
             return
 
-        tool_config = agent.tool_config
+        tool_config = getattr(agent, "tool_config", None)
         if tool_config is None:
             logger.debug(
                 "Skipping MCP runtime context sync for task %s turn %s: "
@@ -2955,6 +2962,11 @@ class AgentServiceManager:
                 authorization_policy=authorization_policy,
             )
         elif authorization_policy is None:
+            # Legacy configs have no policy slot to clear. Preserve their
+            # historical no-op for an empty context while modern configs above
+            # must observe (None, None) to discard a cached actor policy.
+            if connector_runtime_turn_id is None:
+                return
             changed = tool_config.set_connector_runtime_turn_id(
                 connector_runtime_turn_id
             )
