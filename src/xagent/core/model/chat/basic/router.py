@@ -631,16 +631,36 @@ class RouterLLM(BaseLLM):
                     exc,
                     self._fallback_model,
                 )
-                return self._fallback_model
+                return await self._validated_fallback_model(preferred_input_modalities)
             raise RuntimeError(
                 f"xrouter-llm routing failed: {exc}. "
                 "Set XAGENT_ROUTER_FALLBACK_MODEL to degrade gracefully."
             ) from exc
         if not selected:
             if self._fallback_model:
-                return self._fallback_model
+                return await self._validated_fallback_model(preferred_input_modalities)
             raise RuntimeError("xrouter-llm returned no selected model")
         return str(selected[0])
+
+    async def _validated_fallback_model(
+        self,
+        required_input_modalities: tuple[str, ...],
+    ) -> str:
+        """Return the configured fallback without relaxing hard requirements."""
+        assert self._fallback_model is not None
+        if required_input_modalities:
+            fallback_modalities = await asyncio.to_thread(
+                self._profile_input_modalities,
+                self._fallback_model,
+            )
+            if not set(required_input_modalities).issubset(fallback_modalities):
+                required = ", ".join(required_input_modalities)
+                raise RouterModalityRoutingError(
+                    f"The fallback model {self._fallback_model} does not support "
+                    f"required input modalities ({required}). Choose an explicit "
+                    "compatible model."
+                )
+        return self._fallback_model
 
     def _route_sync(
         self,
@@ -654,7 +674,9 @@ class RouterLLM(BaseLLM):
         conversation's own content; ``advisory_input_modalities`` are
         preferences declared by a task runtime extension. When the installed
         router cannot express modality preferences at all, the hard
-        requirements raise while the advisory ones are simply dropped.
+        requirements raise while the advisory ones are simply dropped. A
+        best-effort router may also decline a combined hard-and-advisory filter;
+        retrying with only the hard requirements preserves that distinction.
         """
         service = _get_service()
         route_kwargs: dict[str, Any] = {"config_name": self._config_name}
@@ -692,7 +714,59 @@ class RouterLLM(BaseLLM):
                 ", ".join(advisory_input_modalities),
             )
         result = service.route(prompt, **route_kwargs)
-        return list(result.get("selected") or [])
+        selected = list(result.get("selected") or [])
+        selected_supports_hard_requirements = self._selected_model_supports_modalities(
+            selected,
+            preferred_input_modalities,
+        )
+        if (
+            preferred_input_modalities
+            and advisory_input_modalities
+            and not selected_supports_hard_requirements
+        ):
+            logger.info(
+                "xrouter selected a model that does not satisfy hard input "
+                "modalities after combining them with advisory preferences; "
+                "retrying with hard requirements only."
+            )
+            result = service.route(
+                prompt,
+                config_name=self._config_name,
+                preferred_input_modalities=preferred_input_modalities,
+            )
+            selected = list(result.get("selected") or [])
+            selected_supports_hard_requirements = (
+                self._selected_model_supports_modalities(
+                    selected,
+                    preferred_input_modalities,
+                )
+            )
+        if preferred_input_modalities and not selected_supports_hard_requirements:
+            requested = ", ".join(preferred_input_modalities)
+            raise RouterModalityRoutingError(
+                "The installed xrouter-llm RoutingService could not enforce input "
+                f"modalities ({requested}). Choose an explicit compatible model."
+            )
+        return selected
+
+    def _selected_model_supports_modalities(
+        self,
+        selected_models: list[str],
+        required_modalities: tuple[str, ...],
+    ) -> bool:
+        """Confirm the selected model accepts the conversation's modalities.
+
+        Xrouter can return a fusion set, but Xagent consumes only its first
+        model. Xrouter also treats modality input as a preference and can fall
+        back to its full candidate set. Validate the model Xagent will use
+        directly instead of relying on optional routing telemetry.
+        """
+        if not required_modalities:
+            return True
+        if not selected_models:
+            return False
+        selected_modalities = self._profile_input_modalities(str(selected_models[0]))
+        return set(required_modalities).issubset(selected_modalities)
 
     @staticmethod
     def _preferred_input_modalities(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 import pytest
@@ -25,6 +26,16 @@ _MANDATORY_REASONING_ERROR = (
     "OpenAI bad request (400): Reasoning is mandatory for this endpoint "
     "and cannot be disabled."
 )
+
+
+def _profiles(
+    modalities_by_model: dict[str, tuple[str, ...]],
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        get=lambda model_id: SimpleNamespace(
+            input_modalities=modalities_by_model[model_id]
+        )
+    )
 
 
 def _tool_schema() -> dict[str, Any]:
@@ -310,6 +321,8 @@ def test_route_sync_forwards_modalities_when_router_supports_them(
     calls: list[dict[str, Any]] = []
 
     class Service:
+        profiles = _profiles({"openai/gpt-5.5": ("text", "image")})
+
         def route(
             self,
             prompt: str,
@@ -343,10 +356,131 @@ def test_route_sync_forwards_modalities_when_router_supports_them(
     ]
 
 
+def test_route_sync_accepts_selected_model_that_supports_hard_modalities(
+    monkeypatch,
+) -> None:
+    """Enforcement depends on the selected profile, not optional telemetry."""
+
+    class Service:
+        profiles = _profiles({"vision/model": ("text", "image")})
+
+        def route(
+            self,
+            prompt: str,
+            *,
+            config_name: str,
+            preferred_input_modalities: tuple[str, ...] = (),
+        ) -> dict[str, Any]:
+            del prompt, config_name, preferred_input_modalities
+            return {"selected": ["vision/model"]}
+
+    monkeypatch.setattr(
+        "xagent.core.model.chat.basic.router._get_service",
+        lambda: Service(),
+    )
+
+    assert RouterLLM()._route_sync("inspect", ("image",)) == ["vision/model"]
+
+
+def test_route_sync_validates_only_the_selected_model_xagent_uses(monkeypatch) -> None:
+    """Xagent consumes the first route result even when xrouter returns fusion."""
+
+    class Service:
+        profiles = _profiles(
+            {
+                "vision/model": ("text", "image"),
+                "text/model": ("text",),
+            }
+        )
+
+        def route(
+            self,
+            prompt: str,
+            *,
+            config_name: str,
+            preferred_input_modalities: tuple[str, ...] = (),
+        ) -> dict[str, Any]:
+            del prompt, config_name, preferred_input_modalities
+            return {"selected": ["vision/model", "text/model"]}
+
+    monkeypatch.setattr(
+        "xagent.core.model.chat.basic.router._get_service",
+        lambda: Service(),
+    )
+
+    assert RouterLLM()._route_sync("inspect", ("image",)) == [
+        "vision/model",
+        "text/model",
+    ]
+
+
+def test_route_sync_rejects_unapplied_hard_modalities(monkeypatch) -> None:
+    """A best-effort router cannot silently relax message requirements."""
+
+    class Service:
+        profiles = _profiles({"text/model": ("text",)})
+
+        def route(
+            self,
+            prompt: str,
+            *,
+            config_name: str,
+            preferred_input_modalities: tuple[str, ...] = (),
+        ) -> dict[str, Any]:
+            del prompt, config_name, preferred_input_modalities
+            return {"selected": ["text/model"]}
+
+    monkeypatch.setattr(
+        "xagent.core.model.chat.basic.router._get_service",
+        lambda: Service(),
+    )
+
+    with pytest.raises(RouterModalityRoutingError, match="could not enforce.*image"):
+        RouterLLM()._route_sync("inspect", ("image",))
+
+
+def test_route_sync_retries_without_advisory_modalities(monkeypatch) -> None:
+    """Advisory preferences may degrade without relaxing hard requirements."""
+
+    calls: list[tuple[str, ...]] = []
+
+    class Service:
+        profiles = _profiles(
+            {
+                "text/model": ("text",),
+                "vision/model": ("text", "image"),
+            }
+        )
+
+        def route(
+            self,
+            prompt: str,
+            *,
+            config_name: str,
+            preferred_input_modalities: tuple[str, ...] = (),
+        ) -> dict[str, Any]:
+            del prompt, config_name
+            calls.append(preferred_input_modalities)
+            hard_only = preferred_input_modalities == ("image",)
+            return {"selected": ["vision/model" if hard_only else "text/model"]}
+
+    monkeypatch.setattr(
+        "xagent.core.model.chat.basic.router._get_service",
+        lambda: Service(),
+    )
+
+    selected = RouterLLM()._route_sync("inspect", ("image",), ("audio",))
+
+    assert selected == ["vision/model"]
+    assert calls == [("audio", "image"), ("image",)]
+
+
 def test_route_sync_forwards_advisory_modalities_when_supported(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 
     class Service:
+        profiles = _profiles({"openai/gpt-5.5": ("text", "audio", "image")})
+
         def route(
             self,
             prompt: str,
@@ -402,6 +536,36 @@ async def test_modality_support_error_is_not_hidden_by_generic_fallback(
 
     with pytest.raises(RouterModalityRoutingError, match="explicit compatible model"):
         await router._select_model(
+            "inspect",
+            preferred_input_modalities=("image",),
+        )
+
+
+@pytest.mark.asyncio
+async def test_generic_router_fallback_cannot_relax_hard_modalities(
+    monkeypatch,
+) -> None:
+    class Service:
+        profiles = _profiles({"fallback/model": ("text",)})
+
+        def route(
+            self,
+            prompt: str,
+            *,
+            config_name: str,
+            preferred_input_modalities: tuple[str, ...] = (),
+        ) -> dict[str, Any]:
+            del prompt, config_name, preferred_input_modalities
+            raise ValueError("predictor unavailable")
+
+    monkeypatch.setenv("XAGENT_ROUTER_FALLBACK_MODEL", "fallback/model")
+    monkeypatch.setattr(
+        "xagent.core.model.chat.basic.router._get_service",
+        lambda: Service(),
+    )
+
+    with pytest.raises(RouterModalityRoutingError, match="fallback/model.*image"):
+        await RouterLLM()._select_model(
             "inspect",
             preferred_input_modalities=("image",),
         )
