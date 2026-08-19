@@ -180,7 +180,7 @@ def test_s3_file_storage_uses_standard_retries_and_bounded_timeouts(
             "read_timeout": 10,
             "retries": {
                 "mode": "standard",
-                "total_max_attempts": 5,
+                "total_max_attempts": 3,
             },
         }
     }

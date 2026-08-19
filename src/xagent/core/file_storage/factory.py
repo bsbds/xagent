@@ -20,7 +20,7 @@ _DEFAULT_S3_CONFIG_KWARGS = {
     "read_timeout": 10,
     "retries": {
         "mode": "standard",
-        "total_max_attempts": 5,
+        "total_max_attempts": 3,
     },
 }
 
