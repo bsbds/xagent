@@ -9,18 +9,14 @@ released only after the worker has settled and can no longer write storage.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from threading import Lock
-from time import monotonic
 
 from ...config import (
     get_file_upload_max_concurrency,
     get_file_upload_queue_timeout_seconds,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class UploadStorageCapacityError(TimeoutError):
@@ -64,9 +60,7 @@ class UploadStorageGate:
                 self._loop = loop
                 return
             if not self._loop.is_closed():
-                raise RuntimeError(
-                    "Upload storage gate does not support concurrent event loops"
-                )
+                raise RuntimeError("Upload storage gate does not support concurrent event loops")
             if self._active or self._waiting:
                 raise RuntimeError(
                     "Upload storage gate cannot leave a closed event loop until "
@@ -84,7 +78,6 @@ class UploadStorageGate:
         """Acquire registration capacity and release it on every scope exit."""
 
         self._prepare_for_loop(asyncio.get_running_loop())
-        wait_started_at = monotonic()
         with self._lifecycle_lock:
             self._waiting += 1
         try:
@@ -101,40 +94,14 @@ class UploadStorageGate:
             with self._lifecycle_lock:
                 self._waiting -= 1
 
-        lease_started_at = monotonic()
         with self._lifecycle_lock:
             self._active += 1
-            active = self._active
-            waiting = self._waiting
-        logger.debug(
-            "Acquired durable upload capacity after %.3f seconds "
-            "(active=%s, waiting=%s, max_concurrency=%s, "
-            "queue_timeout_seconds=%s)",
-            lease_started_at - wait_started_at,
-            active,
-            waiting,
-            self._max_concurrency,
-            self._queue_timeout_seconds,
-        )
         try:
             yield
         finally:
-            lease_seconds = monotonic() - lease_started_at
             with self._lifecycle_lock:
                 self._active -= 1
-                active = self._active
-                waiting = self._waiting
             self._semaphore.release()
-            logger.debug(
-                "Released durable upload capacity after %.3f seconds "
-                "(active=%s, waiting=%s, max_concurrency=%s, "
-                "queue_timeout_seconds=%s)",
-                lease_seconds,
-                active,
-                waiting,
-                self._max_concurrency,
-                self._queue_timeout_seconds,
-            )
 
 
 _gate: UploadStorageGate | None = None
