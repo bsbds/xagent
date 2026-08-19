@@ -152,7 +152,9 @@ def test_local_file_storage_round_trips_file(monkeypatch, tmp_path):
     assert not storage.exists(stored.key)
 
 
-def test_s3_file_storage_uses_bounded_client_timeouts(monkeypatch, tmp_path):
+def test_s3_file_storage_uses_standard_retries_and_bounded_timeouts(
+    monkeypatch, tmp_path
+):
     captured: dict[str, object] = {}
 
     class DummyStorage:
@@ -176,7 +178,10 @@ def test_s3_file_storage_uses_bounded_client_timeouts(monkeypatch, tmp_path):
         "config_kwargs": {
             "connect_timeout": 3,
             "read_timeout": 10,
-            "retries": {"max_attempts": 1},
+            "retries": {
+                "mode": "standard",
+                "total_max_attempts": 3,
+            },
         }
     }
 

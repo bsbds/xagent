@@ -18,7 +18,10 @@ from .storage import FsspecFileStorage
 _DEFAULT_S3_CONFIG_KWARGS = {
     "connect_timeout": 3,
     "read_timeout": 10,
-    "retries": {"max_attempts": 1},
+    "retries": {
+        "mode": "standard",
+        "total_max_attempts": 3,
+    },
 }
 
 
