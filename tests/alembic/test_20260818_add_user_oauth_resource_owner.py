@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -243,6 +244,19 @@ def test_downgrade_refuses_to_collapse_actor_owned_rows(tmp_path) -> None:
         assert "resource_owner_key" in {
             column["name"] for column in inspect(connection).get_columns("user_oauth")
         }
+
+
+def test_upgrade_rejects_dialect_without_partial_unique_indexes_before_inspection() -> (
+    None
+):
+    migration = _migration_module()
+    fake_op = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
+    )
+
+    with patch.object(migration, "op", fake_op):
+        with pytest.raises(RuntimeError, match="partial unique indexes"):
+            migration.upgrade()
 
 
 def test_upgrade_without_user_oauth_table_is_a_noop(tmp_path) -> None:

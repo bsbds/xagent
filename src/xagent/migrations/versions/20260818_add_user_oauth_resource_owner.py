@@ -43,6 +43,17 @@ ACTOR_INDEX = "uq_user_oauth_actor_account"
 LOOKUP_INDEX = "ix_user_oauth_owner_provider"
 ORDINARY_WHERE = sa.text(f"{OWNER_COLUMN} IS NULL")
 ACTOR_WHERE = sa.text(f"{OWNER_COLUMN} IS NOT NULL")
+SUPPORTED_DIALECTS = frozenset({"sqlite", "postgresql"})
+
+
+def _require_partial_unique_index_support() -> str:
+    dialect = op.get_bind().dialect.name
+    if dialect not in SUPPORTED_DIALECTS:
+        raise RuntimeError(
+            "actor-owned builtin OAuth requires partial unique indexes; "
+            f"database dialect {dialect!r} cannot preserve this identity"
+        )
+    return dialect
 
 
 def _table_exists() -> bool:
@@ -98,7 +109,40 @@ def _create_owner_indexes() -> None:
         )
 
 
+def _create_postgresql_owner_indexes_concurrently() -> None:
+    statements = (
+        f"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS {ORDINARY_INDEX} "
+        f"ON {TABLE} (user_id, provider, provider_user_id) "
+        f"WHERE {OWNER_COLUMN} IS NULL",
+        f"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS {ACTOR_INDEX} "
+        f"ON {TABLE} (user_id, {OWNER_COLUMN}, provider, provider_user_id) "
+        f"WHERE {OWNER_COLUMN} IS NOT NULL",
+        f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {LOOKUP_INDEX} "
+        f"ON {TABLE} (user_id, {OWNER_COLUMN}, provider)",
+    )
+    with op.get_context().autocommit_block():
+        for statement in statements:
+            op.execute(sa.text(statement))
+
+    invalid = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT c.relname FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE c.relname IN (:ordinary, :actor, :lookup) "
+                "AND NOT i.indisvalid"
+            ),
+            {"ordinary": ORDINARY_INDEX, "actor": ACTOR_INDEX, "lookup": LOOKUP_INDEX},
+        )
+        .first()
+    )
+    if invalid is not None:
+        raise RuntimeError(f"owner-aware PostgreSQL index is invalid: {invalid[0]}")
+
+
 def upgrade() -> None:
+    dialect = _require_partial_unique_index_support()
     if not _table_exists():
         return
 
@@ -106,21 +150,30 @@ def upgrade() -> None:
     constraints = _constraint_names()
     needs_column = OWNER_COLUMN not in columns
     has_old_constraint = OLD_CONSTRAINT in constraints
-    dialect = op.get_bind().dialect.name
 
-    if dialect == "sqlite" and (needs_column or has_old_constraint):
-        # SQLite cannot drop a named UNIQUE constraint directly. Batch mode
-        # rebuilds the table once while preserving every credential row.
-        with op.batch_alter_table(TABLE) as batch_op:
-            if needs_column:
-                batch_op.add_column(sa.Column(OWNER_COLUMN, sa.String(OWNER_LENGTH)))
-            if has_old_constraint:
-                batch_op.drop_constraint(OLD_CONSTRAINT, type_="unique")
-    else:
+    if dialect == "sqlite":
+        if needs_column or has_old_constraint:
+            # SQLite cannot drop a named UNIQUE constraint directly. Batch mode
+            # rebuilds the table once while preserving every credential row.
+            with op.batch_alter_table(TABLE) as batch_op:
+                if needs_column:
+                    batch_op.add_column(
+                        sa.Column(OWNER_COLUMN, sa.String(OWNER_LENGTH))
+                    )
+                if has_old_constraint:
+                    batch_op.drop_constraint(OLD_CONSTRAINT, type_="unique")
+    elif dialect == "postgresql":
         if needs_column:
             op.add_column(TABLE, sa.Column(OWNER_COLUMN, sa.String(OWNER_LENGTH)))
+        # Keep the owner-blind constraint until all replacement indexes exist
+        # and PostgreSQL reports them valid. This avoids an unprotected window
+        # during concurrent index construction or repair.
+        _create_postgresql_owner_indexes_concurrently()
         if has_old_constraint:
             op.drop_constraint(OLD_CONSTRAINT, TABLE, type_="unique")
+        return
+    else:  # pragma: no cover - rejected before schema inspection above
+        raise AssertionError(f"unsupported dialect: {dialect}")
 
     _create_owner_indexes()
 

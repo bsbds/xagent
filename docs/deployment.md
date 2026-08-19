@@ -81,7 +81,9 @@ Marked tasks do not remain isolated when executed by an older worker. Keep publi
 
 The `user_oauth` table gets a nullable `resource_owner_key` column. Existing rows keep a null value.
 
-Two partial unique indexes replace `uq_user_provider_account`. One index protects ordinary rows. The other index protects actor-owned rows.
+Two partial unique indexes replace `uq_user_provider_account`. One index protects ordinary rows. The other index protects actor-owned rows. SQLite and PostgreSQL are the only supported database dialects for this schema; startup and migration fail before schema creation on other dialects.
+
+On PostgreSQL the replacement indexes are created or repaired with `CONCURRENTLY`, checked through `pg_index.indisvalid`, and only then is the old unique constraint removed. On SQLite the table is rebuilt in batch mode and the partial indexes are installed in the same migration transaction.
 
 A mixed-version deployment is unsafe after actor-owned rows exist. An old worker can read an actor-owned credential without the new owner filter.
 
@@ -130,7 +132,20 @@ WHERE tablename = 'user_oauth'
   );
 ```
 
-The query must return all three index names on PostgreSQL.
+The query must return all three index names on PostgreSQL. Also verify validity (all rows must return `t`):
+
+```sql
+SELECT c.relname, i.indisvalid
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname IN (
+  'uq_user_oauth_ordinary_account',
+  'uq_user_oauth_actor_account',
+  'ix_user_oauth_owner_provider'
+);
+```
+
+For SQLite run `PRAGMA index_list('user_oauth');` and `PRAGMA index_info('<index-name>');`, and inspect `sqlite_master.sql` to confirm the ordinary index has `WHERE resource_owner_key IS NULL` and the actor index has `WHERE resource_owner_key IS NOT NULL`.
 
 After actor builtin OAuth starts, connect the same builtin application for two actors. Make sure that each task receives only its actor credential. Attempt to resume a marked task without its actor policy. Make sure that agent construction rejects it.
 

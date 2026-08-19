@@ -14,6 +14,15 @@ from xagent.db.sqlite import apply_sqlite_concurrency_pragmas
 
 
 class TestTryUpgradeDb:
+    def test_unsupported_dialect_fails_before_fresh_schema_or_migration(self):
+        engine = MagicMock()
+        engine.dialect.name = "mysql"
+
+        with pytest.raises(RuntimeError, match="partial unique indexes"):
+            try_upgrade_db(engine)
+
+        engine.connect.assert_not_called()
+
     def test_postgresql_serializes_startup_migration_before_reading_revision(
         self,
         monkeypatch,

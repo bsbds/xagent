@@ -27,6 +27,21 @@ SQLiteForeignKeyViolation = tuple[
 # Session-level PostgreSQL advisory lock shared by every xagent startup
 # migrator.  The ASCII bytes spell ``XAGENTDB`` and fit in a signed bigint.
 POSTGRES_MIGRATION_ADVISORY_LOCK_ID = 0x584147454E544442
+OWNER_AWARE_UNIQUE_INDEX_DIALECTS = frozenset({"sqlite", "postgresql"})
+
+
+def require_owner_aware_unique_index_dialect(engine: Engine) -> None:
+    """Reject databases that cannot enforce actor/ordinary OAuth identity."""
+    dialect = engine.dialect.name
+    # SQLAlchemy Engine dialect names are always strings. Test doubles that
+    # do not model a dialect remain outside this production invariant.
+    if not isinstance(dialect, str):
+        return
+    if dialect not in OWNER_AWARE_UNIQUE_INDEX_DIALECTS:
+        raise RuntimeError(
+            "actor-owned builtin OAuth requires partial unique indexes; "
+            f"database dialect {dialect!r} is unsupported"
+        )
 
 
 def _set_sqlite_foreign_keys(connection: Connection, *, enabled: bool) -> None:
@@ -392,6 +407,9 @@ def try_upgrade_db(
 ) -> None:
     """Upgrade database to latest migration (or stamp head for brand-new databases)."""
     try:
+        # This precedes both Alembic revision work and the fresh-schema
+        # create_all path that follows try_upgrade_db during application start.
+        require_owner_aware_unique_index_dialect(engine)
         logger.info("Starting database upgrade process")
         if locked_connection is not None:
             _upgrade_db_locked(
