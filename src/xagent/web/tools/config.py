@@ -3629,9 +3629,11 @@ class WebToolConfig(BaseToolConfig):
         from ...web.models.mcp import MCPServer
         from ..services.connector_team_scope import visible_mcp_server_clause
 
-        return self.db.query(MCPServer).filter(
-            visible_mcp_server_clause(self._user_id, team_mcp_ids)
-        ).order_by(MCPServer.id)
+        return (
+            self.db.query(MCPServer)
+            .filter(visible_mcp_server_clause(self._user_id, team_mcp_ids))
+            .order_by(MCPServer.id)
+        )
 
     async def _load_mcp_server_configs(self) -> List[Dict[str, Any]]:
         """Load MCP server configurations visible to this run: the user's
