@@ -75,7 +75,7 @@ Gate new widget and shared-link task creation before rolling back any worker. Ro
 
 Marked tasks do not remain isolated when executed by an older worker. Keep public execution gated during rollback, or complete the forward rollout before those tasks resume.
 
-## 2026-08-18 — Actor-owned OAuth credentials
+## 2026-08-18 — Actor-owned builtin OAuth credentials
 
 ### Deployment impact
 
@@ -85,13 +85,15 @@ Two partial unique indexes replace `uq_user_provider_account`. One index protect
 
 A mixed-version deployment is unsafe after actor-owned rows exist. An old worker can read an actor-owned credential without the new owner filter.
 
-Actor-aware callers stamp a server-owned task marker when the runtime policy must be present. The policy remains ephemeral. Resume and cold reconstruction without it fail closed instead of falling back to ordinary connector authorization.
+Actor-aware callers stamp a server-owned task marker when the builtin OAuth policy must be present. The policy remains ephemeral. Resume and cold reconstruction without it fail closed instead of using an ordinary builtin credential.
+
+Native MCP connectors keep their existing account-level configuration and credential behavior. The actor policy does not change native MCP selection.
 
 ### Prerequisites and configuration
 
 This change has no new environment variable or dependency.
 
-Stop all old API workers and task workers before the migration. Keep trusted actor OAuth callers disabled during the deployment.
+Stop all old API workers and task workers before the migration. Keep trusted actor builtin OAuth callers disabled during the deployment.
 
 ### Deployment and migration steps
 
@@ -100,7 +102,7 @@ Stop all old API workers and task workers before the migration. Keep trusted act
 3. Deploy the new application files without starting the workers.
 4. Run `alembic upgrade head` one time.
 5. Start all API workers and task workers with the new version.
-6. Enable trusted actor OAuth callers only after all workers run the new version.
+6. Enable trusted actor builtin OAuth callers only after all workers run the new version.
 7. Enable new OAuth connections and task execution.
 
 Do not backfill `resource_owner_key`. A null owner identifies an ordinary credential.
@@ -130,7 +132,9 @@ WHERE tablename = 'user_oauth'
 
 The query must return all three index names on PostgreSQL.
 
-After actor OAuth starts, connect the same connector for two actors. Make sure that each task receives only its actor credential. Attempt to resume a marked task without its actor policy and verify that agent construction rejects it.
+After actor builtin OAuth starts, connect the same builtin application for two actors. Make sure that each task receives only its actor credential. Attempt to resume a marked task without its actor policy. Make sure that agent construction rejects it.
+
+Make sure that existing native MCP connectors still use their account-level configuration.
 
 Monitor `actor_policy_conflict`, `actor_policy_server_not_allowed`, and `oauth_token_required` diagnostics. An increase can show an incorrect actor policy or missing credential.
 
