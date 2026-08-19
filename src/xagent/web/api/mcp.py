@@ -2080,6 +2080,8 @@ def list_mcp_apps(
         for row in db.query(MCPOAuthGrant.mcp_server_id)
         .filter(
             MCPOAuthGrant.user_id == current_user.id,
+            MCPOAuthGrant.resource_owner_key
+            == _default_resource_owner_key(cast(int, current_user.id)),
             MCPOAuthGrant.status == "active",
         )
         .all()
@@ -3378,6 +3380,7 @@ async def delete_mcp_server(
             )
 
         server_name = server.name
+        non_default_owner_dependency = False
 
         from ..services.connector_team_scope import delete_team_connector
 
@@ -3403,6 +3406,18 @@ async def delete_mcp_server(
             if app_info:
                 provider = app_info.get("provider")
                 app_id = app_info.get("id")
+                actor_oauth_keys = _oauth_keys_for_app(app_info)
+                if actor_oauth_keys:
+                    non_default_owner_dependency = (
+                        db.query(UserOAuth.id)
+                        .filter(
+                            UserOAuth.user_id == user_id,
+                            UserOAuth.resource_owner_key.isnot(None),
+                            UserOAuth.provider.in_(actor_oauth_keys),
+                        )
+                        .first()
+                        is not None
+                    )
 
                 # Delete tokens for this specific app. For apps in
                 # APPS_REQUIRING_APP_SCOPED_OAUTH_GRANT this must stay
@@ -3455,8 +3470,10 @@ async def delete_mcp_server(
                             UserOAuth.provider == provider,
                         ).delete(synchronize_session=False)
 
-        # Revoke and purge this user's MCP OAuth grants for the server. On a
-        # shared (multi-user) row the server outlives this disconnect, so
+        # Revoke and purge this user's default-owner MCP OAuth grants for the
+        # server. Non-default namespaces can belong to another product and keep
+        # the shared association alive until that product removes them.
+        # On a shared (multi-user) row the server outlives this disconnect, so
         # without this the grant's refresh token would stay usable — and its
         # row would stay stored — until the LAST user disconnects and the
         # cascade finally removes it. Best-effort external revocation first
@@ -3464,11 +3481,13 @@ async def delete_mcp_server(
         # hard delete rather than a "revoked" status flip: a revoked grant
         # row is otherwise never swept, accumulating indefinitely as an
         # inert but secret-bearing row (F10).
+        default_resource_owner_key = _default_resource_owner_key(user_id)
         for grant in (
             db.query(MCPOAuthGrant)
             .filter(
                 MCPOAuthGrant.mcp_server_id == server_id,
                 MCPOAuthGrant.user_id == user_id,
+                MCPOAuthGrant.resource_owner_key == default_resource_owner_key,
                 MCPOAuthGrant.status == "active",
             )
             .all()
@@ -3486,7 +3505,34 @@ async def delete_mcp_server(
         db.query(MCPOAuthFlowState).filter(
             MCPOAuthFlowState.mcp_server_id == server_id,
             MCPOAuthFlowState.user_id == user_id,
+            MCPOAuthFlowState.resource_owner_key == default_resource_owner_key,
         ).delete(synchronize_session=False)
+
+        non_default_owner_dependency = non_default_owner_dependency or (
+            db.query(MCPOAuthGrant.id)
+            .filter(
+                MCPOAuthGrant.mcp_server_id == server_id,
+                MCPOAuthGrant.user_id == user_id,
+                MCPOAuthGrant.resource_owner_key != default_resource_owner_key,
+                MCPOAuthGrant.status == "active",
+            )
+            .first()
+            is not None
+        )
+        non_default_owner_dependency = non_default_owner_dependency or (
+            db.query(MCPOAuthFlowState.id)
+            .filter(
+                MCPOAuthFlowState.mcp_server_id == server_id,
+                MCPOAuthFlowState.user_id == user_id,
+                MCPOAuthFlowState.resource_owner_key != default_resource_owner_key,
+                MCPOAuthFlowState.consumed_at.is_(None),
+            )
+            .first()
+            is not None
+        )
+        if non_default_owner_dependency:
+            db.commit()
+            return
 
         # Remove user-server association
         db.delete(user_mcp)
