@@ -3352,7 +3352,7 @@ async def delete_mcp_server(
     """Delete an MCP server."""
     try:
         manager = DatabaseMCPServerManager(db)
-        user_id = current_user.id
+        user_id = cast(int, current_user.id)
 
         # Check user has access to this server
         result = (
