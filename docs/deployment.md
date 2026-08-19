@@ -83,7 +83,7 @@ The `user_oauth` table gets a nullable `resource_owner_key` column. Existing row
 
 Two partial unique indexes replace `uq_user_provider_account`. One index protects ordinary rows. The other index protects actor-owned rows. SQLite and PostgreSQL are the only supported database dialects for this schema; startup and migration fail before schema creation on other dialects.
 
-On PostgreSQL the migration inspects each replacement index in the system catalogs before use. A missing, invalid, non-unique, reordered, expression-based, wrong-predicate, or otherwise non-exact same-table index is dropped and recreated with `CONCURRENTLY`. The migration rechecks validity, uniqueness and null semantics, access method, ordered keys, included attributes, tablespace/storage options, and the normalized partial predicate for all three indexes before removing the old unique constraint. A same-name relation owned by another table stops the migration rather than dropping an unrelated object. On SQLite the table is rebuilt in batch mode and the partial indexes are installed in the same migration transaction.
+On PostgreSQL the migration creates the replacement indexes transactionally before removing the old unique constraint. A failed statement rolls back the complete schema transition, so a retry starts from the intact old schema. Index creation is not concurrent; keep the database quiesced for the migration. A same-name relation makes the migration fail and roll back rather than being accepted as the required index. On SQLite the migration rejects globally colliding owner-index names before rebuilding the table in batch mode, then creates the partial indexes. Keep SQLite quiesced because the migration does not rely on transactional DDL rollback.
 
 A mixed-version deployment is unsafe after actor-owned rows exist. An old worker can read an actor-owned credential without the new owner filter.
 
@@ -124,7 +124,8 @@ The result must be zero before an actor-aware product creates its first credenti
 ```sql
 SELECT indexname
 FROM pg_indexes
-WHERE tablename = 'user_oauth'
+WHERE schemaname = current_schema()
+  AND tablename = 'user_oauth'
   AND indexname IN (
     'uq_user_oauth_ordinary_account',
     'uq_user_oauth_actor_account',
@@ -138,7 +139,11 @@ The query must return all three index names on PostgreSQL. Also verify validity 
 SELECT c.relname, i.indisvalid
 FROM pg_index i
 JOIN pg_class c ON c.oid = i.indexrelid
-WHERE c.relname IN (
+JOIN pg_class t ON t.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = t.relnamespace
+WHERE n.nspname = current_schema()
+  AND t.relname = 'user_oauth'
+  AND c.relname IN (
   'uq_user_oauth_ordinary_account',
   'uq_user_oauth_actor_account',
   'ix_user_oauth_owner_provider'

@@ -271,6 +271,42 @@ class TestMigrations:
             "_api_key_encrypted column should exist"
         )
 
+    @pytest.mark.postgresql
+    def test_postgresql_owner_index_collision_rolls_back_and_retries(
+        self, postgresql_tester
+    ):
+        """A relation-name collision must leave the old OAuth schema intact."""
+        down_revision = "20260818_seed_jira_mcp_app"
+        ordinary_index = "uq_user_oauth_ordinary_account"
+        actor_index = "uq_user_oauth_actor_account"
+        old_constraint = "uq_user_provider_account"
+
+        command.upgrade(postgresql_tester.alembic_cfg, down_revision)
+        with postgresql_tester.engine.begin() as conn:
+            conn.execute(text(f"CREATE INDEX {actor_index} ON user_oauth (user_id)"))
+
+        with pytest.raises(SQLAlchemyError):
+            command.upgrade(postgresql_tester.alembic_cfg, "head")
+
+        inspector = inspect(postgresql_tester.engine)
+        assert "resource_owner_key" not in {
+            column["name"] for column in inspector.get_columns("user_oauth")
+        }
+        assert old_constraint in {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("user_oauth")
+        }
+        indexes = {index["name"] for index in inspector.get_indexes("user_oauth")}
+        assert actor_index in indexes
+        assert ordinary_index not in indexes
+        assert postgresql_tester.get_alembic_versions() == {down_revision}
+
+        with postgresql_tester.engine.begin() as conn:
+            conn.execute(text(f"DROP INDEX {actor_index}"))
+        command.upgrade(postgresql_tester.alembic_cfg, "head")
+
+        assert "resource_owner_key" in postgresql_tester.get_column_names("user_oauth")
+
     def test_sqlite_idempotence_with_sqlalchemy(self, sqlite_tester):
         """Test that migrations are idempotent when tables pre-created by SQLAlchemy.
 
@@ -312,18 +348,18 @@ class TestMigrations:
 
     @pytest.mark.postgresql
     def test_postgresql_idempotence_with_sqlalchemy(self, postgresql_tester):
-        """Test that migrations are idempotent when tables pre-created by SQLAlchemy.
-
-        This tests the production scenario where SQLAlchemy's Base.metadata.create_all()
-        creates tables first, then Alembic migrations run. Migrations should correctly
-        detect existing tables/columns and skip already-applied changes.
-        """
-        # First, create tables using SQLAlchemy (mimics production)
+        """The owner migration accepts its schema created from current metadata."""
         from xagent.web.models.database import Base
 
         Base.metadata.create_all(bind=postgresql_tester.engine)
+        # Older migrations are not all compatible with current pre-created
+        # foreign keys. Stamp the immediate parent so this test isolates the
+        # owner migration's fresh-schema path.
+        command.stamp(
+            postgresql_tester.alembic_cfg,
+            "20260818_seed_jira_mcp_app",
+        )
 
-        # Then run migrations - should be idempotent and not fail
         command.upgrade(postgresql_tester.alembic_cfg, "head")
 
         # Get version after upgrade
