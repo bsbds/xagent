@@ -127,6 +127,8 @@ const shareGuestIdFromToken = (token: string): string => {
 
 type PublicMessageConfig = Record<string, unknown>
 
+const MAX_TASKLESS_PUBLIC_ATTACHMENTS = 10
+
 function PublicConversationContent({
   authMode,
   routeToken,
@@ -255,6 +257,12 @@ function PublicConversationContent({
     // never uploaded for a turn that cannot start.
     if (workforceId && !message.trim()) {
       return
+    }
+    if (workforceId && files && files.length > MAX_TASKLESS_PUBLIC_ATTACHMENTS) {
+      throw new Error(t("files.tooManyAttachments", {
+        count: files.length,
+        max: MAX_TASKLESS_PUBLIC_ATTACHMENTS,
+      }))
     }
 
     setIsBootstrappingTask(true)
@@ -608,6 +616,7 @@ export function PublicAgentChatPage({
         taskType: params.taskType,
         taskId: params.taskId,
         fallbackError: t("files.uploadFailed"),
+        signal: params.signal,
       }),
   }), [authMode, fileAccess, publicAccessToken, t])
 

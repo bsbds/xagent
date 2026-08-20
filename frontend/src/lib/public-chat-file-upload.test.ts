@@ -38,6 +38,30 @@ describe("uploadPublicChatFiles", () => {
     expect(body.get("task_id")).toBe("42")
   })
 
+  it("forwards the caller-owned abort signal", async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        success: true,
+        files: [{ file_id: "file-1" }],
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+
+    await uploadPublicChatFiles({
+      url: "http://api.local/api/share/files/upload",
+      accessToken: "guest-token",
+      files: [new File(["first"], "first.txt")],
+      taskType: "task",
+      fallbackError: "Upload failed",
+      signal: controller.signal,
+    })
+
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal)
+  })
+
   it("normalizes successful batch metadata", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({

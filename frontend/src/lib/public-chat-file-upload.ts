@@ -12,6 +12,7 @@ interface UploadPublicChatFilesOptions {
   taskType: string
   taskId?: number | string | null
   fallbackError: string
+  signal?: AbortSignal
 }
 
 interface PublicChatUploadResponse {
@@ -40,6 +41,7 @@ export async function uploadPublicChatFiles({
   taskType,
   taskId,
   fallbackError,
+  signal,
 }: UploadPublicChatFilesOptions): Promise<PublicChatUploadedFile[]> {
   if (files.length === 0) return []
 
@@ -54,6 +56,7 @@ export async function uploadPublicChatFiles({
     method: "POST",
     headers: { "Authorization": `Bearer ${accessToken}` },
     body: formData,
+    signal,
   })
   const data = await response.json().catch(() => null) as PublicChatUploadResponse | null
   const uploaded = Array.isArray(data?.files)

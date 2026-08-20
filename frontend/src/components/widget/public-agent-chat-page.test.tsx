@@ -29,7 +29,12 @@ const app = vi.hoisted(() => ({
   },
 }))
 
-const i18n = vi.hoisted(() => ({ t: (key: string) => key }))
+const i18n = vi.hoisted(() => ({
+  t: (key: string, vars?: Record<string, string | number>) =>
+    key === "files.tooManyAttachments"
+      ? `You can attach up to ${vars?.max} files at once (received ${vars?.count}).`
+      : key,
+}))
 
 vi.mock("@/contexts/app-context-chat", () => ({
   AppProvider: ({
@@ -789,9 +794,11 @@ describe("PublicAgentChatPage", () => {
 
     const uploadFiles = app.provider?.transport?.uploadFiles
     expect(uploadFiles).toEqual(expect.any(Function))
+    const controller = new AbortController()
     await expect(uploadFiles?.([first, second], {
       taskId: 42,
       taskType: "task",
+      signal: controller.signal,
     })).resolves.toEqual([
       { file_id: "first-id", name: "first.txt", size: 5, type: "text/plain" },
       { file_id: "second-id", name: "second.txt", size: 6, type: "text/plain" },
@@ -805,6 +812,36 @@ describe("PublicAgentChatPage", () => {
     expect(body.getAll("files")).toEqual([first, second])
     expect(body.get("file")).toBeNull()
     expect(body.get("task_id")).toBe("42")
+    expect(uploadCalls[0][1]?.signal).toBe(controller.signal)
+  })
+
+  it("rejects more than 10 workforce opening attachments before any request", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
+    const files = Array.from(
+      { length: 11 },
+      (_, index) => new File([String(index)], `${index}.txt`),
+    )
+
+    renderSharePage()
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+
+    await expect(app.startScreenProps?.onSend(
+      "first message",
+      files,
+      { mode: "balanced" },
+    )).rejects.toThrow(
+      "You can attach up to 10 files at once (received 11).",
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "https://api.example/api/share/files/upload",
+      expect.anything(),
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "https://api.example/api/share/chat/task/create",
+      expect.anything(),
+    )
   })
 
   it("uploads workforce opening attachments as one multipart batch", async () => {
