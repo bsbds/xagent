@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -68,6 +69,38 @@ def test_remove_agent_releases_per_task_build_lock() -> None:
     manager.remove_agent(42)
 
     assert 42 not in manager._agent_build_locks
+
+
+def test_remove_agent_detaches_runtime_state_when_workspace_cleanup_fails() -> None:
+    """Failed deletion must detach runtime state and permit a direct retry."""
+    manager = AgentServiceManager()
+    agent = MagicMock()
+    agent.workspace.workspace_dir = "/tmp/web_task_42"
+    agent.cleanup_workspace.side_effect = RuntimeError("filesystem unavailable")
+    manager._agents[42] = agent
+    manager._agent_owner_ids[42] = 7
+    manager._agent_sandbox_keys[42] = "user:7"
+    manager._agent_sandbox_providers[42] = object()
+    manager._agent_scope_fingerprints[42] = None
+    manager._agent_evicted_scope_fingerprints[42] = deque([None])
+    manager._agent_build_locks[42] = asyncio.Lock()
+    manager._cleanup_workspace_directory = MagicMock()
+
+    with pytest.raises(RuntimeError, match="filesystem unavailable"):
+        manager.remove_agent(42)
+
+    assert 42 not in manager._agents
+    assert 42 not in manager._agent_owner_ids
+    assert 42 not in manager._agent_sandbox_keys
+    assert 42 not in manager._agent_sandbox_providers
+    assert 42 not in manager._agent_scope_fingerprints
+    assert 42 not in manager._agent_evicted_scope_fingerprints
+    assert 42 not in manager._agent_build_locks
+    assert manager._agent_cleanup_owner_ids[42] == 7
+
+    manager.remove_agent(42)
+    manager._cleanup_workspace_directory.assert_called_once_with(42, 7)
+    assert 42 not in manager._agent_cleanup_owner_ids
 
 
 @pytest.mark.asyncio
