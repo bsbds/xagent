@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, MessageSquarePlus } from "lucide-react"
+import { toast } from "@/components/ui/sonner"
 import { ChatStartScreen } from "@/components/chat/ChatStartScreen"
 import { TaskConversationPanel } from "@/components/task/task-conversation-panel"
 import { AppProvider, useApp, type AppProviderTransportConfig } from "@/contexts/app-context-chat"
@@ -288,6 +289,9 @@ function PublicConversationContent({
           files,
           taskType: "task",
           fallbackError: t("files.uploadFailed"),
+          onFailures: failures => failures.forEach(({ name, error }) => {
+            toast.error(`${name}: ${error}`)
+          }),
         })
         taskPayload.files = uploaded.map((item) => item.file_id)
       }
@@ -617,6 +621,9 @@ export function PublicAgentChatPage({
         taskId: params.taskId,
         fallbackError: t("files.uploadFailed"),
         signal: params.signal,
+        onFailures: failures => failures.forEach(({ name, error }) => {
+          toast.error(`${name}: ${error}`)
+        }),
       }),
   }), [authMode, fileAccess, publicAccessToken, t])
 
