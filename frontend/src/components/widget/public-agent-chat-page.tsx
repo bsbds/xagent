@@ -251,18 +251,18 @@ function PublicConversationContent({
       return
     }
 
+    if (workforceId && files && files.length > MAX_TASKLESS_PUBLIC_ATTACHMENTS) {
+      throw new Error(t("files.tooManyAttachments", {
+        count: files.length,
+        max: MAX_TASKLESS_PUBLIC_ATTACHMENTS,
+      }))
+    }
     // For a workforce share the first turn starts inside task creation, which
     // rejects an empty message server-side (400) — AFTER any files uploaded
     // above would already be orphaned. Guard the empty case here so files are
     // never uploaded for a turn that cannot start.
     if (workforceId && !message.trim()) {
       return
-    }
-    if (workforceId && files && files.length > MAX_TASKLESS_PUBLIC_ATTACHMENTS) {
-      throw new Error(t("files.tooManyAttachments", {
-        count: files.length,
-        max: MAX_TASKLESS_PUBLIC_ATTACHMENTS,
-      }))
     }
 
     setIsBootstrappingTask(true)

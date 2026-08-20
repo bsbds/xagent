@@ -815,6 +815,31 @@ describe("PublicAgentChatPage", () => {
     expect(uploadCalls[0][1]?.signal).toBe(controller.signal)
   })
 
+  it("rejects more than 10 workforce opening attachments with an empty message before any request", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
+    const files = Array.from(
+      { length: 11 },
+      (_, index) => new File([String(index)], `${index}.txt`),
+    )
+
+    renderSharePage()
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+
+    await expect(app.startScreenProps?.onSend(
+      "",
+      files,
+      { mode: "balanced" },
+    )).rejects.toThrow(
+      "You can attach up to 10 files at once (received 11).",
+    )
+
+    const openingRequests = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://api.example/api/share/files/upload"
+        || url === "https://api.example/api/share/chat/task/create",
+    )
+    expect(openingRequests).toHaveLength(0)
+  })
+
   it("rejects more than 10 workforce opening attachments before any request", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
     const files = Array.from(
