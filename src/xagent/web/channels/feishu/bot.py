@@ -280,7 +280,7 @@ class FeishuBotInstance:
             if setup_snapshot is None:
                 raise RuntimeError(f"Task {task_id} disappeared before execution")
             agent_manager = get_agent_manager()
-            agent_service = await agent_manager.get_agent_for_task(
+            agent_service = await agent_manager.get_agent_for_task_operation(
                 task_id,
                 user=setup_snapshot.runtime_user,
                 task_setup_snapshot=setup_snapshot,

@@ -115,6 +115,10 @@ If SQLite reports that an owner-aware schema name exists before migration, query
 
 This release also adds trusted server-side helpers for canonical builtin OAuth definitions, non-owning user visibility, and actor-owned OAuth starts. xagent has no production caller for the actor helper, so merging the change does not create actor rows by itself. Ordinary users can no longer change the global identity, transport, or launch configuration of official builtin OAuth definitions; per-user activation, environment state, credentials, and disconnect behavior remain user-scoped.
 
+An actor-aware caller stamps a server-owned task marker when the actor policy is required. The policy remains ephemeral. A marked task fails closed if the policy is missing.
+
+Native MCP connectors keep their existing account-level behavior. The actor policy does not change native MCP selection.
+
 ### Prerequisites and configuration
 
 This change has no new environment variable or dependency.
@@ -129,22 +133,25 @@ Use the PostgreSQL procedure for production. Use the SQLite procedure only for l
 
 #### SQLite local development
 
-1. Stop local processes that use the database.
-2. If the local data must be preserved, create a verified backup.
-3. Update the local application files.
-4. Record `PRAGMA foreign_key_check;` and `SELECT count(*) FROM gmail_watch_states;`.
-5. Run `alembic upgrade head` one time.
-6. Run both queries again. Make sure that the foreign-key result has no new row. Make sure that the watch-state count is unchanged.
-7. Verify the schema.
-8. Resume the local processes.
+1. Keep trusted actor callers disabled.
+2. Stop local processes that use the database.
+3. If the local data must be preserved, create a verified backup.
+4. Update the local application files.
+5. Record `PRAGMA foreign_key_check;` and `SELECT count(*) FROM gmail_watch_states;`.
+6. Run `alembic upgrade head` one time.
+7. Run both queries again. Make sure that the foreign-key result has no new row. Make sure that the watch-state count is unchanged.
+8. Verify the schema and local process version.
+9. Resume the local processes. Then enable trusted actor callers.
 
 #### PostgreSQL production
 
-1. Pause OAuth reads and writes that access `user_oauth`, and make sure no long transaction holds a lock on the table.
-2. Run `alembic upgrade head` one time. Already-running old workers can continue non-OAuth work while the transactional DDL runs, but an old worker that starts or restarts after the schema revision advances will fail startup because it does not recognize the new revision. Prevent old-version restarts and autoscaling during this window, or ensure every replacement starts from the owner-aware image.
-3. Resume ordinary OAuth writes after the migration commits.
-4. Roll every API and task worker to the owner-aware version.
-5. Verify the schema and make sure no old worker remains.
+1. Keep trusted actor callers disabled.
+2. Pause OAuth reads and writes that access `user_oauth`, and make sure no long transaction holds a lock on the table.
+3. Run `alembic upgrade head` one time. Already-running old workers can continue non-OAuth work while the transactional DDL runs, but an old worker that starts or restarts after the schema revision advances will fail startup because it does not recognize the new revision. Prevent old-version restarts and autoscaling during this window, or ensure every replacement starts from the owner-aware image.
+4. Resume ordinary OAuth writes after the migration commits.
+5. Roll every API and task worker to the owner-aware version.
+6. Verify the schema and make sure no old worker remains.
+7. Enable trusted actor callers.
 
 Do not backfill `resource_owner_key`. A null owner identifies an ordinary credential.
 
@@ -157,7 +164,8 @@ The xagent merge is dormant. If a trusted downstream product activates the helpe
 3. Verify that the account link is active and non-owning and that no team link was created by the user-visibility helper.
 4. Enable the downstream caller.
 5. Complete one actor OAuth flow and verify that its `resource_owner_key` is non-null.
-6. Verify that the callback did not create or reactivate another personal MCP association and did not run ordinary post-commit OAuth side effects.
+6. Verify that a new actor task contains `__xagent_mcp_runtime_authorization_policy_required: true`.
+7. Verify that the callback did not create or reactivate another personal MCP association and did not run ordinary post-commit OAuth side effects.
 
 ### Verification and monitoring
 
@@ -213,7 +221,19 @@ The result must be zero. A nonzero result identifies an orphan watch, a user mis
 
 Verify existing cloud-storage, Gmail, and builtin OAuth connections. Confirm that non-null-owner rows do not appear in ordinary catalog, token, or trigger paths.
 
-After actor setup is enabled, connect the same builtin application for two actor keys. Confirm that the stored rows remain separate and that reconnecting one actor replaces only that actor's row.
+After actor setup is enabled, connect the same builtin application for two actor keys. Make sure that the stored rows remain separate.
+
+Make sure that each marked task receives only its actor credential. Attempt a marked cold reconstruction without the policy. Make sure that reconstruction fails.
+
+Make sure that existing native MCP connectors still use their account-level configuration.
+
+Configure the task tracer for production. Aggregate the `mcp_load_summary` trace event. Monitor these failure reasons:
+
+- `actor_policy_required`
+- `actor_policy_selector_not_supported`
+- `actor_policy_requires_builtin_oauth`
+- `actor_policy_server_not_allowed`
+- `oauth_token_required`
 
 Verify that a non-admin custom-server create or update carrying `config.auth.app_id` is rejected. Verify that an ordinary historical owner cannot change an official builtin definition's global transport or launch fields but can still toggle and disconnect their own association.
 
@@ -221,19 +241,24 @@ For a fail-closed smoke test in a non-production database, change an actor-allow
 
 ### Rollback
 
-Disable every downstream actor OAuth caller before rollback. If no actor-owned row exists, the downgrade remains available. The downgrade keeps the `user_id -> users.id ON DELETE CASCADE` FK. The previous application model also requires this cascade.
+The downgrade keeps the `user_id -> users.id ON DELETE CASCADE` FK. The previous application model also requires this cascade.
 
-1. For PostgreSQL, stop all production workers. For SQLite, stop local processes that use the database.
-2. If local SQLite data must be preserved, create a current database backup.
-3. For a non-disposable SQLite database, run `PRAGMA integrity_check;` against the backup. Record `SELECT count(*) FROM gmail_watch_states;`. The integrity result must be `ok`.
-4. Run `alembic downgrade 20260818_seed_stripe_mcp_app`.
-5. Run `alembic current`. The command must report only `20260818_seed_stripe_mcp_app`. The Stripe catalog seed remains installed.
-6. For SQLite, run `PRAGMA integrity_check;` and `PRAGMA foreign_key_check;`. Require `ok` and no foreign-key violations.
-7. For a non-disposable SQLite database, run `SELECT count(*) FROM gmail_watch_states;`. Require the count that step 3 recorded.
-8. For SQLite, inspect `PRAGMA table_info('user_oauth');`. The result must not contain `resource_owner_key`.
-9. For SQLite, inspect `PRAGMA index_list('user_oauth');` and each `PRAGMA index_info('<index-name>');` result. One unique index must cover `(user_id, provider, provider_user_id)`.
-10. For PostgreSQL, deploy the old version. For SQLite, return to the previous local application version.
+1. Disable all trusted actor callers and all marked-task creation.
+2. Stop execution of tasks with `__xagent_mcp_runtime_authorization_policy_required` set to `true`.
+3. Drain, cancel, or remediate each marked task before deploying an old worker.
+4. Make sure that no old worker can receive a marked task.
+5. If actor rows exist, revoke and remove each credential with an approved procedure. Do not merge actor credentials into the ordinary namespace.
+6. For PostgreSQL, stop all production workers. For SQLite, stop local processes that use the database.
+7. If local SQLite data must be preserved, create a current database backup.
+8. For a non-disposable SQLite database, run `PRAGMA integrity_check;` against the backup. Record `SELECT count(*) FROM gmail_watch_states;`. The integrity result must be `ok`.
+9. Run `alembic downgrade 20260818_seed_stripe_mcp_app`.
+10. Run `alembic current`. The command must report only `20260818_seed_stripe_mcp_app`. The Stripe catalog seed remains installed.
+11. For SQLite, run `PRAGMA integrity_check;` and `PRAGMA foreign_key_check;`. Require `ok` and no foreign-key violations.
+12. For a non-disposable SQLite database, run `SELECT count(*) FROM gmail_watch_states;`. Require the count that step 8 recorded.
+13. For SQLite, inspect `PRAGMA table_info('user_oauth');`. The result must not contain `resource_owner_key`.
+14. For SQLite, inspect `PRAGMA index_list('user_oauth');` and each `PRAGMA index_info('<index-name>');` result. One unique index must cover `(user_id, provider, provider_user_id)`.
+15. For PostgreSQL, deploy the old version. For SQLite, return to the previous local application version.
+
+The migration refuses the downgrade if a non-null owner row exists. Complete step 5 before you retry the downgrade.
 
 SQLite can commit each schema operation separately during a batch-table rebuild. If a downgrade fails, do not retry against the changed database. For a disposable local database, delete and recreate it through normal application startup. Otherwise, restore the verified backup. Make sure that `alembic current` reports the owner-aware revision before you retry the downgrade.
-
-The migration refuses the downgrade if a non-null owner row exists. If actor rows exist, revoke and remove each credential with an approved procedure. Do not merge actor credentials into the ordinary namespace. Then retry the downgrade.

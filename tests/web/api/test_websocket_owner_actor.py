@@ -199,8 +199,22 @@ def _patched_manager_and_agent():
         captured["task_owner_user_id"] = task_owner_user_id
         return agent_service
 
+    def _get_cached_agent_for_control(task_id, *, task_owner_user_id):
+        captured["task_owner_user_id"] = task_owner_user_id
+        return agent_service
+
     mgr = MagicMock()
     mgr.get_agent_for_task = AsyncMock(side_effect=_get_agent_for_task)
+
+    async def _get_agent_for_task_operation(task_id, **kwargs):
+        return await _get_agent_for_task(task_id, None, **kwargs)
+
+    mgr.get_agent_for_task_operation = AsyncMock(
+        side_effect=_get_agent_for_task_operation
+    )
+    mgr.get_cached_agent_for_control = MagicMock(
+        side_effect=_get_cached_agent_for_control
+    )
 
     ws_manager = MagicMock()
     ws_manager.send_personal_message = AsyncMock()
@@ -1059,7 +1073,10 @@ async def test_running_chat_message_is_persisted_before_resume(db_session) -> No
         return True
 
     agent.post_user_message = AsyncMock(side_effect=post_user_message)
-    mgr = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    mgr = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),
@@ -1135,7 +1152,10 @@ async def test_legacy_continuation_runtime_fails_closed_without_side_effects(
     agent = MagicMock()
     agent.supports_live_control.return_value = False
     agent.get_dag_pattern.return_value = legacy_pattern
-    mgr = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    mgr = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),
@@ -1228,7 +1248,9 @@ async def test_running_chat_message_uses_one_offloop_scope_and_no_request_sessio
         claim_threads.append(threading.get_ident())
         return _claim_user_message_delivery_isolated(**kwargs)  # type: ignore[arg-type]
 
-    async def get_agent_for_task(_task_id: int, db: object, **kwargs: object) -> object:
+    async def get_agent_for_task(
+        _task_id: int, db: object = None, **kwargs: object
+    ) -> object:
         manager_calls.append(
             (
                 db,
@@ -1243,7 +1265,8 @@ async def test_running_chat_message_uses_one_offloop_scope_and_no_request_sessio
         return agent
 
     agent_manager = MagicMock(
-        get_agent_for_task=AsyncMock(side_effect=get_agent_for_task)
+        get_agent_for_task=AsyncMock(side_effect=get_agent_for_task),
+        get_agent_for_task_operation=AsyncMock(side_effect=get_agent_for_task),
     )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
@@ -1311,7 +1334,10 @@ async def test_deferred_chat_message_is_acked_after_durable_command_commit(
     agent.supports_live_control.return_value = True
     agent.get_dag_pattern.return_value = None
     agent.post_user_message = AsyncMock(return_value=False)
-    mgr = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    mgr = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),
@@ -1391,7 +1417,10 @@ async def test_live_lease_injection_degrades_to_deferred_on_checkpoint_unavailab
     agent.post_user_message = AsyncMock(
         side_effect=CheckpointUnavailableError("checkpoint query failed")
     )
-    mgr = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    mgr = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),
@@ -1476,7 +1505,10 @@ async def test_live_lease_injection_rejects_delivery_on_corrupt_or_refused(
     agent.supports_live_control.return_value = True
     agent.get_dag_pattern.return_value = None
     agent.post_user_message = AsyncMock(side_effect=error)
-    mgr = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    mgr = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),
@@ -1535,7 +1567,10 @@ async def test_resume_registration_failure_keeps_injected_delivery_pending(
     agent.supports_live_control.return_value = True
     agent.get_dag_pattern.return_value = None
     agent.post_user_message = AsyncMock(return_value=True)
-    mgr = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    mgr = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),
@@ -1613,7 +1648,10 @@ async def test_live_marker_failure_after_registered_handoff_is_still_accepted(
     with (
         patch(
             "xagent.web.api.chat.get_agent_manager",
-            return_value=MagicMock(get_agent_for_task=AsyncMock(return_value=agent)),
+            return_value=MagicMock(
+                get_agent_for_task=AsyncMock(return_value=agent),
+                get_agent_for_task_operation=AsyncMock(return_value=agent),
+            ),
         ),
         patch("xagent.web.api.websocket.manager", ws_manager),
         patch("xagent.web.api.websocket.background_task_manager", bg_mgr),
@@ -1669,7 +1707,10 @@ async def test_live_close_failure_after_registered_handoff_is_still_accepted(
     with (
         patch(
             "xagent.web.api.chat.get_agent_manager",
-            return_value=MagicMock(get_agent_for_task=AsyncMock(return_value=agent)),
+            return_value=MagicMock(
+                get_agent_for_task=AsyncMock(return_value=agent),
+                get_agent_for_task_operation=AsyncMock(return_value=agent),
+            ),
         ),
         patch("xagent.web.api.websocket.manager", ws_manager),
         patch("xagent.web.api.websocket.background_task_manager", bg_mgr),
@@ -1729,7 +1770,10 @@ async def test_live_close_cancellation_does_not_abort_registered_handoff(
     with (
         patch(
             "xagent.web.api.chat.get_agent_manager",
-            return_value=MagicMock(get_agent_for_task=AsyncMock(return_value=agent)),
+            return_value=MagicMock(
+                get_agent_for_task=AsyncMock(return_value=agent),
+                get_agent_for_task_operation=AsyncMock(return_value=agent),
+            ),
         ),
         patch("xagent.web.api.websocket.manager", ws_manager),
         patch("xagent.web.api.websocket.background_task_manager", bg_mgr),
@@ -1941,7 +1985,10 @@ async def test_live_marker_cancellation_does_not_cancel_registered_handoff(
     with (
         patch(
             "xagent.web.api.chat.get_agent_manager",
-            return_value=MagicMock(get_agent_for_task=AsyncMock(return_value=agent)),
+            return_value=MagicMock(
+                get_agent_for_task=AsyncMock(return_value=agent),
+                get_agent_for_task_operation=AsyncMock(return_value=agent),
+            ),
         ),
         patch("xagent.web.api.websocket.manager", ws_manager),
         patch("xagent.web.api.websocket.background_task_manager", bg_mgr),
@@ -2210,7 +2257,10 @@ async def test_live_control_delivery_failure_pool_timeout_is_not_retried(
     agent.supports_live_control.return_value = True
     agent.get_dag_pattern.return_value = None
     agent.post_user_message = AsyncMock(side_effect=RuntimeError("inject failed"))
-    mgr = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    mgr = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),
@@ -2274,7 +2324,10 @@ async def test_delivery_failure_persistence_drains_before_cancellation(
     agent.supports_live_control.return_value = True
     agent.get_dag_pattern.return_value = None
     agent.post_user_message = AsyncMock(side_effect=RuntimeError("inject failed"))
-    agent_manager = MagicMock(get_agent_for_task=AsyncMock(return_value=agent))
+    agent_manager = MagicMock(
+        get_agent_for_task=AsyncMock(return_value=agent),
+        get_agent_for_task_operation=AsyncMock(return_value=agent),
+    )
     ws_manager = MagicMock(
         broadcast_to_task=AsyncMock(),
         send_personal_message=AsyncMock(),

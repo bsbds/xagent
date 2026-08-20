@@ -378,6 +378,34 @@ async def test_missing_catalog_provider_never_falls_back_to_server_name(db_sessi
 
 
 @pytest.mark.asyncio
+async def test_required_actor_policy_fails_before_builtin_oauth_resolution(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    resolver_calls = 0
+
+    async def forbidden_resolver(_request: TokenRequest) -> ResolvedToken | None:
+        nonlocal resolver_calls
+        resolver_calls += 1
+        return None
+
+    set_oauth_token_resolver_hook(forbidden_resolver)
+    tool_config = _tool_config(
+        db,
+        user,
+        authorization_policy_required=True,
+    )
+
+    configs = await tool_config.get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_required",
+    )
+    assert resolver_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_actor_policy_injects_only_the_exact_builtin_oauth_owner(db_session):
     db, user = db_session
     server = _add_oauth_server(db, user, launch_config=_launch_config())

@@ -456,9 +456,8 @@ async def _resume_input_required_a2a_task(
         async def inject_user_message() -> tuple[Any, bool]:
             from .chat import get_agent_manager
 
-            agent_service = await get_agent_manager().get_agent_for_task(
+            agent_service = await get_agent_manager().get_agent_for_task_operation(
                 task_id,
-                None,
                 task_owner_user_id=task_owner_user_id,
             )
             posted = await agent_service.post_user_message(

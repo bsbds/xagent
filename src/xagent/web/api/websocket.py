@@ -7,6 +7,7 @@ import re
 import shutil
 import time
 import uuid
+from collections.abc import Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -125,6 +126,7 @@ from ..services.hot_path_cache import (
     task_cache_ttl_seconds,
     web_task_history_key,
 )
+from ..services.mcp_runtime import MCPBuiltinOAuthActorPolicy
 from ..services.task_command_transport import (
     COMMAND_FAILED,
     COMMAND_ID_PATTERN,
@@ -167,6 +169,7 @@ from ..services.task_lease_service import (
     stop_task_lease_heartbeat,
 )
 from ..services.task_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
     SELECTED_FILE_IDS_AGENT_CONFIG_KEY,
     task_extension_bindings_from_agent_config,
 )
@@ -2413,6 +2416,7 @@ async def execute_task_background(
     resolved_execution_scope: Union[
         ExecutionScope, None, ExecutionScopeNotProvided
     ] = EXECUTION_SCOPE_NOT_PROVIDED,
+    mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
 ) -> None:
     """Execute one task without checking out a DB connection on the event loop.
 
@@ -2484,6 +2488,7 @@ async def execute_task_background(
                 connector_runtime_turn_id=context_dict.get("turn_id")
                 if isinstance(context_dict.get("turn_id"), str)
                 else None,
+                mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
                 resolved_execution_scope=execution_scope,
             )
             if hasattr(agent_service, "set_outbound_message_handler"):
@@ -5882,9 +5887,8 @@ async def _handle_chat_message_unserialized(
                 )
                 if task_setup_snapshot is None:
                     raise ValueError(f"Task {task_id} is no longer available")
-                agent_service = await get_agent_manager().get_agent_for_task(
+                agent_service = await get_agent_manager().get_agent_for_task_operation(
                     task_id,
-                    None,
                     user=task_setup_snapshot.runtime_user,
                     task_setup_snapshot=task_setup_snapshot,
                     task_owner_user_id=task_owner_user_id,
@@ -7524,43 +7528,44 @@ async def _handle_pause_task_unserialized(
         task_fields = task_setup_snapshot.task
         task_owner_user_id = int(task_fields.user_id)
         expected_run_id = task_fields.run_id
-        # Off-turn: on an agent-cache hit this only locates the already-
-        # running agent's existing workspace/sandbox to pause it. On a miss,
-        # get_agent_for_task below builds a fresh agent from this value,
-        # which can materialize a workspace directory tree and acquire a
-        # sandbox lease. resolve_execution_scope_off_turn resolves this value
-        # through three distinct outcomes:
-        # - resolver authoritative, snapshot disagrees on a namespace field:
-        #   downgrades to the resolver's own answer (with a warning) instead
-        #   of raising, so the pause still proceeds -- the value here is the
-        #   trusted resolver answer, not the snapshot.
-        # - resolver abstains, snapshot widens the abstention's fallback:
-        #   ExecutionScopeAbstentionMismatchError is re-raised rather than
-        #   downgraded, so the pause is refused outright -- an abstention
-        #   never produced an authoritative value to fall back to.
-        # - resolver abstains, snapshot narrows the abstention's fallback:
-        #   the returned value IS the snapshot (policy fields overlaid from
-        #   the fallback). That is persisted, client-influenceable data, and
-        #   it is trusted here only because it was already validated as a
-        #   narrowing of what the resolver granted, so anything the build
-        #   below materializes from it still lands inside the authorised
-        #   subtree.
-        # Pause schedules no turn, so nothing downstream re-resolves or
-        # corrects a build that happens here.
-        execution_scope = await run_db_io_cancellation_safe(
-            lambda: resolve_execution_scope_off_turn(task_id)
+        task_agent_config = getattr(task_fields, "agent_config", None)
+        policy_required = (
+            isinstance(task_agent_config, Mapping)
+            and task_agent_config.get(MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY)
+            is True
         )
-
-        # Get agent service (as the task owner)
-        logger.info(f"Getting agent service for task {task_id}")
-        agent_service = await get_agent_manager().get_agent_for_task(
-            task_id,
-            None,
-            user=task_setup_snapshot.runtime_user,
-            task_setup_snapshot=task_setup_snapshot,
-            task_owner_user_id=task_owner_user_id,
-            resolved_execution_scope=execution_scope,
-        )
+        if policy_required:
+            # A marked task may use only the live runtime that already carries
+            # its ephemeral actor policy. Reconstructing tools on a cache miss
+            # would create a policyless credential-selection path.
+            logger.info(f"Getting cached agent service for task {task_id}")
+            agent_service = get_agent_manager().get_cached_agent_for_control(
+                task_id,
+                task_owner_user_id=task_owner_user_id,
+            )
+            if agent_service is None:
+                pause_failure = "No live execution found to pause"
+                message_data["_durable_command_error"] = pause_failure
+                await manager.send_personal_message(
+                    {"type": "error", "message": pause_failure}, websocket
+                )
+                return
+        else:
+            # Preserve the historical ordinary-task behavior. A cache miss may
+            # reconstruct the task runtime, so resolve the off-turn execution
+            # scope before calling the ordinary agent builder.
+            execution_scope = await run_db_io_cancellation_safe(
+                lambda: resolve_execution_scope_off_turn(task_id)
+            )
+            logger.info(f"Getting agent service for task {task_id}")
+            agent_service = await get_agent_manager().get_agent_for_task(
+                task_id,
+                None,
+                user=task_setup_snapshot.runtime_user,
+                task_setup_snapshot=task_setup_snapshot,
+                task_owner_user_id=task_owner_user_id,
+                resolved_execution_scope=execution_scope,
+            )
         logger.info(f"Agent service obtained: {type(agent_service).__name__}")
 
         # Check if agent supports pause functionality
@@ -7940,9 +7945,8 @@ async def _handle_resume_task_unserialized(
                 )
                 return
 
-        agent_service = await get_agent_manager().get_agent_for_task(
+        agent_service = await get_agent_manager().get_agent_for_task_operation(
             task_id,
-            None,
             user=task_setup_snapshot.runtime_user,
             task_setup_snapshot=task_setup_snapshot,
             task_owner_user_id=task_owner_user_id,

@@ -15,6 +15,7 @@ through the resolver path and pin:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import deque
 from contextlib import ExitStack
@@ -36,6 +37,10 @@ from xagent.web.models.agent import AgentStatus
 from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.user import User
 from xagent.web.services.llm_utils import AgentRuntimeFields
+from xagent.web.services.mcp_runtime import (
+    MCPBuiltinOAuthActorPolicy,
+    MCPBuiltinOAuthActorPolicyRequiredError,
+)
 from xagent.web.services.task_setup_snapshot import (
     RuntimeUserFields,
     TaskSetupSnapshot,
@@ -135,6 +140,81 @@ async def _call(manager: AgentServiceManager, **kwargs: Any) -> None:
         # Downstream stubs may raise after the cache decision under test;
         # the assertions below inspect the cache maps directly.
         pass
+
+
+@pytest.mark.asyncio
+async def test_marked_operation_selects_cached_agent_under_build_lock() -> None:
+    manager = AgentServiceManager()
+    old_agent = MagicMock()
+    new_agent = MagicMock()
+    manager._agents[42] = old_agent
+    manager._agent_owner_ids[42] = 1
+    manager._agent_scope_fingerprints[42] = scope_fingerprint(SCOPE_A)
+    manager._mcp_policy_required_task_ids.add(42)
+    manager._agent_build_locks[42] = asyncio.Lock()
+    scope_resolution_started = asyncio.Event()
+    release_scope_resolution = asyncio.Event()
+    replacement_completed = asyncio.Event()
+
+    async def resolve_scope(*_args: Any, **_kwargs: Any) -> ExecutionScope:
+        scope_resolution_started.set()
+        await release_scope_resolution.wait()
+        return SCOPE_A
+
+    async def replace_cached_agent() -> None:
+        async with manager._agent_build_locks[42]:
+            manager._agents[42] = new_agent
+            manager._agent_owner_ids[42] = 1
+            manager._agent_scope_fingerprints[42] = scope_fingerprint(SCOPE_A)
+            replacement_completed.set()
+
+    with patch("xagent.web.api.chat._run_agent_runtime_db_io", new=resolve_scope):
+        operation = asyncio.create_task(
+            manager.get_agent_for_task_operation(
+                task_id=42,
+                task_owner_user_id=1,
+            )
+        )
+        await scope_resolution_started.wait()
+        replacement = asyncio.create_task(replace_cached_agent())
+        await asyncio.sleep(0)
+        try:
+            assert replacement_completed.is_set() is False
+        finally:
+            release_scope_resolution.set()
+        assert await operation is old_agent
+        await replacement
+
+    assert manager._agents[42] is new_agent
+
+
+@pytest.mark.asyncio
+async def test_marked_operation_rejects_cached_agent_after_scope_change() -> None:
+    manager = AgentServiceManager()
+    stale_agent = MagicMock()
+    manager._agents[42] = stale_agent
+    manager._agent_owner_ids[42] = 1
+    manager._agent_sandbox_keys[42] = "user:1:tenant-a"
+    manager._agent_sandbox_providers[42] = object()
+    manager._agent_scope_fingerprints[42] = scope_fingerprint(SCOPE_A)
+    manager._mcp_policy_required_task_ids.add(42)
+
+    with pytest.raises(
+        MCPBuiltinOAuthActorPolicyRequiredError,
+        match="execution scope changed",
+    ):
+        await manager.get_agent_for_task_operation(
+            task_id=42,
+            task_owner_user_id=1,
+            resolved_execution_scope=SCOPE_B,
+        )
+
+    assert 42 not in manager._agents
+    assert 42 not in manager._agent_owner_ids
+    assert 42 not in manager._agent_sandbox_keys
+    assert 42 not in manager._agent_sandbox_providers
+    assert 42 not in manager._agent_scope_fingerprints
+    assert manager.get_cached_agent_for_control(42, task_owner_user_id=1) is None
 
 
 @pytest.mark.asyncio
@@ -349,6 +429,11 @@ class _ScopeTrackingToolConfig:
         self.scope = scope
         self.set_calls: list[ExecutionScope] = []
 
+    def set_mcp_runtime_context(
+        self, *, turn_id: str | None, authorization_policy: object | None
+    ) -> bool:
+        return False
+
     def set_execution_scope(self, scope: ExecutionScope) -> bool:
         self.set_calls.append(scope)
         self.scope = scope
@@ -406,6 +491,71 @@ async def test_cached_agent_service_is_resynced_with_the_turn_execution_scope() 
     assert result is cached_agent
     assert tool_config.scope is scope_b
     assert tool_config.set_calls == [scope_b]
+    assert cached_agent.invalidate_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_agent_switches_mcp_turn_and_actor_policy_together() -> None:
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:U1",
+        allowed_builtin_oauth_server_ids=frozenset({7}),
+    )
+
+    class TrackingConfig:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str | None, MCPBuiltinOAuthActorPolicy | None]] = []
+
+        def set_mcp_runtime_context(
+            self,
+            *,
+            turn_id: str | None,
+            authorization_policy: MCPBuiltinOAuthActorPolicy | None,
+        ) -> bool:
+            self.calls.append((turn_id, authorization_policy))
+            return True
+
+        def set_execution_scope(self, _scope: ExecutionScope | None) -> bool:
+            return False
+
+    config = TrackingConfig()
+    cached_agent = _CachedAgentWithToolConfig(config)  # type: ignore[arg-type]
+    manager = AgentServiceManager()
+    manager._agents[42] = cached_agent
+    manager._agent_owner_ids[42] = 1
+    manager._agent_scope_fingerprints[42] = scope_fingerprint(SCOPE_A)
+
+    result = await manager.get_agent_for_task(
+        task_id=42,
+        db=_build_db_mock(_make_task_row()),
+        user=_make_user(),
+        task_setup_snapshot=_build_snapshot(),
+        connector_runtime_turn_id="turn-actor-1",
+        mcp_runtime_authorization_policy=policy,
+        resolved_execution_scope=SCOPE_A,
+    )
+
+    assert result is cached_agent
+    assert config.calls == [("turn-actor-1", policy)]
+    assert cached_agent.invalidate_calls == 1
+
+
+def test_cached_modern_config_clears_actor_policy_without_turn_context() -> None:
+    class TrackingConfig:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object]] = []
+
+        def set_mcp_runtime_context(self, *, turn_id, authorization_policy) -> bool:
+            self.calls.append((turn_id, authorization_policy))
+            return True
+
+    config = TrackingConfig()
+    cached_agent = _CachedAgentWithToolConfig(config)  # type: ignore[arg-type]
+    manager = AgentServiceManager()
+    manager._agents[42] = cached_agent
+
+    manager._sync_mcp_runtime_context(42, None, None)
+
+    assert config.calls == [(None, None)]
     assert cached_agent.invalidate_calls == 1
 
 

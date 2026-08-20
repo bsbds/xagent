@@ -38,6 +38,7 @@ from xagent.web.models.agent import AgentStatus
 from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.user import User
 from xagent.web.services.llm_utils import AgentRuntimeFields
+from xagent.web.services.mcp_runtime import MCPBuiltinOAuthActorPolicy
 from xagent.web.services.task_lease_service import TaskLease
 from xagent.web.services.task_setup_snapshot import (
     RuntimeUserFields,
@@ -211,6 +212,10 @@ async def test_snapshot_path_skips_task_and_user_queries() -> None:
         ),
     )
 
+    authorization_policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="actor:alice",
+        allowed_builtin_oauth_server_ids=frozenset({7}),
+    )
     with _Patches(_common_patches(db, agent_service)):
         try:
             await execute_task_background(
@@ -220,6 +225,7 @@ async def test_snapshot_path_skips_task_and_user_queries() -> None:
                 agent_manager=agent_manager,
                 task_owner_user_id=1,
                 task_setup_snapshot=snapshot,
+                mcp_runtime_authorization_policy=authorization_policy,
             )
         except Exception:
             # Downstream finalize stubs may raise; the query counts
@@ -240,6 +246,12 @@ async def test_snapshot_path_skips_task_and_user_queries() -> None:
     ]
     assert forwarded_snapshot is snapshot
     assert forwarded_snapshot.task.source == "trigger"
+    assert (
+        agent_manager.get_agent_for_task.await_args.kwargs[
+            "mcp_runtime_authorization_policy"
+        ]
+        is authorization_policy
+    )
 
 
 @pytest.mark.asyncio

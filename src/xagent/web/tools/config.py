@@ -90,6 +90,7 @@ UNAVAILABLE_MCP_CREDENTIAL_MESSAGE = "MCP server credentials are unavailable."
 # after loading and must not be admitted here by sharing one broad constant.
 MCP_UNAVAILABLE_REASONS = frozenset(
     {
+        "actor_policy_required",
         "actor_policy_selector_not_supported",
         "actor_policy_builtin_oauth_definition_invalid",
         "actor_policy_requires_builtin_oauth",
@@ -1238,6 +1239,7 @@ class WebToolConfig(BaseToolConfig):
         execution_scope: Optional[Any] = None,
         connector_runtime_turn_id: Optional[str] = None,
         mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
+        authorization_policy_required: bool = False,
         mcp_failure_policy: MCPFailurePolicy = MCPFailurePolicy.BEST_EFFORT,
         mcp_load_summary_tracer: Optional[Any] = None,
         mcp_load_summary_trace_task_id: Optional[str] = None,
@@ -1321,6 +1323,11 @@ class WebToolConfig(BaseToolConfig):
             )
         self._connector_runtime_turn_id = connector_runtime_turn_id
         self._mcp_runtime_authorization_policy = mcp_runtime_authorization_policy
+        # Persisted task policy requirements cannot be inferred from an
+        # optional ephemeral policy. This construction-time bit is immutable
+        # across cached turn switches and keeps required-policy enforcement
+        # adjacent to builtin OAuth credential selection.
+        self._authorization_policy_required = bool(authorization_policy_required)
         self._connector_runtime_view: Optional[Dict[str, Any]] = None
         self._mcp_oauth_diagnostics: List[Dict[str, Any]] = []
         self._explicit_vision_model = vision_model
@@ -3309,6 +3316,19 @@ class WebToolConfig(BaseToolConfig):
 
         # Handle OAuth credentials
         if server.transport == "oauth":
+            if self._authorization_policy_required and actor_policy is None:
+                policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_required",
+                    message="Builtin OAuth execution requires an actor policy",
+                )
+                self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                return self._build_unavailable_mcp_config(
+                    server=server,
+                    reason="actor_policy_required",
+                    diagnostic=policy_diagnostic,
+                )
+
             # Find corresponding OAuth account
             # The provider might be linkedin, google, etc. based on the app config
             from ...web.mcp_apps import get_app_for_mcp_server

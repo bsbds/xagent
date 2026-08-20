@@ -666,7 +666,7 @@ def test_follow_up_infers_context_for_input_required_task() -> None:
     agent_service = MagicMock()
     agent_service.post_user_message = AsyncMock(side_effect=post_user_message)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     begin_turn = AsyncMock()
     with (
         patch(
@@ -747,7 +747,7 @@ def test_checkpoint_resume_schedule_failure_exactly_restores_waiting_task() -> N
     agent_service = MagicMock()
     agent_service.post_user_message = AsyncMock(return_value=True)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     scheduled_lease: dict[str, object] = {}
 
     def fail_schedule(*, task_lease: TaskLease, **_kwargs: object) -> None:
@@ -907,7 +907,7 @@ def test_message_send_closes_the_legacy_resume_interaction_row_on_successful_inj
     agent_service = MagicMock()
     agent_service.post_user_message = AsyncMock(return_value=True)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     begin_turn = AsyncMock()
     with (
         patch(
@@ -994,7 +994,7 @@ async def test_a2a_handover_restores_input_required_on_unreadable_checkpoint() -
         side_effect=CheckpointUnavailableError("checkpoint store unavailable")
     )
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
 
     with patch(
         "xagent.web.api.chat.get_agent_manager",
@@ -1052,7 +1052,7 @@ def test_recovered_paused_checkpoint_resumes_without_transcript_fallback() -> No
     agent_service = MagicMock()
     agent_service.post_user_message = AsyncMock(return_value=True)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     begin_turn = AsyncMock()
     with (
         patch(
@@ -1147,7 +1147,9 @@ async def test_untagged_checkpoint_is_not_resumed_without_an_exact_run() -> None
         agent_service = MagicMock()
         agent_service.post_user_message = AsyncMock(side_effect=post_user_message)
         agent_manager = MagicMock()
-        agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+        agent_manager.get_agent_for_task_operation = AsyncMock(
+            return_value=agent_service
+        )
         with patch(
             "xagent.web.api.chat.get_agent_manager",
             return_value=agent_manager,
@@ -1253,7 +1255,7 @@ def test_failed_follow_up_restores_input_required_status() -> None:
     agent_service = MagicMock()
     agent_service.post_user_message = AsyncMock(return_value=False)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     with (
         patch(
             "xagent.web.api.chat.get_agent_manager",
@@ -1327,7 +1329,7 @@ def test_failed_follow_up_leaves_a_still_active_question_and_marker_untouched() 
     agent_service = MagicMock()
     agent_service.post_user_message = AsyncMock(return_value=False)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     with patch(
         "xagent.web.api.chat.get_agent_manager",
         return_value=agent_manager,
@@ -1456,7 +1458,7 @@ def test_checkpoint_resume_exception_restores_input_required_status() -> None:
         side_effect=RuntimeError("checkpoint callback failed")
     )
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     with patch(
         "xagent.web.api.chat.get_agent_manager",
         return_value=agent_manager,
@@ -1538,7 +1540,7 @@ def test_checkpoint_read_error_maps_to_distinct_status_and_restores_waiting(
     agent_service = MagicMock()
     agent_service.post_user_message = AsyncMock(side_effect=error)
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     with patch(
         "xagent.web.api.chat.get_agent_manager",
         return_value=agent_manager,
@@ -1578,7 +1580,7 @@ def test_checkpoint_access_refused_reuses_existing_running_task_message() -> Non
         side_effect=CheckpointAccessRefusedError("active lease is not bound")
     )
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     with patch(
         "xagent.web.api.chat.get_agent_manager",
         return_value=agent_manager,
@@ -1624,7 +1626,7 @@ def test_checkpoint_access_refused_reason_gets_a_distinct_message(
         side_effect=CheckpointAccessRefusedError(f"refused for {reason}", reason=reason)
     )
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     with patch(
         "xagent.web.api.chat.get_agent_manager",
         return_value=agent_manager,
@@ -1672,7 +1674,7 @@ def test_checkpoint_read_error_unknown_subclass_is_treated_as_retryable() -> Non
         side_effect=_UnknownCheckpointReadError("unrecognized checkpoint failure")
     )
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     with patch(
         "xagent.web.api.chat.get_agent_manager",
         return_value=agent_manager,

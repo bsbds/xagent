@@ -1260,7 +1260,9 @@ async def test_successful_slack_turn_reuses_channel_runtime(
     )
 
     class FakeAgentManager:
-        async def get_agent_for_task(self, *_args: Any, **_kwargs: Any) -> Any:
+        async def get_agent_for_task_operation(
+            self, *_args: Any, **_kwargs: Any
+        ) -> Any:
             return agent_service
 
         async def execute_task(self, **_kwargs: Any) -> dict[str, Any]:

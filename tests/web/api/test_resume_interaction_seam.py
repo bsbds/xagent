@@ -223,6 +223,9 @@ async def test_legacy_resume_without_a_receipt_is_refused_with_an_active_row(
         )
         agent_manager = MagicMock()
         agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+        agent_manager.get_agent_for_task_operation = AsyncMock(
+            return_value=agent_service
+        )
         stack.enter_context(
             patch.object(chat_api, "get_agent_manager", lambda: agent_manager)
         )
@@ -293,6 +296,9 @@ async def test_legacy_resume_without_a_receipt_is_refused_on_the_fallback_path(
         )
         agent_manager = MagicMock()
         agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+        agent_manager.get_agent_for_task_operation = AsyncMock(
+            return_value=agent_service
+        )
         stack.enter_context(
             patch.object(chat_api, "get_agent_manager", lambda: agent_manager)
         )
@@ -449,6 +455,9 @@ async def test_receipts_the_seam_cannot_verify_are_refused(
         )
         agent_manager = MagicMock()
         agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+        agent_manager.get_agent_for_task_operation = AsyncMock(
+            return_value=agent_service
+        )
         stack.enter_context(
             patch.object(chat_api, "get_agent_manager", lambda: agent_manager)
         )
@@ -529,6 +538,9 @@ async def test_resume_with_a_matching_receipt_is_not_refused(
         )
         agent_manager = MagicMock()
         agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+        agent_manager.get_agent_for_task_operation = AsyncMock(
+            return_value=agent_service
+        )
         stack.enter_context(
             patch.object(chat_api, "get_agent_manager", lambda: agent_manager)
         )
@@ -610,6 +622,9 @@ async def test_stale_run_active_row_does_not_trip_the_seam(
         )
         agent_manager = MagicMock()
         agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+        agent_manager.get_agent_for_task_operation = AsyncMock(
+            return_value=agent_service
+        )
         stack.enter_context(
             patch.object(chat_api, "get_agent_manager", lambda: agent_manager)
         )

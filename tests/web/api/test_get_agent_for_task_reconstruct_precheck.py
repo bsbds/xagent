@@ -31,6 +31,7 @@ What this test pins:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -238,6 +239,94 @@ def _stub_downstream(manager: AgentServiceManager):
 
 
 @pytest.mark.asyncio
+async def test_reconstruction_publishes_owner_with_cached_agent_before_await() -> None:
+    manager = AgentServiceManager()
+    user = _make_user()
+    task = _make_task(TaskStatus.PAUSED, agent_id=7)
+    snapshot = _build_snapshot(task, user, trace_event=_Fake())
+    db = _build_db(task, agent=_make_agent(), user=user)
+    cached_agent = MagicMock()
+    cached_agent.tool_config.set_mcp_runtime_context.return_value = False
+    cached_agent.tool_config.set_execution_scope.return_value = False
+    published = asyncio.Event()
+    release = asyncio.Event()
+
+    async def reconstruct(*_args, **_kwargs) -> None:
+        manager._agents[42] = cached_agent
+        published.set()
+        await release.wait()
+
+    with patch.object(
+        manager,
+        "_reconstruct_agent_from_history",
+        side_effect=reconstruct,
+    ):
+        build = asyncio.create_task(
+            manager.get_agent_for_task(
+                task_id=42,
+                db=db,
+                user=user,
+                task_setup_snapshot=snapshot,
+                resolved_execution_scope=None,
+            )
+        )
+        await published.wait()
+        try:
+            assert (
+                manager.get_cached_agent_for_control(42, task_owner_user_id=1)
+                is cached_agent
+            )
+        finally:
+            release.set()
+        assert await build is cached_agent
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconstruction_clears_partial_runtime_cache() -> None:
+    manager = AgentServiceManager()
+    user = _make_user()
+    task = _make_task(TaskStatus.PAUSED, agent_id=7)
+    snapshot = _build_snapshot(task, user, trace_event=_Fake())
+    db = _build_db(task, agent=_make_agent(), user=user)
+    cached_agent = MagicMock()
+    published = asyncio.Event()
+
+    async def reconstruct(*_args, **_kwargs) -> None:
+        manager._agents[42] = cached_agent
+        manager._agent_sandbox_keys[42] = "task:42"
+        manager._agent_sandbox_providers[42] = object()
+        manager._agent_scope_fingerprints[42] = None
+        published.set()
+        await asyncio.Future()
+
+    with patch.object(
+        manager,
+        "_reconstruct_agent_from_history",
+        side_effect=reconstruct,
+    ):
+        build = asyncio.create_task(
+            manager.get_agent_for_task(
+                task_id=42,
+                db=db,
+                user=user,
+                task_setup_snapshot=snapshot,
+                resolved_execution_scope=None,
+            )
+        )
+        await published.wait()
+        build.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await build
+
+    assert 42 not in manager._agents
+    assert 42 not in manager._agent_owner_ids
+    assert 42 not in manager._agent_sandbox_keys
+    assert 42 not in manager._agent_sandbox_providers
+    assert 42 not in manager._agent_scope_fingerprints
+    assert manager.get_cached_agent_for_control(42, task_owner_user_id=1) is None
+
+
+@pytest.mark.asyncio
 async def test_running_with_no_history_skips_reconstruct() -> None:
     """The pre-check hot case: brand-new SDK task is RUNNING but has zero
     prior state, so reconstruct must be skipped.
@@ -335,6 +424,8 @@ async def test_running_with_prior_trace_event_runs_reconstruct() -> None:
         db,
         scope=None,
         task_setup_snapshot=snapshot,
+        connector_runtime_turn_id=None,
+        mcp_runtime_authorization_policy=None,
     )
     snapshot_loader.assert_called_once_with(42, None)
 
@@ -458,6 +549,8 @@ async def test_running_with_dag_plan_runs_reconstruct() -> None:
         db,
         scope=None,
         task_setup_snapshot=snapshot,
+        connector_runtime_turn_id=None,
+        mcp_runtime_authorization_policy=None,
     )
     snapshot_loader.assert_called_once_with(42, None)
 
@@ -505,6 +598,8 @@ async def test_paused_with_no_history_still_runs_reconstruct() -> None:
         db,
         scope=None,
         task_setup_snapshot=snapshot,
+        connector_runtime_turn_id=None,
+        mcp_runtime_authorization_policy=None,
     )
     snapshot_loader.assert_called_once_with(42, None)
 
@@ -548,6 +643,8 @@ async def test_waiting_for_user_with_no_history_still_runs_reconstruct() -> None
         db,
         scope=None,
         task_setup_snapshot=snapshot,
+        connector_runtime_turn_id=None,
+        mcp_runtime_authorization_policy=None,
     )
     snapshot_loader.assert_called_once_with(42, None)
 
@@ -567,9 +664,15 @@ async def test_reconstruct_return_path_syncs_connector_runtime_turn() -> None:
         def __init__(self) -> None:
             self.turn_ids: list[str] = []
 
-        def set_connector_runtime_turn_id(self, turn_id: str) -> bool:
-            self.turn_ids.append(turn_id)
+        def set_mcp_runtime_context(
+            self, *, turn_id: str | None, authorization_policy: Any
+        ) -> bool:
+            if turn_id is not None:
+                self.turn_ids.append(turn_id)
             return True
+
+        def set_execution_scope(self, _scope: Any) -> bool:
+            return False
 
     class _Agent:
         def __init__(self) -> None:
@@ -586,6 +689,8 @@ async def test_reconstruct_return_path_syncs_connector_runtime_turn() -> None:
         _db: Any,
         scope: Any = None,
         task_setup_snapshot: TaskSetupSnapshot | None = None,
+        connector_runtime_turn_id: str | None = None,
+        mcp_runtime_authorization_policy: Any = None,
     ) -> None:
         assert task_setup_snapshot is snapshot
         manager._agents[task_id] = reconstructed_agent

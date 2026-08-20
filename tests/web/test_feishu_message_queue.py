@@ -148,7 +148,7 @@ async def test_channel_failure_suppresses_stale_error_after_exact_settlement_rej
     )
 
     class FakeAgentManager:
-        async def get_agent_for_task(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        async def get_agent_for_task_operation(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             return agent_service
 
         async def execute_task(self, **_kwargs):  # type: ignore[no-untyped-def]
@@ -288,7 +288,7 @@ async def test_successful_channel_turn_persists_user_before_exact_assistant_sett
     )
 
     class FakeAgentManager:
-        async def get_agent_for_task(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        async def get_agent_for_task_operation(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             return agent_service
 
         async def execute_task(self, **_kwargs):  # type: ignore[no-untyped-def]

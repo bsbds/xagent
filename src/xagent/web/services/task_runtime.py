@@ -81,6 +81,12 @@ TASK_RUNTIME_BINDINGS_AGENT_CONFIG_KEY = "runtime_extension_bindings"
 # constant names the key so the sanitizer and both boundaries refer to the
 # same string.
 SELECTED_FILE_IDS_AGENT_CONFIG_KEY = "selected_file_ids"
+# Server-owned marker requiring an ephemeral builtin-OAuth actor policy for
+# every execution build of this task. It belongs here because it is persisted
+# in ``Task.agent_config`` and participates in client-config sanitization.
+MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY = (
+    "__xagent_mcp_runtime_authorization_policy_required"
+)
 # Keys in ``tasks.agent_config`` that only the server may write. Task-create
 # request bodies carry a free-form ``agent_config`` dict that endpoints copy
 # wholesale, so anything the server later reads back as authoritative has to
@@ -167,6 +173,11 @@ SELECTED_FILE_IDS_AGENT_CONFIG_KEY = "selected_file_ids"
 # recomputed list rather than only dropping the client's, and keeping it means
 # the substitution does not depend on this set's contents.
 #
+# The MCP actor-policy requirement marker is also server-owned. Trusted
+# embedders stamp it only after resolving an actor; accepting it from a client
+# could deny that client's own task but cannot grant access. Reserving it still
+# keeps the security contract one-way and makes persisted task policy auditable.
+#
 # The public-channel identity/quota markers (#1108) qualify under the same
 # three checks. The widget/share run quota reads ``auth_mode`` and the entity
 # ids back as authoritative at the ``execute_task`` chokepoint (the id selects
@@ -187,6 +198,7 @@ CLIENT_RESERVED_AGENT_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         TASK_RUNTIME_BINDINGS_AGENT_CONFIG_KEY,
         EXECUTION_SCOPE_AGENT_CONFIG_KEY,
+        MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
         SELECTED_FILE_IDS_AGENT_CONFIG_KEY,
         FILE_OPERATION_ACCESS_VERSION_KEY,
         "auth_mode",

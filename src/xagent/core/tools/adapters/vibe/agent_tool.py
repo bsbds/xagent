@@ -1734,6 +1734,7 @@ class AgentTool(AbstractBaseTool):
         target_allow_cross_user_agent_ids: bool = False,
         runtime_metadata: Optional[dict[str, Any]] = None,
         execution_scope: Optional[Any] = None,
+        mcp_runtime_authorization_policy: Optional[Any] = None,
         file_operation_access_version: Any = None,
     ):
         """
@@ -1796,6 +1797,7 @@ class AgentTool(AbstractBaseTool):
             target_allow_cross_user_agent_ids
         )
         self._runtime_metadata = dict(runtime_metadata or {})
+        self._mcp_runtime_authorization_policy = mcp_runtime_authorization_policy
         self._file_operation_access_version = file_operation_access_version
         self._agent_call_stack = _normalize_agent_ids(agent_call_stack) or []
         if agent_id not in self._agent_call_stack:
@@ -2253,6 +2255,12 @@ class AgentTool(AbstractBaseTool):
                     "durable_storage_segments": _durable_storage_segments,
                 },
                 execution_scope=self._execution_scope,
+                mcp_runtime_authorization_policy=(
+                    self._mcp_runtime_authorization_policy
+                ),
+                authorization_policy_required=(
+                    self._mcp_runtime_authorization_policy is not None
+                ),
                 # Delegated sub-agents stay closed: identity here is restored
                 # from a persisted workforce snapshot with no re-authorization
                 # at consumption, so opening team connector visibility would
@@ -2500,6 +2508,7 @@ def build_published_agent_tools_from_records(
     parent_tracer: Optional[Any] = None,
     agent_call_stack: Optional[list[int]] = None,
     execution_scope: Optional[Any] = None,
+    mcp_runtime_authorization_policy: Optional[Any] = None,
     file_operation_access_version: Any = None,
 ) -> list[AbstractBaseTool]:
     """Construct AgentTool instances from ORM-free worker results."""
@@ -2587,6 +2596,7 @@ def build_published_agent_tools_from_records(
             target_allow_cross_user_agent_ids=allow_cross_user_agent_ids,
             runtime_metadata=runtime_metadata,
             execution_scope=execution_scope,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
             file_operation_access_version=file_operation_access_version,
         )
         tools.append(tool)
@@ -2611,6 +2621,7 @@ def get_published_agents_tools(
     parent_tracer: Optional[Any] = None,
     agent_call_stack: Optional[list[int]] = None,
     execution_scope: Optional[Any] = None,
+    mcp_runtime_authorization_policy: Optional[Any] = None,
     file_operation_access_version: Any = None,
 ) -> list[AbstractBaseTool]:
     """
@@ -2672,6 +2683,7 @@ def get_published_agents_tools(
             parent_tracer=parent_tracer,
             agent_call_stack=agent_call_stack,
             execution_scope=execution_scope,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
             file_operation_access_version=file_operation_access_version,
         )
 
@@ -2734,6 +2746,11 @@ async def create_agent_tools(config: "WebToolConfig") -> list[AbstractBaseTool]:
             execution_scope=config.get_execution_scope()
             if hasattr(config, "get_execution_scope")
             else None,
+            mcp_runtime_authorization_policy=(
+                config.get_mcp_runtime_authorization_policy()
+                if hasattr(config, "get_mcp_runtime_authorization_policy")
+                else None
+            ),
             file_operation_access_version=(config.get_workspace_config() or {}).get(
                 FILE_OPERATION_ACCESS_VERSION_KEY
             ),

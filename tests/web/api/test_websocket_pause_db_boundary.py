@@ -27,6 +27,9 @@ from xagent.web.services.task_execution_controller import (
     StaleTaskRunError,
     TaskControlState,
 )
+from xagent.web.services.task_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
+)
 
 
 @pytest.fixture()
@@ -187,7 +190,8 @@ async def test_pause_survives_a_scope_authority_mismatch(
     finally:
         websocket_api._clear_task_pause_accepted(task_id)
 
-    # The pause went through on the resolver's answer instead of raising.
+    # The ordinary pause retains the historical reconstruction path and uses
+    # the resolver's authoritative scope instead of raising on disagreement.
     agent_service.pause_execution.assert_awaited_once_with()
     assert (
         agent_manager.get_agent_for_task.await_args.kwargs[
@@ -195,6 +199,92 @@ async def test_pause_survives_a_scope_authority_mismatch(
         ].sandbox_key_suffix
         == "from-resolver"
     )
+
+
+@pytest.mark.asyncio
+async def test_marked_warm_pause_uses_owner_matched_cached_control_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = 47
+    owner_id = 7
+    snapshot = SimpleNamespace(
+        task=SimpleNamespace(
+            user_id=owner_id,
+            status=TaskStatus.RUNNING,
+            run_id="marked-run",
+            agent_config={MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True},
+        ),
+        runtime_user=SimpleNamespace(id=owner_id, is_admin=False),
+    )
+    manager = chat_api.AgentServiceManager()
+    cached_agent = MagicMock()
+    cached_agent.pause_execution = AsyncMock(return_value=True)
+    manager._agents[task_id] = cached_agent
+    manager._agent_owner_ids[task_id] = owner_id
+    connection_manager = MagicMock()
+    connection_manager.send_personal_message = AsyncMock()
+    connection_manager.broadcast_to_task = AsyncMock()
+
+    monkeypatch.setattr(
+        snapshot_module, "load_task_setup_snapshot_sync", lambda *a, **k: snapshot
+    )
+    monkeypatch.setattr(chat_api, "get_agent_manager", lambda: manager)
+    monkeypatch.setattr(websocket_api, "manager", connection_manager)
+    monkeypatch.setattr(
+        websocket_api, "_apply_pause_requested_isolated", lambda *a, **k: True
+    )
+
+    try:
+        await websocket_api._handle_pause_task_unserialized(
+            MagicMock(),
+            task_id,
+            {"user": SimpleNamespace(id=owner_id, is_admin=False)},
+        )
+    finally:
+        websocket_api._clear_task_pause_accepted(task_id)
+
+    cached_agent.pause_execution.assert_awaited_once_with()
+    connection_manager.broadcast_to_task.assert_awaited_once()
+    assert manager._agents[task_id] is cached_agent
+
+
+@pytest.mark.asyncio
+async def test_marked_cold_pause_does_not_build_or_reconstruct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = 48
+    owner_id = 7
+    snapshot = SimpleNamespace(
+        task=SimpleNamespace(
+            user_id=owner_id,
+            status=TaskStatus.RUNNING,
+            run_id="marked-cold-run",
+            agent_config={MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True},
+        ),
+        runtime_user=SimpleNamespace(id=owner_id, is_admin=False),
+    )
+    manager = chat_api.AgentServiceManager()
+    build_spy = AsyncMock(side_effect=AssertionError("cold pause must not build"))
+    monkeypatch.setattr(manager, "get_agent_for_task", build_spy)
+    connection_manager = MagicMock()
+    connection_manager.send_personal_message = AsyncMock()
+    connection_manager.broadcast_to_task = AsyncMock()
+    monkeypatch.setattr(
+        snapshot_module, "load_task_setup_snapshot_sync", lambda *a, **k: snapshot
+    )
+    monkeypatch.setattr(chat_api, "get_agent_manager", lambda: manager)
+    monkeypatch.setattr(websocket_api, "manager", connection_manager)
+
+    await websocket_api._handle_pause_task_unserialized(
+        MagicMock(),
+        task_id,
+        {"user": SimpleNamespace(id=owner_id, is_admin=False)},
+    )
+
+    build_spy.assert_not_awaited()
+    assert manager._agents == {}
+    connection_manager.send_personal_message.assert_awaited_once()
+    connection_manager.broadcast_to_task.assert_not_awaited()
 
 
 def _running_task(db_session: Session, *, run_id: str = "run-1") -> Task:

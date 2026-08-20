@@ -504,9 +504,8 @@ async def reply_to_task(
         async def inject_user_message() -> tuple[Any, bool]:
             from .. import chat
 
-            agent_service = await chat.get_agent_manager().get_agent_for_task(
+            agent_service = await chat.get_agent_manager().get_agent_for_task_operation(
                 task_id,
-                None,
                 task_owner_user_id=ctx.task_owner_user_id,
             )
             posted = await agent_service.post_user_message(

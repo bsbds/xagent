@@ -140,7 +140,7 @@ def _patch_agent_service(post_user_message: AsyncMock):
     agent_service = MagicMock()
     agent_service.post_user_message = post_user_message
     agent_manager = MagicMock()
-    agent_manager.get_agent_for_task = AsyncMock(return_value=agent_service)
+    agent_manager.get_agent_for_task_operation = AsyncMock(return_value=agent_service)
     return patch(
         "xagent.web.api.chat.get_agent_manager",
         return_value=agent_manager,

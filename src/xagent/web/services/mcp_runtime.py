@@ -15,6 +15,10 @@ from .user_oauth import normalize_user_oauth_resource_owner_key
 HTTP_MCP_TRANSPORTS = frozenset({"sse", "websocket", "streamable_http"})
 
 
+class MCPBuiltinOAuthActorPolicyRequiredError(RuntimeError):
+    """A marked task was invoked without its ephemeral actor policy."""
+
+
 @dataclass(frozen=True)
 class MCPBuiltinOAuthActorPolicy:
     """Server-owned boundary for actor-scoped builtin OAuth execution.

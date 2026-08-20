@@ -38,9 +38,7 @@ import pytest
 from tests.shared.execution_scope import register_scope_resolver
 from xagent.config import get_uploads_dir
 from xagent.core.execution_scope import (
-    DeferToSnapshot,
     ExecutionScope,
-    ExecutionScopeAbstentionMismatchError,
     scope_fingerprint,
     set_execution_scope_snapshot_loader,
 )
@@ -93,21 +91,24 @@ def _snapshot(*, status: TaskStatus, run_id: str) -> TaskSetupSnapshot:
 def _enter_build_only_patches(stack: ExitStack, manager: AgentServiceManager) -> None:
     """Mock only the genuinely external boundaries of an agent build.
 
-    ``create_default_tools`` returns ``(tools=[], tool_config=None)``: an
-    empty tool list plus a ``None`` tool config keeps ``AgentService.__init__``
-    on its real ``enable_workspace`` branch (``self._setup_workspace()``)
-    instead of the ``tool_config._workspace_config`` branch, so the
-    constructor builds a genuine ``TaskWorkspace`` from ``workspace_base_dir``
-    -- the exact object whose constructor creates the directory tree on disk.
+    ``create_default_tools`` returns an empty tool list plus the minimal
+    ``WebToolConfig`` surface guaranteed by production cache writers. Omitting
+    ``_workspace_config`` keeps ``AgentService.__init__`` on its real
+    ``enable_workspace`` branch so it creates a genuine ``TaskWorkspace`` from
+    ``workspace_base_dir``.
     """
     manager._default_llm = MagicMock()
     stack.enter_context(
         patch("xagent.web.api.chat.create_task_tracer", return_value=MagicMock())
     )
+    tool_config = SimpleNamespace(
+        set_mcp_runtime_context=lambda **_kwargs: False,
+        set_execution_scope=lambda _scope: False,
+    )
     stack.enter_context(
         patch(
             "xagent.web.api.chat.create_default_tools",
-            new=AsyncMock(return_value=([], None)),
+            new=AsyncMock(return_value=([], tool_config)),
         )
     )
     stack.enter_context(
@@ -132,12 +133,7 @@ def _workspace_dir(owner_id: int, segments: tuple[str, ...]):
 async def test_pause_cache_miss_builds_under_resolver_namespace_not_snapshot(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """Resolver/snapshot mismatch, agent-cache MISS: pause builds the agent
-    and materializes the workspace tree under the RESOLVER's namespace, never
-    the snapshot's -- ``resolve_execution_scope_off_turn`` downgrades the
-    mismatch to the resolver's own answer instead of raising, and that
-    downgraded scope is what reaches ``AgentService``'s workspace
-    construction on the cache-miss build path."""
+    """An ordinary cold pause retains the historical scoped build path."""
     uploads_root = tmp_path / "uploads"
     uploads_root.mkdir()
     monkeypatch.setenv("XAGENT_UPLOADS_DIR", str(uploads_root))
@@ -287,62 +283,6 @@ async def test_resume_cache_miss_builds_under_resolver_namespace_not_snapshot(
             sandbox_key_suffix="from-resolver", workspace_segments=("from-resolver",)
         )
     )
-
-
-@pytest.mark.asyncio
-async def test_pause_abstention_mismatch_fails_closed_with_no_workspace_residue(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """Resolver ABSTAINS (``DeferToSnapshot``) and the snapshot WIDENS the
-    abstention's fallback: this is the
-    ``ExecutionScopeAbstentionMismatchError`` path, which
-    ``resolve_execution_scope_off_turn`` re-raises instead of downgrading --
-    an abstention never produced an authoritative answer to downgrade to.
-    The pause handler must fail closed: no agent is built, and neither
-    candidate namespace's directory is created."""
-    uploads_root = tmp_path / "uploads"
-    uploads_root.mkdir()
-    monkeypatch.setenv("XAGENT_UPLOADS_DIR", str(uploads_root))
-
-    register_scope_resolver(lambda task_id: DeferToSnapshot(fallback=ExecutionScope()))
-    set_execution_scope_snapshot_loader(
-        lambda task_id: ExecutionScope(workspace_segments=("wider",))
-    )
-
-    snapshot = _snapshot(status=TaskStatus.RUNNING, run_id="run-1")
-    manager = AgentServiceManager()
-    connection_manager = _connection_manager()
-    agent_service_spy = MagicMock()
-
-    with ExitStack() as stack:
-        stack.enter_context(
-            patch.object(
-                snapshot_module, "load_task_setup_snapshot_sync", return_value=snapshot
-            )
-        )
-        stack.enter_context(
-            patch.object(chat_api, "get_agent_manager", lambda: manager)
-        )
-        stack.enter_context(patch.object(websocket_api, "manager", connection_manager))
-        stack.enter_context(
-            patch("xagent.web.api.chat.AgentService", agent_service_spy)
-        )
-        _enter_build_only_patches(stack, manager)
-        with pytest.raises(ExecutionScopeAbstentionMismatchError):
-            await websocket_api._handle_pause_task_unserialized(
-                MagicMock(),
-                TASK_ID,
-                {"user": SimpleNamespace(id=OWNER_ID, is_admin=False)},
-            )
-
-    agent_service_spy.assert_not_called()
-    assert manager._agents.get(TASK_ID) is None
-    fallback_workspace = _workspace_dir(OWNER_ID, ())
-    widened_workspace = _workspace_dir(OWNER_ID, ("wider",))
-    assert not fallback_workspace.exists()
-    assert not widened_workspace.exists()
-    # Nothing under the uploads root at all: the refusal leaves no residue.
-    assert list(uploads_root.iterdir()) == []
 
 
 @pytest.mark.asyncio

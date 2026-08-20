@@ -73,6 +73,7 @@ from .db_runtime import (
 )
 from .file_turn import bind_turn_files_no_commit
 from .hot_path_cache import invalidate_task_cache
+from .mcp_runtime import MCPBuiltinOAuthActorPolicy
 from .task_execution_controller import (
     TaskControlState,
     apply_task_control_transition,
@@ -557,6 +558,7 @@ class TaskTurnOrchestrator:
         kind: TurnKind,
         force_fresh: bool = False,
         context: Optional[Dict[str, Any]] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
     ) -> TurnStarted:
         """Schedule a turn already committed by its transaction owner."""
 
@@ -575,6 +577,7 @@ class TaskTurnOrchestrator:
                     claimed=claimed,
                     force_fresh=force_fresh,
                     context=context,
+                    mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
                 )
                 return _turn_started_snapshot(
                     task_id=task_id,
@@ -600,6 +603,7 @@ class TaskTurnOrchestrator:
         payload: TaskTurnPayload,
         claimed: "_ClaimedTurn",
         context: Optional[Dict[str, Any]] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
     ) -> TurnStarted:
         """Compatibility wrapper for an already committed CREATE claim."""
 
@@ -611,6 +615,7 @@ class TaskTurnOrchestrator:
             claimed=claimed,
             kind=TurnKind.CREATE,
             context=context,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
         )
 
 
@@ -642,6 +647,7 @@ async def _schedule_committed_turn(
     claimed: _ClaimedTurn,
     force_fresh: bool,
     context: Optional[Dict[str, Any]],
+    mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
 ) -> "asyncio.Task[None]":
     """Own scheduling and compensation after a turn claim has committed."""
 
@@ -657,6 +663,7 @@ async def _schedule_committed_turn(
             force_fresh=force_fresh,
             context=context,
             before_message_id=claimed.before_message_id,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
         )
     except BaseException as schedule_error:
         # Schedule failed after the claim committed -> force FAILED so the row
@@ -1627,6 +1634,7 @@ def _schedule_bg(
     force_fresh: bool,
     context: Optional[Dict[str, Any]],
     before_message_id: Optional[int] = None,
+    mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
 ) -> "asyncio.Task[None]":
     """Lease-aware bg scheduler.
 
@@ -1775,6 +1783,9 @@ def _schedule_bg(
                         expected_run_id=lease.run_id,
                         task_lease=lease,
                         resolved_execution_scope=scope,
+                        mcp_runtime_authorization_policy=(
+                            mcp_runtime_authorization_policy
+                        ),
                     )
 
                 await run_while_task_lease_owned(
