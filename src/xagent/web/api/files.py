@@ -588,7 +588,7 @@ async def store_uploaded_files(
             )
         completed = True
     except DurableStorageOperationError as exc:
-        logger.exception(
+        logger.warning(
             "Durable storage unavailable during upload: "
             "operation=register_local_uploads backend=%s user_id=%s task_id=%s "
             "file_count=%s",
@@ -596,6 +596,7 @@ async def store_uploaded_files(
             user_id,
             parsed_task_id,
             len(upload_items),
+            exc_info=True,
         )
         raise _durable_storage_unavailable() from exc
     finally:

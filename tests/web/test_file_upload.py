@@ -558,6 +558,7 @@ class TestFileUpload:
             for record in caplog.records
             if "Durable storage unavailable during upload" in record.getMessage()
         )
+        assert failure_record.levelno == logging.WARNING
         assert failure_record.exc_info is not None
         assert "operation=register_local_uploads" in failure_record.getMessage()
         assert "backend=file" in failure_record.getMessage()
