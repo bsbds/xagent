@@ -113,9 +113,15 @@ If the migration reports `UserOAuth schema is partially owner-aware`, do not res
 
 If SQLite reports that an owner-aware schema name exists before migration, query `sqlite_master` for that name. Identify its relation type, owning table, and definition. After you create a backup, remove or rename only the unrelated colliding table, index, or view. Then retry `alembic upgrade head`. If either database reports `owner-aware UserOAuth schema has incorrect indexes`, do not use the database. Compare the index columns, uniqueness flags, and predicates with the definitions below. Repair or remove incorrect indexes before you retry the migration.
 
+This release also adds a trusted, server-side helper for starting actor-owned builtin OAuth. xagent has no production caller for the helper, so merging the change does not create actor rows by itself.
+
 ### Prerequisites and configuration
 
-This change has no new environment variable or dependency. Keep every future actor-OAuth caller disabled; this release does not expose a production path that creates actor-owned rows.
+This change has no new environment variable or dependency.
+
+Before a trusted downstream caller starts an actor flow, the target builtin OAuth server must already be visible through an active personal `UserMCPServer` link or through the exact team that owns the governing agent. `start_builtin_oauth_for_resource_owner` rejects the flow when neither path exists. The callback checks the signed governing-team scope again before storing the credential.
+
+Keep the downstream caller disabled until the migration is complete and every API worker runs this version.
 
 ### Deployment and migration steps
 
@@ -138,9 +144,19 @@ Use the PostgreSQL procedure for production. Use the SQLite procedure only for l
 2. Run `alembic upgrade head` one time. Already-running old workers can continue non-OAuth work while the transactional DDL runs, but an old worker that starts or restarts after the schema revision advances will fail startup because it does not recognize the new revision. Prevent old-version restarts and autoscaling during this window, or ensure every replacement starts from the owner-aware image.
 3. Resume ordinary OAuth writes after the migration commits.
 4. Roll every API and task worker to the owner-aware version.
-5. Verify the schema and make sure no old worker remains before a later release enables actor-owned rows.
+5. Verify the schema and make sure no old worker remains.
 
 Do not backfill `resource_owner_key`. A null owner identifies an ordinary credential.
+
+### Actor setup activation
+
+The xagent merge is dormant. If a trusted downstream product activates the helper:
+
+1. Confirm that every API worker runs this version.
+2. Confirm the governing agent's exact team or personal account can see the target builtin OAuth server.
+3. Enable the downstream caller.
+4. Complete one actor OAuth flow and verify that its `resource_owner_key` is non-null.
+5. Verify that the callback did not create or reactivate a personal MCP association and did not run ordinary post-commit OAuth side effects.
 
 ### Verification and monitoring
 
@@ -194,11 +210,13 @@ WHERE account.id IS NULL
 
 The result must be zero. A nonzero result identifies an orphan watch, a user mismatch, a non-Gmail account, or a non-ordinary account. Repair or remove the watch before rollout.
 
-Verify existing cloud-storage, Gmail, and builtin OAuth connections. Confirm that seeded non-null-owner test rows do not appear in ordinary catalog, token, or trigger paths.
+Verify existing cloud-storage, Gmail, and builtin OAuth connections. Confirm that non-null-owner rows do not appear in ordinary catalog, token, or trigger paths.
+
+After actor setup is enabled, connect the same builtin application for two actor keys. Confirm that the stored rows remain separate and that reconnecting one actor replaces only that actor's row.
 
 ### Rollback
 
-Because this release cannot create actor-owned rows, the downgrade remains available after ordinary rollout. The downgrade keeps the `user_id -> users.id ON DELETE CASCADE` FK. The previous application model also requires this cascade.
+Disable every downstream actor OAuth caller before rollback. If no actor-owned row exists, the downgrade remains available. The downgrade keeps the `user_id -> users.id ON DELETE CASCADE` FK. The previous application model also requires this cascade.
 
 1. For PostgreSQL, stop all production workers. For SQLite, stop local processes that use the database.
 2. If local SQLite data must be preserved, create a current database backup.
@@ -213,4 +231,4 @@ Because this release cannot create actor-owned rows, the downgrade remains avail
 
 SQLite can commit each schema operation separately during a batch-table rebuild. If a downgrade fails, do not retry against the changed database. For a disposable local database, delete and recreate it through normal application startup. Otherwise, restore the verified backup. Make sure that `alembic current` reports the owner-aware revision before you retry the downgrade.
 
-The migration refuses the downgrade if a non-null owner row exists. If a caller created such a row, disable that caller. Revoke and remove the credential with an approved procedure. Then retry the downgrade.
+The migration refuses the downgrade if a non-null owner row exists. If actor rows exist, revoke and remove each credential with an approved procedure. Do not merge actor credentials into the ordinary namespace. Then retry the downgrade.

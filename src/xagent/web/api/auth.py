@@ -39,7 +39,10 @@ from ..models.user_oauth import UserOAuth
 from ..oauth_provider_quirks import requires_json_accept_header
 from ..services import gmail_provisioning
 from ..services.auth_email import send_password_reset_email
-from ..services.user_oauth import delete_scoped_user_oauth_accounts
+from ..services.user_oauth import (
+    delete_scoped_user_oauth_accounts,
+    normalize_user_oauth_resource_owner_key,
+)
 from ..utils.graphql_errors import graphql_errors_message, truncate_error_text
 
 logger = logging.getLogger(__name__)
@@ -1396,7 +1399,138 @@ def generic_oauth_login(
     db: Optional[Session] = None,
     db_provider: Optional[Any] = None,
 ) -> Any:
-    """Start generic OAuth flow"""
+    """Start the public builtin OAuth flow in the ordinary owner namespace."""
+    return _generic_oauth_login(
+        provider,
+        token=token,
+        app_id=app_id,
+        redirect=redirect,
+        db=db,
+        db_provider=db_provider,
+        trusted_user_id=None,
+        resource_owner_key=None,
+    )
+
+
+def _require_actor_builtin_oauth_server_visibility(
+    db: Session,
+    *,
+    user_id: int,
+    app_id: str,
+    governing_team_id: int | None,
+) -> None:
+    """Require the target app's server to be visible to the execution scope.
+
+    Actor credentials deliberately do not create or reactivate a personal
+    ``UserMCPServer`` association. The credential is usable only when the
+    account already has an active association or the governing team already
+    owns the server, so the trusted start boundary verifies that prerequisite
+    before provider consent begins and the callback verifies it again before
+    persisting the token.
+    """
+    from ..mcp_apps import get_app_by_id, get_app_for_mcp_server
+    from ..models.mcp import MCPServer, UserMCPServer
+    from ..services.connector_team_scope import team_connector_ids
+
+    if get_app_by_id(db, app_id) is None:
+        matching_server_ids: set[int] = set()
+    else:
+        # Use the same stable app identity rule as runtime credential
+        # resolution. A server with auth.app_id must match that ID; only legacy
+        # rows without app_id may resolve through their exact catalog name.
+        matching_server_ids = {
+            int(server.id)
+            for server in db.query(MCPServer)
+            .filter(MCPServer.transport == "oauth")
+            .all()
+            if (
+                (server_app := get_app_for_mcp_server(db, server)) is not None
+                and server_app.get("id") == app_id
+            )
+        }
+
+    personal_link = None
+    if matching_server_ids:
+        personal_link = (
+            db.query(UserMCPServer.id)
+            .filter(
+                UserMCPServer.user_id == int(user_id),
+                UserMCPServer.mcpserver_id.in_(matching_server_ids),
+                UserMCPServer.is_active.is_(True),
+            )
+            .first()
+        )
+    team_server_ids = team_connector_ids(db, team_id=governing_team_id)["mcp"]
+    if personal_link is None and matching_server_ids.isdisjoint(team_server_ids):
+        raise ValueError(
+            f"actor builtin OAuth app {app_id!r} has no visible MCP server for "
+            "the account or governing team"
+        )
+
+
+def start_builtin_oauth_for_resource_owner(
+    *,
+    provider: str,
+    app_id: str,
+    user: User,
+    resource_owner_key: str,
+    redirect: str | None = None,
+    db: Session,
+    db_provider: Any,
+    governing_team_id: int | None = None,
+) -> Any:
+    """Start builtin OAuth for one trusted server-owned actor namespace.
+
+    The owner key is placed only inside signed OAuth state. No generic HTTP
+    route accepts it, and the callback trusts only the verified state claim.
+    Actor callbacks never create a personal MCP link, so the account or exact
+    governing team must already make the target server visible. The trusted
+    caller must derive ``governing_team_id`` from the same governing agent that
+    produced the actor identity; this helper does not authorize that binding.
+    """
+    if not isinstance(app_id, str) or not app_id.strip():
+        raise ValueError("actor builtin OAuth app_id must be a non-empty string")
+    app_id = app_id.strip()
+    owner_key = normalize_user_oauth_resource_owner_key(resource_owner_key)
+    if owner_key is None:
+        raise ValueError("resource_owner_key must not be null")
+    if user.id is None:
+        raise ValueError("user must be persisted before starting OAuth")
+    if isinstance(governing_team_id, bool) or (
+        governing_team_id is not None and not isinstance(governing_team_id, int)
+    ):
+        raise ValueError("governing_team_id must be an integer or null")
+    _require_actor_builtin_oauth_server_visibility(
+        db,
+        user_id=int(user.id),
+        app_id=app_id,
+        governing_team_id=governing_team_id,
+    )
+    return _generic_oauth_login(
+        provider,
+        token=None,
+        app_id=app_id,
+        redirect=redirect,
+        db=db,
+        db_provider=db_provider,
+        trusted_user_id=int(user.id),
+        resource_owner_key=owner_key,
+        governing_team_id=governing_team_id,
+    )
+
+
+def _generic_oauth_login(
+    provider: str,
+    *,
+    token: str | None,
+    app_id: str | None,
+    redirect: str | None,
+    db: Session | None,
+    db_provider: Any | None,
+    trusted_user_id: int | None,
+    resource_owner_key: str | None,
+    governing_team_id: int | None = None,
+) -> Any:
     if db is None:
         raise RuntimeError("db session is required")
     if not db_provider:
@@ -1413,14 +1547,14 @@ def generic_oauth_login(
 
     redirect_uri = _resolve_oauth_redirect_uri(provider, db_provider)
 
-    user_id = None
-    if token:
+    user_id = trusted_user_id
+    if user_id is None and token:
         payload = verify_token(token)
         if payload and payload.get("type") == "access":
             username = payload.get("sub")
             user = db.query(User).filter(User.username == username).first()
             if user:
-                user_id = user.id
+                user_id = int(user.id)
 
     if not user_id:
         return HTMLResponse(
@@ -1465,6 +1599,8 @@ def generic_oauth_login(
         "provider": provider,
         "app_id": app_id,
         "redirect": redirect,
+        "resource_owner_key": resource_owner_key,
+        "governing_team_id": governing_team_id,
     }
     state = create_access_token(data=state_payload, expires_delta=timedelta(minutes=10))
 
@@ -1578,9 +1714,13 @@ class AppNotOAuthError(ValueError):
 
 
 def _ensure_user_mcp_server(
-    db: Session, user_id: int, app_info: Dict[str, Any]
+    db: Session,
+    user_id: int,
+    app_info: Dict[str, Any],
+    *,
+    associate_user: bool = True,
 ) -> None:
-    """Ensure MCPServer and UserMCPServer records exist for an OAuth app."""
+    """Provision shared OAuth MCP metadata and optionally associate the user."""
     from sqlalchemy.exc import IntegrityError
 
     from ..models.mcp import MCPServer, UserMCPServer
@@ -1656,6 +1796,9 @@ def _ensure_user_mcp_server(
 
     _ensure_server_matches_oauth_app(mcp_server)
 
+    if not associate_user:
+        return
+
     user_mcp = (
         db.query(UserMCPServer)
         .filter(
@@ -1717,6 +1860,29 @@ def generic_oauth_callback(
         )
     user_id = user_id_claim
     app_id = payload.get("app_id")
+    governing_team_id = payload.get("governing_team_id")
+    try:
+        resource_owner_key = normalize_user_oauth_resource_owner_key(
+            payload.get("resource_owner_key")
+        )
+        if isinstance(governing_team_id, bool) or (
+            governing_team_id is not None and not isinstance(governing_team_id, int)
+        ):
+            raise ValueError("invalid governing team")
+    except ValueError:
+        return HTMLResponse(
+            content="<h1>Error: Invalid or expired state</h1>", status_code=400
+        )
+
+    if resource_owner_key is not None and (
+        not isinstance(app_id, str) or not app_id.strip()
+    ):
+        # The trusted actor entry point always signs a concrete catalog app.
+        # Reject malformed or independently forged actor state before provider
+        # exchange instead of falling through to ordinary provider behavior.
+        return HTMLResponse(
+            content="<h1>Error: Invalid or expired state</h1>", status_code=400
+        )
 
     if not app_id:
         from ..mcp_apps import requires_app_scoped_oauth_grant
@@ -1777,6 +1943,24 @@ def generic_oauth_callback(
                         "<p>This app is not currently available.</p>"
                     ),
                     status_code=404,
+                )
+        if resource_owner_key is not None:
+            try:
+                if isinstance(user_id, bool) or not isinstance(user_id, int):
+                    raise ValueError("invalid actor OAuth user")
+                _require_actor_builtin_oauth_server_visibility(
+                    db,
+                    user_id=user_id,
+                    app_id=str(app_id),
+                    governing_team_id=governing_team_id,
+                )
+            except (TypeError, ValueError):
+                return HTMLResponse(
+                    content=(
+                        "<h1>Cannot Connect</h1>"
+                        "<p>The target MCP server is no longer visible to this actor.</p>"
+                    ),
+                    status_code=409,
                 )
 
     if not db_provider:
@@ -2080,15 +2264,15 @@ def generic_oauth_callback(
         if user_id:
             delete_scoped_user_oauth_accounts(
                 db,
-                user_id=user_id,
-                resource_owner_key=None,
-                providers=[app_id or provider],
+                user_id=int(user_id),
+                resource_owner_key=resource_owner_key,
+                providers=[str(app_id or provider)],
             )
 
             oauth_account = UserOAuth(
                 user_id=user_id,
                 provider=(app_id or provider),
-                resource_owner_key=None,
+                resource_owner_key=resource_owner_key,
                 provider_user_id=str(provider_user_id) if provider_user_id else None,
             )
             db.add(oauth_account)
@@ -2136,7 +2320,12 @@ def generic_oauth_callback(
                     # 500 after the user already completed provider consent —
                     # symmetric with the batch branch's AppNotOAuthError catch.
                     try:
-                        _ensure_user_mcp_server(db, user_id, app_info)
+                        _ensure_user_mcp_server(
+                            db,
+                            user_id,
+                            app_info,
+                            associate_user=resource_owner_key is None,
+                        )
                     except AppNotOAuthError:
                         db.rollback()
                         return HTMLResponse(
@@ -2146,7 +2335,7 @@ def generic_oauth_callback(
                             ),
                             status_code=400,
                         )
-            else:
+            elif resource_owner_key is None:
                 from ..mcp_apps import requires_app_scoped_oauth_grant
 
                 apps = [
@@ -2204,9 +2393,10 @@ def generic_oauth_callback(
             # Everything past the commit belongs in the helper, which cannot
             # change what this callback returns. Add new post-commit work
             # there, not here.
-            _run_post_commit_oauth_side_effects(
-                db, user_id=user_id, connector_key=(app_id or provider)
-            )
+            if resource_owner_key is None:
+                _run_post_commit_oauth_side_effects(
+                    db, user_id=user_id, connector_key=(app_id or provider)
+                )
 
         from urllib.parse import urlparse
 
