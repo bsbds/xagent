@@ -1513,6 +1513,63 @@ describe("ChatInput", () => {
     expect(uploadCallCount).toBe(1)
   })
 
+  it("removes the rendered attachment by identity after a failure updates the live list", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const failed = new File(["bad"], "failed.txt")
+    const target = new File(["target"], "target.txt")
+    const sibling = new File(["sibling"], "sibling.txt")
+    const uploadFile = vi.fn((file: File) => {
+      if (file === failed) return Promise.reject(new Error("storage unavailable"))
+      return Promise.resolve({ file_id: `id-${file.name}` })
+    })
+    let clickedStaleTarget = false
+    let renderedFilesAtFailure: string[] = []
+    let filesAfterRemoval: File[] | undefined
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+      const handleFilesChange = (nextFiles: File[]) => {
+        if (!clickedStaleTarget && nextFiles.length === 2 && !nextFiles.includes(failed)) {
+          clickedStaleTarget = true
+          renderedFilesAtFailure = screen
+            .getAllByTitle("common.remove")
+            .map(button => button.parentElement?.textContent || "")
+          const targetChip = screen.getByText("target.txt").parentElement
+          fireEvent.click(targetChip?.querySelector("button") as HTMLButtonElement)
+          return
+        }
+        if (clickedStaleTarget) filesAfterRemoval = nextFiles
+        setFiles(nextFiles)
+      }
+
+      return (
+        <ChatInput
+          files={files}
+          hideConfig
+          inputValue=""
+          onFilesChange={handleFilesChange}
+          onInputChange={vi.fn()}
+          onSend={vi.fn()}
+          uploadFile={uploadFile}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    fireEvent.change(fileInput, { target: { files: [failed, target, sibling] } })
+
+    await waitFor(() => expect(clickedStaleTarget).toBe(true))
+    expect(renderedFilesAtFailure).toEqual(["failed.txt", "target.txt", "sibling.txt"])
+    expect(filesAfterRemoval).toEqual([sibling])
+    await waitFor(() => {
+      expect(screen.queryByText("target.txt")).not.toBeInTheDocument()
+      expect(screen.queryByText("failed.txt")).not.toBeInTheDocument()
+      expect(screen.getByText("sibling.txt")).toBeInTheDocument()
+    })
+    consoleError.mockRestore()
+  })
+
   it("keeps successful attachments when a queued peer fails", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const successfulOne = new File(["one"], "one.txt")

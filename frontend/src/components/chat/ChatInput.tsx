@@ -967,21 +967,18 @@ export function ChatInput({
     }
   };
 
-  const removeFile = (index: number) => {
-    const fileToRemove = enabledFiles[index];
-    if (fileToRemove) {
-      const controller = uploadAbortControllersRef.current.get(fileToRemove);
-      if (controller) {
-        controller.abort();
-        uploadAbortControllersRef.current.delete(fileToRemove);
-      }
-      setUploadingFiles(previous => {
-        const next = new Set(previous);
-        next.delete(fileToRemove);
-        return next;
-      });
+  const removeFile = (fileToRemove: File) => {
+    const controller = uploadAbortControllersRef.current.get(fileToRemove);
+    if (controller) {
+      controller.abort();
+      uploadAbortControllersRef.current.delete(fileToRemove);
     }
-    publishFiles(filesRef.current.filter((_, fileIndex) => fileIndex !== index));
+    setUploadingFiles(previous => {
+      const next = new Set(previous);
+      next.delete(fileToRemove);
+      return next;
+    });
+    publishFiles(filesRef.current.filter(file => file !== fileToRemove));
   };
 
   useEffect(() => {
@@ -1121,7 +1118,7 @@ export function ChatInput({
                     <span className="max-w-[180px] truncate font-medium">{file.name}</span>
                     <button
                       type="button"
-                      onClick={() => removeFile(index)}
+                      onClick={() => removeFile(file)}
                       className="ml-0.5 rounded-sm p-0.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700"
                       title={isUploading ? t("common.cancel") : t("common.remove")}
                     >
