@@ -1513,6 +1513,27 @@ describe("ChatInput", () => {
     expect(uploadCallCount).toBe(1)
   })
 
+  it("removes exactly one occurrence when the same File object is attached twice", () => {
+    const duplicate = new File(["duplicate"], "duplicate.txt")
+    const onFilesChange = vi.fn()
+
+    render(
+      <ChatInput
+        files={[duplicate, duplicate]}
+        hideConfig
+        inputValue=""
+        onFilesChange={onFilesChange}
+        onInputChange={vi.fn()}
+        onSend={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getAllByTitle("common.remove")[0])
+
+    expect(onFilesChange).toHaveBeenCalledOnce()
+    expect(onFilesChange).toHaveBeenCalledWith([duplicate])
+  })
+
   it("removes the rendered attachment by identity after a failure updates the live list", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const failed = new File(["bad"], "failed.txt")

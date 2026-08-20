@@ -978,7 +978,13 @@ export function ChatInput({
       next.delete(fileToRemove);
       return next;
     });
-    publishFiles(filesRef.current.filter(file => file !== fileToRemove));
+    const currentFiles = filesRef.current;
+    const liveIndex = currentFiles.indexOf(fileToRemove);
+    if (liveIndex === -1) return;
+    publishFiles([
+      ...currentFiles.slice(0, liveIndex),
+      ...currentFiles.slice(liveIndex + 1),
+    ]);
   };
 
   useEffect(() => {
