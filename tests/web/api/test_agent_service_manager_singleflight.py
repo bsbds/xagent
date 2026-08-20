@@ -83,6 +83,7 @@ def test_remove_agent_detaches_runtime_state_when_workspace_cleanup_fails() -> N
     manager._agent_sandbox_providers[42] = object()
     manager._agent_scope_fingerprints[42] = None
     manager._agent_evicted_scope_fingerprints[42] = deque([None])
+    manager._mcp_policy_required_task_ids.add(42)
     manager._agent_build_locks[42] = asyncio.Lock()
     manager._cleanup_workspace_directory = MagicMock()
 
@@ -95,6 +96,7 @@ def test_remove_agent_detaches_runtime_state_when_workspace_cleanup_fails() -> N
     assert 42 not in manager._agent_sandbox_providers
     assert 42 not in manager._agent_scope_fingerprints
     assert 42 not in manager._agent_evicted_scope_fingerprints
+    assert 42 not in manager._mcp_policy_required_task_ids
     assert 42 not in manager._agent_build_locks
     assert manager._agent_cleanup_owner_ids[42] == 7
 
