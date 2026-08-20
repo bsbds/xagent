@@ -2264,7 +2264,7 @@ def generic_oauth_callback(
         if user_id:
             delete_scoped_user_oauth_accounts(
                 db,
-                user_id=int(user_id),
+                user_id=user_id,
                 resource_owner_key=resource_owner_key,
                 providers=[str(app_id or provider)],
             )
