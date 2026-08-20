@@ -1263,6 +1263,10 @@ class AgentServiceManager:
         # task_id-keyed cache must not silently hand back an instance built
         # under a different user (e.g. once built with the wrong identity).
         self._agent_owner_ids: Dict[int, Optional[int]] = {}
+        # Owner retained only while a failed workspace cleanup remains due.
+        # The live agent maps are still evicted; this tombstone lets a later
+        # ``remove_agent(task_id)`` find the user-scoped directory directly.
+        self._agent_cleanup_owner_ids: Dict[int, int] = {}
         self._agent_sandbox_keys: Dict[int, str] = {}
         # Lease provider each cached AgentService's sandbox tools were built
         # against, keyed the same as ``_agent_sandbox_keys`` (same lifetime,
@@ -2933,41 +2937,67 @@ class AgentServiceManager:
             agent.invalidate_tools()
 
     def remove_agent(self, task_id: int, user_id: Optional[int] = None) -> None:
-        """Remove AgentService instance for completed task"""
-        if task_id in self._agents:
-            # Log workspace path before cleanup
-            workspace = self._agents[task_id].workspace
-            if workspace is not None:
-                workspace_path = str(workspace.workspace_dir)
-            else:
-                workspace_path = None
-            if workspace_path:
-                logger.info(
-                    f"Deleting workspace path for task {task_id}: {workspace_path}"
+        """Remove runtime state for a completed task.
+
+        Workspace deletion can fail independently of in-memory eviction. The
+        completed agent must still be detached in that case: keeping it live
+        makes every retry call the same failing object and lets cache and
+        sandbox metadata accumulate. A later retry then takes the direct
+        workspace-directory path while the original exception remains visible
+        to the caller.
+        """
+        agent = self._agents.get(task_id)
+        cleanup_user_id = user_id
+        if cleanup_user_id is None:
+            cleanup_user_id = self._agent_owner_ids.get(task_id)
+        if cleanup_user_id is None:
+            cleanup_user_id = self._agent_cleanup_owner_ids.get(task_id)
+        cleanup_succeeded = False
+        try:
+            if agent is not None:
+                workspace = agent.workspace
+                workspace_path = (
+                    str(workspace.workspace_dir) if workspace is not None else None
                 )
+                if workspace_path:
+                    logger.info(
+                        "Deleting workspace path for task %s: %s",
+                        task_id,
+                        workspace_path,
+                    )
 
-            # Clean up workspace before removing agent
-            self._agents[task_id].cleanup_workspace()
-            logger.info(f"Cleaned up workspace for task {task_id}")
+                agent.cleanup_workspace()
+                logger.info("Cleaned up workspace for task %s", task_id)
+            else:
+                # If agent is not in memory, clean up its directory directly.
+                self._cleanup_workspace_directory(task_id, cleanup_user_id)
+            cleanup_succeeded = True
+        finally:
+            if cleanup_succeeded:
+                self._agent_cleanup_owner_ids.pop(task_id, None)
+            elif cleanup_user_id is not None:
+                self._agent_cleanup_owner_ids[task_id] = cleanup_user_id
 
-            del self._agents[task_id]
+            # Resource ownership ends even when filesystem cleanup raises. This
+            # makes retry idempotent and prevents completed tasks from staying
+            # reachable through any manager-owned runtime map.
+            self._agents.pop(task_id, None)
             self._agent_owner_ids.pop(task_id, None)
             self._agent_sandbox_keys.pop(task_id, None)
             self._agent_sandbox_providers.pop(task_id, None)
             self._agent_scope_fingerprints.pop(task_id, None)
             self._agent_evicted_scope_fingerprints.pop(task_id, None)
-            logger.info(f"Removed AgentService for task {task_id}")
-        else:
-            # If agent is not in memory, clean up workspace directory directly
-            self._cleanup_workspace_directory(task_id, user_id)
 
-        # Do not replace a lock held by an in-flight builder: a fresh lock would
-        # let a second caller bypass single-flight and race the existing build.
-        build_lock = self._agent_build_locks.get(task_id)
-        if build_lock is not None and not build_lock.locked():
-            self._agent_build_locks.pop(task_id, None)
+            # Do not replace a lock held by an in-flight builder: a fresh lock
+            # would let a second caller bypass single-flight and race it.
+            build_lock = self._agent_build_locks.get(task_id)
+            if build_lock is not None and not build_lock.locked():
+                self._agent_build_locks.pop(task_id, None)
 
-        # LLM configuration is now stored in Task table, no need to clean up memory storage
+        if agent is not None:
+            logger.info("Removed AgentService for task %s", task_id)
+
+        # LLM configuration is stored in Task, so no memory copy needs cleanup.
 
     async def execute_task(
         self,
