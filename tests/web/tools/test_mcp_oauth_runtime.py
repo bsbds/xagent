@@ -15,6 +15,7 @@ from xagent.web.models.mcp_oauth import MCPOAuthClient, MCPOAuthGrant
 from xagent.web.models.user import User
 from xagent.web.services import mcp_oauth as mcp_oauth_service
 from xagent.web.services.mcp_runtime import (
+    MCPBuiltinOAuthActorPolicy,
     connection_with_bearer_authorization,
     connection_without_authorization,
     effective_mcp_oauth_resource,
@@ -51,6 +52,7 @@ def _add_mcp_oauth_server(
     include_scope: bool = True,
     resource: str = "https://mcp.example.com/mcp",
     issuer: str = "https://auth.example.com",
+    name: str = "records-runtime",
 ) -> MCPServer:
     auth_config = {
         "type": "mcp_oauth",
@@ -62,7 +64,7 @@ def _add_mcp_oauth_server(
         auth_config["scope"] = "records.read"
     server = MCPServer.from_config(
         {
-            "name": "records-runtime",
+            "name": name,
             "managed": "external",
             "transport": "streamable_http",
             "url": "https://mcp.example.com/mcp",
@@ -339,6 +341,108 @@ async def test_mcp_oauth_runtime_selects_resource_owner_grant(db_session):
         "Authorization": "Bearer access-token-b",
     }
     assert "auth" not in configs[0]["config"]
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_preserves_shared_native_mcp_oauth_owner(db_session):
+    db, user, _ = db_session
+    server = _add_mcp_oauth_server(db, user, name="workspace-native-oauth")
+    _add_grant(
+        db,
+        server=server,
+        user=user,
+        resource_owner_key=f"xagent:user:{user.id}",
+        access_token="workspace-token",
+    )
+    _add_grant(
+        db,
+        server=server,
+        user=user,
+        resource_owner_key="toby:slack:41:U1",
+        access_token="personal-native-token",
+    )
+
+    configs, cfg = await _load_configs(
+        db,
+        user,
+        mcp_runtime_authorization_policy=MCPBuiltinOAuthActorPolicy(
+            builtin_oauth_resource_owner_key="toby:slack:41:U1",
+            allowed_builtin_oauth_server_ids=frozenset(),
+        ),
+    )
+
+    assert cfg.get_mcp_oauth_diagnostics() == []
+    assert [config["id"] for config in configs] == [server.id]
+    assert configs[0]["config"]["headers"]["Authorization"] == "Bearer workspace-token"
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_preserves_native_mcp_runtime_selector(db_session):
+    db, user, _ = db_session
+    server = _add_mcp_oauth_server(db, user)
+    _add_grant(
+        db,
+        server=server,
+        user=user,
+        resource_owner_key="workspace-configured-owner",
+        access_token="workspace-selected-token",
+    )
+
+    configs, cfg = await _load_configs(
+        db,
+        user,
+        mcp_auth_context={
+            str(server.id): {"resource_owner_key": "workspace-configured-owner"}
+        },
+        mcp_runtime_authorization_policy=MCPBuiltinOAuthActorPolicy(
+            builtin_oauth_resource_owner_key="toby:slack:41:U1",
+            allowed_builtin_oauth_server_ids=frozenset(),
+        ),
+    )
+
+    assert cfg.get_mcp_oauth_diagnostics() == []
+    assert configs[0]["config"]["headers"]["Authorization"] == (
+        "Bearer workspace-selected-token"
+    )
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_preserves_shared_non_oauth_server(db_session):
+    db, user, _ = db_session
+    server = MCPServer.from_config(
+        {
+            "name": "static-stdio",
+            "managed": "external",
+            "transport": "stdio",
+            "command": "python",
+            "env": {"TOKEN": "shared-secret"},
+        }
+    )
+    db.add(server)
+    db.flush()
+    db.add(
+        UserMCPServer(
+            user_id=user.id,
+            mcpserver_id=server.id,
+            is_owner=True,
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    configs, cfg = await _load_configs(
+        db,
+        user,
+        mcp_runtime_authorization_policy=MCPBuiltinOAuthActorPolicy(
+            builtin_oauth_resource_owner_key="toby:slack:41:U1",
+            allowed_builtin_oauth_server_ids=frozenset(),
+        ),
+    )
+
+    assert cfg.get_mcp_oauth_diagnostics() == []
+    assert configs[0]["transport"] == "stdio"
+    assert configs[0]["config"]["command"] == "python"
+    assert configs[0]["config"]["env"]["TOKEN"] == "shared-secret"
 
 
 @pytest.mark.asyncio

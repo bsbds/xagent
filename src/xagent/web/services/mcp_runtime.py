@@ -10,8 +10,41 @@ from ...core.tools.adapters.vibe.connector_runtime import (
     ConnectorRuntimeError,
 )
 from .mcp_oauth import MCPOAuthRuntimeError, resolve_mcp_oauth_runtime_auth
+from .user_oauth import normalize_user_oauth_resource_owner_key
 
 HTTP_MCP_TRANSPORTS = frozenset({"sse", "websocket", "streamable_http"})
+
+
+@dataclass(frozen=True)
+class MCPBuiltinOAuthActorPolicy:
+    """Server-owned boundary for actor-scoped builtin OAuth execution.
+
+    ``allowed_builtin_oauth_server_ids`` contains only builtin OAuth server IDs connected by
+    the current actor. Native MCP servers remain workspace-account
+    configuration and follow their existing shared runtime behavior.
+    """
+
+    builtin_oauth_resource_owner_key: str
+    allowed_builtin_oauth_server_ids: frozenset[int]
+
+    def __post_init__(self) -> None:
+        owner_key = normalize_user_oauth_resource_owner_key(
+            self.builtin_oauth_resource_owner_key
+        )
+        if owner_key is None:
+            raise ValueError("builtin_oauth_resource_owner_key must not be null")
+        server_ids = frozenset(self.allowed_builtin_oauth_server_ids)
+        if any(
+            isinstance(server_id, bool)
+            or not isinstance(server_id, int)
+            or server_id <= 0
+            for server_id in server_ids
+        ):
+            raise ValueError(
+                "allowed_builtin_oauth_server_ids must contain positive integer IDs"
+            )
+        object.__setattr__(self, "builtin_oauth_resource_owner_key", owner_key)
+        object.__setattr__(self, "allowed_builtin_oauth_server_ids", server_ids)
 
 
 @dataclass(frozen=True)
@@ -397,6 +430,8 @@ async def build_mcp_runtime_connection(
     Static MCP connection serialization belongs to the MCP server model. Per-user
     MCP OAuth grant selection belongs here, at the web runtime boundary.
     """
+    server_id = getattr(server, "id", None)
+    auth_config = server._decrypt_auth_config(getattr(server, "auth", None))
     connection = server.to_connection_dict()
 
     # Resolve which env layer to apply for this user, per their env_source pick
@@ -422,11 +457,9 @@ async def build_mcp_runtime_connection(
         if caller_env:
             connection["env"] = {**(connection.get("env") or {}), **caller_env}
 
-    auth_config = server._decrypt_auth_config(getattr(server, "auth", None))
     if not _is_mcp_oauth_http_server(server, auth_config):
         return MCPRuntimeConnectionBuild(connection=connection)
 
-    server_id = getattr(server, "id", None)
     if not isinstance(server_id, int) or not isinstance(user_id, int) or db is None:
         return MCPRuntimeConnectionBuild(
             connection=None,

@@ -38,6 +38,7 @@ from ..mcp_apps import (
     BuiltinOAuthServerDefinitionError,
     get_all_mcp_apps,
     get_app_by_name,
+    get_app_for_mcp_server,
     get_strict_app_for_mcp_server,
     mcp_server_claims_reserved_catalog_identity,
     restrict_to_app_scoped_oauth_grant,
@@ -76,6 +77,7 @@ from ..services.mcp_oauth import (
 )
 from ..services.mcp_runtime import HTTP_MCP_TRANSPORTS
 from ..services.user_oauth import (
+    actor_owned_user_oauth_query,
     delete_scoped_user_oauth_accounts,
     list_scoped_user_oauth_accounts,
 )
@@ -101,6 +103,33 @@ MCP_OAUTH_TOKEN_ENDPOINT_AUTH_METHODS = frozenset(
 
 
 # Pydantic models for API
+class MCPDisconnectConflictDetail(BaseModel):
+    """Stable disconnect blocker returned when another owner still depends on it."""
+
+    code: Literal["mcp_disconnect_dependency"] = "mcp_disconnect_dependency"
+    message: str
+    dependency_class: Literal[
+        "active_oauth_grant",
+        "unconsumed_oauth_flow",
+        "actor_oauth_credential",
+    ]
+
+
+class MCPDisconnectConflictResponse(BaseModel):
+    """FastAPI HTTPException envelope for a disconnect dependency conflict."""
+
+    detail: MCPDisconnectConflictDetail
+
+
+@dataclass(frozen=True)
+class _MCPDisconnectDependency:
+    dependency_class: Literal[
+        "active_oauth_grant",
+        "unconsumed_oauth_flow",
+        "actor_oauth_credential",
+    ]
+
+
 class MCPServerCreate(BaseModel):
     """Request model for creating MCP server."""
 
@@ -2112,7 +2141,7 @@ def list_mcp_apps(
         )
     ]
 
-    # Actor credentials are not personal catalog connections.
+    # Also fetch ordinary user OAuth accounts to get the connected email.
     oauth_accounts = list_scoped_user_oauth_accounts(
         db,
         user_id=int(current_user.id),
@@ -2165,6 +2194,8 @@ def list_mcp_apps(
         for row in db.query(MCPOAuthGrant.mcp_server_id)
         .filter(
             MCPOAuthGrant.user_id == current_user.id,
+            MCPOAuthGrant.resource_owner_key
+            == _default_resource_owner_key(cast(int, current_user.id)),
             MCPOAuthGrant.status == "active",
         )
         .all()
@@ -2517,7 +2548,7 @@ def get_mcp_servers(
             .all()
         )
 
-        # Actor credentials are not personal server connections.
+        # Fetch ordinary-owner OAuth emails.
         oauth_accounts = list_scoped_user_oauth_accounts(
             db,
             user_id=effective_user_id,
@@ -2635,7 +2666,7 @@ def get_mcp_server(
 
         user_mcp, server = result
 
-        # Actor credentials are not personal server connections.
+        # Fetch ordinary-owner OAuth emails for this user.
         oauth_accounts = list_scoped_user_oauth_accounts(
             db,
             user_id=int(user_id),
@@ -3486,7 +3517,68 @@ def _catalog_server_has_platform_key(db: Session, server: MCPServer) -> bool:
     return False
 
 
-@mcp_router.delete("/servers/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
+def _non_default_owner_dependency(
+    db: Session, *, server: MCPServer, user_id: int
+) -> _MCPDisconnectDependency | None:
+    """Return the first owner-scoped blocker before disconnect mutation."""
+    default_owner = _default_resource_owner_key(user_id)
+    if (
+        db.query(MCPOAuthGrant.id)
+        .filter(
+            MCPOAuthGrant.mcp_server_id == server.id,
+            MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key != default_owner,
+            MCPOAuthGrant.status == "active",
+        )
+        .first()
+        is not None
+    ):
+        return _MCPDisconnectDependency("active_oauth_grant")
+    if (
+        db.query(MCPOAuthFlowState.id)
+        .filter(
+            MCPOAuthFlowState.mcp_server_id == server.id,
+            MCPOAuthFlowState.user_id == user_id,
+            MCPOAuthFlowState.resource_owner_key != default_owner,
+            MCPOAuthFlowState.consumed_at.is_(None),
+            MCPOAuthFlowState.expires_at > _utc_now(),
+        )
+        .first()
+        is not None
+    ):
+        return _MCPDisconnectDependency("unconsumed_oauth_flow")
+    if server.transport != "oauth":
+        return None
+
+    from ..models.user_oauth import UserOAuth
+
+    app_info = get_app_for_mcp_server(db, server)
+    actor_oauth_keys = _oauth_keys_for_app(app_info) if app_info else []
+    has_actor_credential = bool(
+        actor_oauth_keys
+        and actor_owned_user_oauth_query(db, user_id=user_id)
+        .with_entities(UserOAuth.id)
+        .filter(UserOAuth.provider.in_(actor_oauth_keys))
+        .first()
+        is not None
+    )
+    return (
+        _MCPDisconnectDependency("actor_oauth_credential")
+        if has_actor_credential
+        else None
+    )
+
+
+@mcp_router.delete(
+    "/servers/{server_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        status.HTTP_409_CONFLICT: {
+            "model": MCPDisconnectConflictResponse,
+            "description": "Another resource owner still depends on the server.",
+        }
+    },
+)
 async def delete_mcp_server(
     server_id: int,
     current_user: User = Depends(get_current_user),
@@ -3495,7 +3587,7 @@ async def delete_mcp_server(
     """Delete an MCP server."""
     try:
         manager = DatabaseMCPServerManager(db)
-        user_id = current_user.id
+        user_id = cast(int, current_user.id)
 
         # Check user has access to this server
         result = (
@@ -3523,6 +3615,19 @@ async def delete_mcp_server(
             )
 
         server_name = server.name
+        dependency = _non_default_owner_dependency(
+            db,
+            server=server,
+            user_id=int(user_id),
+        )
+        if dependency is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=MCPDisconnectConflictDetail(
+                    message="MCP server has non-default owner dependencies",
+                    dependency_class=dependency.dependency_class,
+                ).model_dump(),
+            )
 
         from ..services.connector_team_scope import delete_team_connector
 
@@ -3556,7 +3661,6 @@ async def delete_mcp_server(
             if app_info:
                 provider = app_info.get("provider")
                 app_id = app_info.get("id")
-
                 # Delete tokens for this specific app. For apps in
                 # APPS_REQUIRING_APP_SCOPED_OAUTH_GRANT this must stay
                 # symmetric with the app-scoped read path (_oauth_keys_for_app):
@@ -3581,8 +3685,6 @@ async def delete_mcp_server(
                 # that row anymore — delete it too rather than leaving an
                 # inert orphan token behind.
                 if provider and provider not in providers_to_delete:
-                    from ..mcp_apps import get_app_for_mcp_server
-
                     other_servers = (
                         db.query(MCPServer)
                         .join(
@@ -3607,11 +3709,13 @@ async def delete_mcp_server(
                             db,
                             user_id=int(user_id),
                             resource_owner_key=None,
-                            providers=[provider],
+                            providers=[str(provider)],
                         )
 
-        # Revoke and purge this user's MCP OAuth grants for the server. On a
-        # shared (multi-user) row the server outlives this disconnect, so
+        # Revoke and purge this user's default-owner MCP OAuth grants for the
+        # server. Non-default namespaces can belong to another product and keep
+        # the shared association alive until that product removes them.
+        # On a shared (multi-user) row the server outlives this disconnect, so
         # without this the grant's refresh token would stay usable — and its
         # row would stay stored — until the LAST user disconnects and the
         # cascade finally removes it. Best-effort external revocation first
@@ -3619,11 +3723,13 @@ async def delete_mcp_server(
         # hard delete rather than a "revoked" status flip: a revoked grant
         # row is otherwise never swept, accumulating indefinitely as an
         # inert but secret-bearing row (F10).
+        default_resource_owner_key = _default_resource_owner_key(user_id)
         for grant in (
             db.query(MCPOAuthGrant)
             .filter(
                 MCPOAuthGrant.mcp_server_id == server_id,
                 MCPOAuthGrant.user_id == user_id,
+                MCPOAuthGrant.resource_owner_key == default_resource_owner_key,
                 MCPOAuthGrant.status == "active",
             )
             .all()
@@ -3641,6 +3747,7 @@ async def delete_mcp_server(
         db.query(MCPOAuthFlowState).filter(
             MCPOAuthFlowState.mcp_server_id == server_id,
             MCPOAuthFlowState.user_id == user_id,
+            MCPOAuthFlowState.resource_owner_key == default_resource_owner_key,
         ).delete(synchronize_session=False)
 
         # Remove user-server association

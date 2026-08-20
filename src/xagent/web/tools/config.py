@@ -57,6 +57,11 @@ from ...core.tools.adapters.vibe.connector_runtime import (
     runtime_bindings_from_config,
 )
 from ...core.tools.adapters.vibe.db_session import tool_session_scope
+from ..services.mcp_runtime import (
+    MCPBuiltinOAuthActorPolicy,
+    mcp_oauth_runtime_diagnostic,
+    mcp_oauth_selection,
+)
 from ..services.tool_credentials import (
     TOOL_CREDENTIAL_SPECS,
     get_sql_connection_map,
@@ -85,6 +90,9 @@ UNAVAILABLE_MCP_CREDENTIAL_MESSAGE = "MCP server credentials are unavailable."
 # after loading and must not be admitted here by sharing one broad constant.
 MCP_UNAVAILABLE_REASONS = frozenset(
     {
+        "actor_policy_selector_not_supported",
+        "actor_policy_requires_builtin_oauth",
+        "actor_policy_server_not_allowed",
         "authorization_required",
         "catalog_app_not_found",
         "config_load_failed",
@@ -1228,6 +1236,7 @@ class WebToolConfig(BaseToolConfig):
         mcp_auth_context: Optional[Dict[str, Any]] = None,
         execution_scope: Optional[Any] = None,
         connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
         mcp_failure_policy: MCPFailurePolicy = MCPFailurePolicy.BEST_EFFORT,
         mcp_load_summary_tracer: Optional[Any] = None,
         mcp_load_summary_trace_task_id: Optional[str] = None,
@@ -1310,6 +1319,7 @@ class WebToolConfig(BaseToolConfig):
                 raw_turn_id if isinstance(raw_turn_id, str) else None
             )
         self._connector_runtime_turn_id = connector_runtime_turn_id
+        self._mcp_runtime_authorization_policy = mcp_runtime_authorization_policy
         self._connector_runtime_view: Optional[Dict[str, Any]] = None
         self._mcp_oauth_diagnostics: List[Dict[str, Any]] = []
         self._explicit_vision_model = vision_model
@@ -1610,6 +1620,12 @@ class WebToolConfig(BaseToolConfig):
         """Return structured MCP OAuth runtime diagnostics from the last load."""
         return list(self._mcp_oauth_diagnostics)
 
+    def get_mcp_runtime_authorization_policy(
+        self,
+    ) -> MCPBuiltinOAuthActorPolicy | None:
+        """Return the trusted ephemeral actor policy for delegated execution."""
+        return self._mcp_runtime_authorization_policy
+
     def _get_connector_runtime_for(
         self, connector_type: str, connector_id: int
     ) -> Optional[Dict[str, Any]]:
@@ -1651,24 +1667,40 @@ class WebToolConfig(BaseToolConfig):
             ) from exc
         return self._connector_runtime_view
 
-    def set_connector_runtime_turn_id(self, turn_id: Optional[str]) -> bool:
-        """Switch the per-turn connector runtime source for reused agents.
+    def set_mcp_runtime_context(
+        self,
+        *,
+        turn_id: Optional[str],
+        authorization_policy: MCPBuiltinOAuthActorPolicy | None,
+    ) -> bool:
+        """Atomically replace every per-turn MCP authorization input.
 
-        ``WebToolConfig`` instances are cached with ``AgentService`` by task.
-        Runtime secrets/auth selectors are intentionally per-turn, so an append
-        turn must not keep using the first turn's resolved connector runtime
-        view or MCP config cache.
+        Cached agents are reused by task. Replacing the turn ID and actor policy
+        in one operation prevents a rebuild from observing one turn's runtime
+        values with another actor's server allowlist.
         """
 
         normalized_turn_id = turn_id if isinstance(turn_id, str) else None
-        if self._connector_runtime_turn_id == normalized_turn_id:
+        if (
+            self._connector_runtime_turn_id == normalized_turn_id
+            and self._mcp_runtime_authorization_policy == authorization_policy
+        ):
             return False
         self._connector_runtime_turn_id = normalized_turn_id
+        self._mcp_runtime_authorization_policy = authorization_policy
         self._connector_runtime_view = None
         self._cached_mcp_configs = None
         self._factory_runtime_snapshot = None
         self._pending_runtime_policy = None
         return True
+
+    def set_connector_runtime_turn_id(self, turn_id: Optional[str]) -> bool:
+        """Retain the generic turn-only update API for existing callers."""
+
+        return self.set_mcp_runtime_context(
+            turn_id=turn_id,
+            authorization_policy=self._mcp_runtime_authorization_policy,
+        )
 
     def set_execution_scope(self, scope: Optional[Any]) -> bool:
         """Switch the per-turn execution scope for a reused tool config.
@@ -3101,8 +3133,9 @@ class WebToolConfig(BaseToolConfig):
         *,
         provider_name: object,
         app_id: object,
+        resource_owner_key: str | None = None,
     ) -> _LegacyOAuthTokenResolution:
-        """Resolve and persist one legacy OAuth account in an isolated transaction."""
+        """Resolve one exact builtin OAuth owner in an isolated transaction."""
         from ...web.mcp_apps import restrict_to_app_scoped_oauth_grant
         from ...web.models.user_oauth import UserOAuth
 
@@ -3123,7 +3156,7 @@ class WebToolConfig(BaseToolConfig):
                     scoped_user_oauth_query(
                         oauth_db,
                         user_id=user_id,
-                        resource_owner_key=None,
+                        resource_owner_key=resource_owner_key,
                     )
                     .filter(UserOAuth.provider.in_(providers_to_check))
                     .first()
@@ -3139,7 +3172,7 @@ class WebToolConfig(BaseToolConfig):
                     scoped_user_oauth_query(
                         oauth_db,
                         user_id=user_id,
-                        resource_owner_key=None,
+                        resource_owner_key=resource_owner_key,
                     )
                     .filter(UserOAuth.provider == provider_name)
                     .first()
@@ -3179,7 +3212,7 @@ class WebToolConfig(BaseToolConfig):
                     oauth_db,
                     user_id=user_id,
                     account_id=account_id,
-                    resource_owner_key=None,
+                    resource_owner_key=resource_owner_key,
                 )
                 if oauth_account is not None:
                     oauth_db.delete(oauth_account)
@@ -3212,6 +3245,10 @@ class WebToolConfig(BaseToolConfig):
         allow_delegated_authorization = bool(
             getattr(server, "allow_delegated_authorization", False)
         )
+        actor_policy = self._mcp_runtime_authorization_policy
+        # Actor ownership applies only to builtin OAuth. Native MCP servers
+        # remain installer-configured capabilities of the workspace account
+        # and therefore retain their existing runtime configuration.
         runtime_values = self._get_connector_runtime_for("mcp", int(server.id))
         config: Dict[str, Any] = {
             "id": int(server.id),
@@ -3249,16 +3286,54 @@ class WebToolConfig(BaseToolConfig):
                     server=server,
                     reason="catalog_app_not_found",
                 )
-            provider_name = (
-                app_info.get("provider") if app_info else server.name.lower()
-            )
+            if actor_policy is not None:
+                if app_info.get("auth_type") != "builtin_oauth":
+                    policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                        server,
+                        code="actor_policy_requires_builtin_oauth",
+                        message="Actor-scoped execution requires a builtin OAuth app",
+                        resource_owner_key=actor_policy.builtin_oauth_resource_owner_key,
+                    )
+                    self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                    return self._build_unavailable_mcp_config(
+                        server=server,
+                        reason="actor_policy_requires_builtin_oauth",
+                        diagnostic=policy_diagnostic,
+                    )
+                if int(server.id) not in actor_policy.allowed_builtin_oauth_server_ids:
+                    policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                        server,
+                        code="actor_policy_server_not_allowed",
+                        message="Builtin OAuth server is not authorized for this actor",
+                        resource_owner_key=actor_policy.builtin_oauth_resource_owner_key,
+                    )
+                    self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                    return self._build_unavailable_mcp_config(
+                        server=server,
+                        reason="actor_policy_server_not_allowed",
+                        diagnostic=policy_diagnostic,
+                    )
+                # A personal builtin must not consume or retain any
+                # task-supplied connector runtime values. The config mapping
+                # was initialized before catalog classification, so clear both
+                # the local binding input and its detached public snapshot.
+                runtime_values = None
+                config.pop("connector_runtime", None)
+            provider_name = app_info.get("provider")
+            if not provider_name:
+                return self._build_unavailable_mcp_config(
+                    server=server,
+                    reason="oauth_token_required",
+                    message=UNAVAILABLE_MCP_CREDENTIAL_MESSAGE,
+                    failure_code="oauth_token_required",
+                )
 
-            # Some oauth records might be saved with the app_id as provider instead of the general provider_name
-            # For example, "google-drive" instead of "google"
-            app_id = app_info.get("id") if app_info else None
+            # Some OAuth records are saved with the app id as provider instead
+            # of the general provider name (for example, google-drive/google).
+            app_id = app_info.get("id")
 
             hook_token: _ResolvedHookToken | None = None
-            if app_info:
+            if actor_policy is None:
                 configured_resource = _oauth_token_configured_resource(app_info)
                 providers_to_resolve = _oauth_token_provider_candidates(app_info)
                 try:
@@ -3272,7 +3347,7 @@ class WebToolConfig(BaseToolConfig):
                         error=error,
                     )
 
-            if app_info and hook_token is not None:
+            if hook_token is not None:
                 self._mark_hook_token_cache_metadata(hook_token)
                 try:
                     transport_config = self._build_oauth_mcp_stdio_transport_config(
@@ -3297,9 +3372,36 @@ class WebToolConfig(BaseToolConfig):
                     hook_token.provider,
                 )
             else:
+                if actor_policy is not None:
+                    selection = mcp_oauth_selection(
+                        self._mcp_auth_context,
+                        int(server.id),
+                    )
+                    conflicting_keys = set(selection) - {"resource_owner_key"}
+                    if conflicting_keys:
+                        policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                            server,
+                            code="actor_policy_selector_not_supported",
+                            message=(
+                                "MCP authorization selector is not supported for "
+                                "actor builtin OAuth"
+                            ),
+                            resource_owner_key=actor_policy.builtin_oauth_resource_owner_key,
+                        )
+                        self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                        return self._build_unavailable_mcp_config(
+                            server=server,
+                            reason="actor_policy_selector_not_supported",
+                            diagnostic=policy_diagnostic,
+                        )
                 legacy_token = await self._resolve_legacy_oauth_access_token(
                     provider_name=provider_name,
                     app_id=app_id,
+                    resource_owner_key=(
+                        actor_policy.builtin_oauth_resource_owner_key
+                        if actor_policy is not None
+                        else None
+                    ),
                 )
                 if legacy_token.refresh_failed:
                     return self._build_unavailable_mcp_config(
@@ -3605,8 +3707,6 @@ class WebToolConfig(BaseToolConfig):
                 self._connector_team_id,
             )
 
-            # Prefetch shared runtime state once before entering the isolated
-            # per-server formatter.
             user_env_by_id = load_user_env_overrides(self.db, self._user_id)
             shared_env_by_id = load_shared_env_overrides(self.db, self._user_id)
             env_source_by_id = load_user_env_sources(self.db, self._user_id)

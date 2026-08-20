@@ -59,6 +59,14 @@ def scoped_user_oauth_query(
     )
 
 
+def actor_owned_user_oauth_query(db: Session, *, user_id: int) -> Query[UserOAuth]:
+    """Build a query for all actor namespaces contained by one account."""
+    return db.query(UserOAuth).filter(
+        UserOAuth.user_id == int(user_id),
+        UserOAuth.resource_owner_key.isnot(None),
+    )
+
+
 def list_scoped_user_oauth_accounts(
     db: Session,
     *,

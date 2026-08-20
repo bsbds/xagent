@@ -32,6 +32,7 @@ from xagent.core.tools.adapters.vibe.selection_spec import ToolSelectionSpec
 from xagent.web.models.mcp import MCPServer
 from xagent.web.models.tool_config import ToolConfig
 from xagent.web.models.user import User
+from xagent.web.services.mcp_runtime import MCPBuiltinOAuthActorPolicy
 from xagent.web.services.tool_credentials import (
     set_user_tool_allowlist_hook,
     set_user_tool_overrides_hook,
@@ -2723,6 +2724,41 @@ def test_failed_mcp_config_refresh_never_reuses_stale_cache():
             asyncio.run(cfg.get_mcp_server_configs())
 
     assert session.query_calls == 2
+
+
+def test_mcp_runtime_context_switches_turn_and_actor_policy_atomically():
+    alice = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:U1",
+        allowed_builtin_oauth_server_ids=frozenset({1}),
+    )
+    bob = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:U2",
+        allowed_builtin_oauth_server_ids=frozenset({2}),
+    )
+    cfg = WebToolConfig(
+        db=None,
+        request=None,
+        connector_runtime_turn_id="turn-1",
+        mcp_runtime_authorization_policy=alice,
+    )
+    cfg._connector_runtime_view = {"mcp:1": {"auth_selector": {}}}
+    cfg._cached_mcp_configs = [{"id": 1}]
+    cfg._factory_runtime_snapshot = object()
+
+    assert (
+        cfg.set_mcp_runtime_context(turn_id="turn-1", authorization_policy=alice)
+        is False
+    )
+    assert cfg._cached_mcp_configs is not None
+
+    assert (
+        cfg.set_mcp_runtime_context(turn_id="turn-2", authorization_policy=bob) is True
+    )
+    assert cfg._connector_runtime_turn_id == "turn-2"
+    assert cfg._mcp_runtime_authorization_policy == bob
+    assert cfg._connector_runtime_view is None
+    assert cfg._cached_mcp_configs is None
+    assert cfg._factory_runtime_snapshot is None
 
 
 def test_connector_runtime_turn_switch_invalidates_runtime_caches():

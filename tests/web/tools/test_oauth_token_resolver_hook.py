@@ -22,6 +22,7 @@ from xagent.web.models.public_mcp import PublicMCPApp
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
 from xagent.web.services.mcp_oauth import MCPAuthorizationChallenge
+from xagent.web.services.mcp_runtime import MCPBuiltinOAuthActorPolicy
 from xagent.web.tools import config as web_tools_config
 from xagent.web.tools.config import (
     ResolvedToken,
@@ -220,10 +221,12 @@ def _add_user_oauth(
     *,
     provider: str = "google",
     access_token: str = "user-token",
+    resource_owner_key: str | None = None,
 ) -> UserOAuth:
     account = UserOAuth(
         user_id=user.id,
         provider=provider,
+        resource_owner_key=resource_owner_key,
         access_token=access_token,
         provider_user_id=f"{provider}-user",
     )
@@ -345,6 +348,378 @@ async def test_builtin_oauth_server_uses_stable_app_id_and_canonical_runtime_con
     ]
     assert configs[0]["config"]["env"]["GOOGLE_ACCESS_TOKEN"] == "hook-token"
     assert "WRONG_TOKEN" not in configs[0]["config"]["env"]
+
+
+@pytest.mark.asyncio
+async def test_missing_catalog_provider_never_falls_back_to_server_name(db_session):
+    db, user = db_session
+    server = _add_oauth_server(
+        db,
+        user,
+        name="Unsafe Provider",
+        provider=None,
+        launch_config=_launch_config(),
+    )
+    _add_user_oauth(
+        db,
+        user,
+        provider="unsafe provider",
+        access_token="wrong-provider-token",
+    )
+
+    configs = await _tool_config(db, user).get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="oauth_token_required",
+        oauth_token_required=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_injects_only_the_exact_builtin_oauth_owner(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="ordinary-token",
+    )
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="alice-token",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="bob-token",
+        resource_owner_key="toby:slack:41:UBOB",
+    )
+
+    async def forbidden_resolver(_request: TokenRequest) -> ResolvedToken | None:
+        pytest.fail("actor policy must not invoke the external token resolver")
+
+    set_oauth_token_resolver_hook(forbidden_resolver)
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+
+    configs = await _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    ).get_mcp_server_configs()
+
+    assert len(configs) == 1
+    assert configs[0]["transport"] == "stdio"
+    assert _access_token_env(configs[0]) == "alice-token"
+
+
+@pytest.mark.asyncio
+async def test_cached_config_switches_to_second_actor_credential(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    for owner, token in (
+        ("toby:slack:41:UALICE", "alice-token"),
+        ("toby:slack:41:UBOB", "bob-token"),
+    ):
+        _add_user_oauth(
+            db,
+            user,
+            provider="resolver-google-drive",
+            access_token=token,
+            resource_owner_key=owner,
+        )
+
+    alice = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+    bob = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UBOB",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=alice,
+    )
+
+    alice_configs = await tool_config.get_mcp_server_configs()
+    changed = tool_config.set_mcp_runtime_context(
+        turn_id="turn-bob",
+        authorization_policy=bob,
+    )
+    bob_configs = await tool_config.get_mcp_server_configs()
+
+    assert changed is True
+    assert _access_token_env(alice_configs[0]) == "alice-token"
+    assert _access_token_env(bob_configs[0]) == "bob-token"
+    assert "alice-token" not in str(bob_configs)
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_rejects_builtin_oauth_server_outside_allowlist(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset(),
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    )
+    configs = await tool_config.get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_server_not_allowed",
+    )
+    diagnostic = tool_config.get_mcp_oauth_diagnostics()[0]
+    assert diagnostic["code"] == "actor_policy_server_not_allowed"
+    assert diagnostic["resource_owner_key"] == "toby:slack:41:UALICE"
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_reports_unclassified_oauth_server(db_session, monkeypatch):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    monkeypatch.setattr(
+        "xagent.web.mcp_apps.get_app_for_mcp_server",
+        lambda db, candidate: {"auth_type": "mcp_oauth"},
+    )
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    )
+    configs = await tool_config.get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_requires_builtin_oauth",
+    )
+    assert tool_config.get_mcp_oauth_diagnostics()[0]["resource_owner_key"] == (
+        "toby:slack:41:UALICE"
+    )
+
+
+@pytest.mark.asyncio
+async def test_actor_builtin_oauth_refresh_retains_owner_key(
+    db_session,
+    monkeypatch,
+):
+    db, user = db_session
+    db.add(
+        OAuthProvider(
+            provider_name="google",
+            name="Google",
+            client_id=encrypt_value("client-id"),
+            client_secret=encrypt_value("client-secret"),
+            auth_url="https://provider.example/authorize",
+            token_url="https://provider.example/token",
+        )
+    )
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    account = _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="expired-token",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    account.refresh_token = "refresh-token"
+    account.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.commit()
+    account_id = int(account.id)
+
+    class SuccessfulAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "refreshed-alice-token",
+                    "refresh_token": "rotated-refresh-token",
+                    "expires_in": 3600,
+                },
+            )
+
+    monkeypatch.setattr(
+        web_tools_config.httpx,
+        "AsyncClient",
+        SuccessfulAsyncClient,
+    )
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+
+    configs = await _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    ).get_mcp_server_configs()
+
+    assert _access_token_env(configs[0]) == "refreshed-alice-token"
+    db.expire_all()
+    refreshed = db.get(UserOAuth, account_id)
+    assert refreshed is not None
+    assert refreshed.resource_owner_key == "toby:slack:41:UALICE"
+    assert refreshed.refresh_token == "rotated-refresh-token"
+
+
+@pytest.mark.asyncio
+async def test_actor_builtin_oauth_drops_task_runtime_after_binding_resolution(
+    db_session, monkeypatch
+):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    server.runtime_bindings = [
+        {
+            "source": "secrets.access_token",
+            "target": "transport_headers.Authorization",
+        }
+    ]
+    db.commit()
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="alice-token",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    monkeypatch.setattr(
+        "xagent.web.services.connector_runtime.load_connector_runtime_view",
+        lambda **_kwargs: {
+            f"mcp:{server.id}": {
+                "context": {"region": "us-east-1"},
+                "secrets": {"access_token": "task-supplied-token"},
+                "auth_selector": {},
+            }
+        },
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=MCPBuiltinOAuthActorPolicy(
+            builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+            allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+        ),
+    )
+    tool_config._task_id = "1"
+    raw_config = await tool_config._build_mcp_server_config(
+        server=server,
+        user_env_by_id={},
+        shared_env_by_id={},
+        env_source_by_id={},
+    )
+
+    assert raw_config["config"]["env"]["GOOGLE_ACCESS_TOKEN"] == "alice-token"
+    assert "connector_runtime" not in raw_config
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_never_falls_back_to_ordinary_builtin_oauth(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="ordinary-token",
+    )
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+
+    configs = await _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    ).get_mcp_server_configs()
+
+    assert len(configs) == 1
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="oauth_token_required",
+        oauth_token_required=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_ignores_generic_builtin_oauth_owner_selector(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="alice-token",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+
+    configs = await _tool_config(
+        db,
+        user,
+        mcp_auth_context={str(server.id): {"resource_owner_key": "toby:slack:41:UBOB"}},
+        mcp_runtime_authorization_policy=policy,
+    ).get_mcp_server_configs()
+
+    assert len(configs) == 1
+    assert _access_token_env(configs[0]) == "alice-token"
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_rejects_non_owner_builtin_oauth_selector(db_session):
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+
+    configs = await _tool_config(
+        db,
+        user,
+        mcp_auth_context={str(server.id): {"resource": "https://other.example"}},
+        mcp_runtime_authorization_policy=policy,
+    ).get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_selector_not_supported",
+    )
 
 
 @pytest.mark.asyncio

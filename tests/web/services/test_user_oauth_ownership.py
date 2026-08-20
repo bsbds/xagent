@@ -9,6 +9,7 @@ from xagent.web.models.gmail_watch import GmailWatchState
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
 from xagent.web.services.user_oauth import (
+    actor_owned_user_oauth_query,
     delete_scoped_user_oauth_accounts,
     get_scoped_user_oauth_account,
     get_user_oauth_account_by_id,
@@ -272,6 +273,18 @@ def test_owner_only_id_lookup_refreshes_an_identity_mapped_account(tmp_path) -> 
         assert account.access_token == "ordinary-refreshed"
     finally:
         other_db.close()
+        db.close()
+        engine.dispose()
+
+
+def test_actor_owned_query_selects_every_nonordinary_namespace(tmp_path) -> None:
+    engine, db, user, _rows = _db(tmp_path)
+    try:
+        assert {
+            row.access_token
+            for row in actor_owned_user_oauth_query(db, user_id=int(user.id)).all()
+        } == {"alice", "bob"}
+    finally:
         db.close()
         engine.dispose()
 

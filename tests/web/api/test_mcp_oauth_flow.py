@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -42,6 +43,7 @@ from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.mcp_oauth import mcp_oauth_client_registration_lookup_hash
 from xagent.web.models.public_mcp import PublicMCPApp
 from xagent.web.models.user import User
+from xagent.web.models.user_oauth import UserOAuth
 from xagent.web.services import mcp_oauth as mcp_oauth_service
 from xagent.web.services.mcp_oauth import (
     MCP_OAUTH_PERSISTED_VALUE_MAX_LENGTH,
@@ -1963,6 +1965,27 @@ async def test_mcp_oauth_app_not_connected_until_grant_completes(
             mcp_server_id=server.id,
             user_id=user.id,
             mcp_oauth_client_id=client.id,
+            resource_owner_key="toby:slack:41:UALICE",
+            issuer="https://auth.example.com",
+            resource="https://mcp.example.com/mcp",
+            scope="",
+            access_token=encrypt_value("obsolete-personal-native-token"),
+            status="active",
+        )
+    )
+    db.commit()
+
+    apps_with_only_non_default_grant = list_mcp_apps(current_user=user, db=db)
+    remote_notes_with_only_non_default_grant = next(
+        a for a in apps_with_only_non_default_grant if a["id"] == "remote-notes"
+    )
+    assert remote_notes_with_only_non_default_grant["is_connected"] is False
+
+    db.add(
+        MCPOAuthGrant(
+            mcp_server_id=server.id,
+            user_id=user.id,
+            mcp_oauth_client_id=client.id,
             resource_owner_key=f"xagent:user:{user.id}",
             issuer="https://auth.example.com",
             resource="https://mcp.example.com/mcp",
@@ -2151,6 +2174,17 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
         access_token=encrypt_value("own-access-token"),
         status="active",
     )
+    actor_grant = MCPOAuthGrant(
+        mcp_server_id=server.id,
+        user_id=user.id,
+        mcp_oauth_client_id=client.id,
+        resource_owner_key="toby:slack:41:UALICE",
+        issuer="https://auth.example.com",
+        resource="https://mcp.example.com/mcp",
+        scope="",
+        access_token=encrypt_value("actor-access-token"),
+        status="active",
+    )
     sibling_grant = MCPOAuthGrant(
         mcp_server_id=server.id,
         user_id=other_user.id,
@@ -2162,25 +2196,31 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
         access_token=encrypt_value("sibling-access-token"),
         status="active",
     )
-    db.add_all([own_grant, sibling_grant])
+    db.add_all([own_grant, actor_grant, sibling_grant])
     db.commit()
     db.refresh(own_grant)
+    db.refresh(actor_grant)
     db.refresh(sibling_grant)
 
     own_grant_id = own_grant.id
-    await delete_mcp_server(server.id, current_user=user, db=db)
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_mcp_server(server.id, current_user=user, db=db)
 
-    # F10: a disconnected grant must not just flip to "revoked" and linger —
-    # the row itself (still holding the encrypted access token) is purged.
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["dependency_class"] == "active_oauth_grant"
+    # The conflict is atomic: even the ordinary grant that would normally be
+    # revoked and removed remains untouched.
     assert (
         db.query(MCPOAuthGrant).filter(MCPOAuthGrant.id == own_grant_id).one_or_none()
-        is None
+        is not None
     )
+    db.refresh(actor_grant)
+    assert actor_grant.status == "active"
     db.refresh(sibling_grant)
     assert sibling_grant.status == "active"
 
-    # The shared row survives (other_user is still associated); only the
-    # disconnecting user's association and grant are gone.
+    # The shared row survives. The current user's association also survives
+    # because the non-default grant still depends on it.
     assert (
         db.query(MCPServer).filter(MCPServer.id == server.id).one_or_none() is not None
     )
@@ -2190,6 +2230,301 @@ async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
             UserMCPServer.user_id == user.id, UserMCPServer.mcpserver_id == server.id
         )
         .one_or_none()
+        is not None
+    )
+
+
+def _add_disconnect_atomicity_baseline(db, user: User):
+    server = _add_mcp_oauth_server(db, user, transport="oauth")
+    db.add(
+        PublicMCPApp(
+            app_id="records",
+            name=server.name,
+            description="Records",
+            transport="oauth",
+            provider_name="records",
+            launch_config={},
+        )
+    )
+    ordinary = UserOAuth(
+        user_id=int(user.id),
+        provider="records",
+        resource_owner_key=None,
+        provider_user_id="ordinary-account",
+        access_token="ordinary-token",
+    )
+    client = _add_oauth_client(db, server)
+    default_owner = f"xagent:user:{user.id}"
+    grant = MCPOAuthGrant(
+        mcp_server_id=server.id,
+        user_id=user.id,
+        mcp_oauth_client_id=client.id,
+        resource_owner_key=default_owner,
+        issuer="https://auth.example.com",
+        resource="https://mcp.example.com/mcp",
+        scope="records.read",
+        access_token=encrypt_value("default-access-token"),
+        status="active",
+    )
+    default_flow = MCPOAuthFlowState(
+        state=f"default-flow-{user.id}",
+        mcp_server_id=server.id,
+        user_id=user.id,
+        mcp_oauth_client_id=client.id,
+        resource_owner_key=default_owner,
+        issuer="https://auth.example.com",
+        resource="https://mcp.example.com/mcp",
+        scope="records.read",
+        code_verifier=encrypt_value("default-verifier"),
+        expires_at=mcp_api._utc_now() + timedelta(minutes=10),
+    )
+    db.add_all([ordinary, grant, default_flow])
+    db.commit()
+    association = (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user.id,
+            UserMCPServer.mcpserver_id == server.id,
+        )
+        .one()
+    )
+    return server, client, association, ordinary, grant, default_flow
+
+
+def _assert_disconnect_conflict_left_baseline_untouched(
+    db,
+    *,
+    server: MCPServer,
+    association: UserMCPServer,
+    ordinary: UserOAuth,
+    grant: MCPOAuthGrant,
+    default_flow: MCPOAuthFlowState,
+    team_delete,
+    revoke,
+) -> None:
+    assert db.get(MCPServer, int(server.id)) is not None
+    assert db.get(UserMCPServer, int(association.id)) is association
+    assert association.is_active is True
+    assert db.get(UserOAuth, int(ordinary.id)).access_token == "ordinary-token"
+    assert db.get(MCPOAuthGrant, int(grant.id)).status == "active"
+    assert db.get(MCPOAuthFlowState, int(default_flow.id)).consumed_at is None
+    team_delete.assert_not_called()
+    revoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_actor_user_oauth_dependency_is_atomic_409(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    server, _client, association, ordinary, grant, default_flow = (
+        _add_disconnect_atomicity_baseline(db, user)
+    )
+    actor = UserOAuth(
+        user_id=int(user.id),
+        provider="records",
+        resource_owner_key="toby:slack:41:UALICE",
+        provider_user_id="actor-account",
+        access_token="actor-token",
+    )
+    db.add(actor)
+    db.commit()
+    team_delete = Mock()
+    monkeypatch.setattr(
+        "xagent.web.services.connector_team_scope.delete_team_connector", team_delete
+    )
+    revoke = AsyncMock()
+    monkeypatch.setattr(mcp_api, "_revoke_mcp_oauth_grant_externally", revoke)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_mcp_server(int(server.id), current_user=user, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["dependency_class"] == "actor_oauth_credential"
+    assert db.get(UserOAuth, int(actor.id)).access_token == "actor-token"
+    assert db.get(MCPServer, int(server.id)) is not None
+    assert db.get(UserMCPServer, int(association.id)).is_active is True
+    assert db.get(UserOAuth, int(ordinary.id)).access_token == "ordinary-token"
+    assert db.get(MCPOAuthGrant, int(grant.id)).status == "active"
+    assert db.get(MCPOAuthFlowState, int(default_flow.id)).consumed_at is None
+    team_delete.assert_not_called()
+    revoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_resolves_actor_dependency_by_catalog_app_id(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    server, _client, association, ordinary, grant, default_flow = (
+        _add_disconnect_atomicity_baseline(db, user)
+    )
+    selected_app = PublicMCPApp(
+        app_id="selected-records",
+        name=server.name,
+        description="Selected records app",
+        transport="oauth",
+        provider_name="selected-records-provider",
+        launch_config={},
+    )
+    db.add(selected_app)
+    server.auth = {**server.auth, "app_id": selected_app.app_id}
+    actor = UserOAuth(
+        user_id=int(user.id),
+        provider=selected_app.provider_name,
+        resource_owner_key="toby:slack:41:UALICE",
+        provider_user_id="actor-account",
+        access_token="actor-token",
+    )
+    db.add(actor)
+    db.commit()
+    team_delete = Mock()
+    monkeypatch.setattr(
+        "xagent.web.services.connector_team_scope.delete_team_connector", team_delete
+    )
+    revoke = AsyncMock()
+    monkeypatch.setattr(mcp_api, "_revoke_mcp_oauth_grant_externally", revoke)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_mcp_server(int(server.id), current_user=user, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["dependency_class"] == "actor_oauth_credential"
+    _assert_disconnect_conflict_left_baseline_untouched(
+        db,
+        server=server,
+        association=association,
+        ordinary=ordinary,
+        grant=grant,
+        default_flow=default_flow,
+        team_delete=team_delete,
+        revoke=revoke,
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_cleans_ordinary_credential_by_catalog_app_id(
+    db_session,
+):
+    db, user, _ = db_session
+    server, _client, _association, other_app_account, _grant, _default_flow = (
+        _add_disconnect_atomicity_baseline(db, user)
+    )
+    selected_app = PublicMCPApp(
+        app_id="selected-records",
+        name=server.name,
+        description="Selected records app",
+        transport="oauth",
+        provider_name="selected-records-provider",
+        launch_config={},
+    )
+    db.add(selected_app)
+    server.auth = {**server.auth, "app_id": selected_app.app_id}
+    selected_app_account = UserOAuth(
+        user_id=int(user.id),
+        provider=selected_app.provider_name,
+        resource_owner_key=None,
+        provider_user_id="selected-account",
+        access_token="selected-token",
+    )
+    db.add(selected_app_account)
+    db.commit()
+    other_app_account_id = int(other_app_account.id)
+    selected_app_account_id = int(selected_app_account.id)
+
+    await delete_mcp_server(int(server.id), current_user=user, db=db)
+
+    assert db.get(UserOAuth, other_app_account_id) is not None
+    assert db.get(UserOAuth, selected_app_account_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_unconsumed_actor_flow_dependency_is_atomic_409(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    server, client, association, ordinary, grant, default_flow = (
+        _add_disconnect_atomicity_baseline(db, user)
+    )
+    actor_flow = MCPOAuthFlowState(
+        state="actor-flow-alice",
+        mcp_server_id=server.id,
+        user_id=user.id,
+        mcp_oauth_client_id=client.id,
+        resource_owner_key="toby:slack:41:UALICE",
+        issuer="https://auth.example.com",
+        resource="https://mcp.example.com/mcp",
+        scope="records.read",
+        code_verifier=encrypt_value("actor-verifier"),
+        expires_at=mcp_api._utc_now() + timedelta(minutes=10),
+    )
+    db.add(actor_flow)
+    db.commit()
+    team_delete = AsyncMock()
+    monkeypatch.setattr(
+        "xagent.web.services.connector_team_scope.delete_team_connector", team_delete
+    )
+    revoke = AsyncMock()
+    monkeypatch.setattr(mcp_api, "_revoke_mcp_oauth_grant_externally", revoke)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_mcp_server(int(server.id), current_user=user, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["dependency_class"] == "unconsumed_oauth_flow"
+    assert db.get(MCPOAuthFlowState, int(actor_flow.id)).consumed_at is None
+    _assert_disconnect_conflict_left_baseline_untouched(
+        db,
+        server=server,
+        association=association,
+        ordinary=ordinary,
+        grant=grant,
+        default_flow=default_flow,
+        team_delete=team_delete,
+        revoke=revoke,
+    )
+
+
+def test_disconnect_route_declares_typed_409_response() -> None:
+    route = next(
+        route
+        for route in mcp_api.mcp_router.routes
+        if str(getattr(route, "path", "")).endswith("/servers/{server_id}")
+        and "DELETE" in (getattr(route, "methods", None) or set())
+    )
+
+    response = route.responses[409]
+    assert response["model"] is mcp_api.MCPDisconnectConflictResponse
+    assert "depends" in response["description"]
+
+
+def test_expired_actor_flow_does_not_block_disconnect(db_session) -> None:
+    db, user, _ = db_session
+    server, client, _association, _ordinary, _grant, _default_flow = (
+        _add_disconnect_atomicity_baseline(db, user)
+    )
+    db.add(
+        MCPOAuthFlowState(
+            state="expired-actor-flow",
+            mcp_server_id=server.id,
+            user_id=user.id,
+            mcp_oauth_client_id=client.id,
+            resource_owner_key="toby:slack:41:UALICE",
+            issuer="https://auth.example.com",
+            resource="https://mcp.example.com/mcp",
+            scope="records.read",
+            code_verifier=encrypt_value("expired-verifier"),
+            expires_at=mcp_api._utc_now() - timedelta(seconds=1),
+        )
+    )
+    db.commit()
+
+    assert (
+        mcp_api._non_default_owner_dependency(
+            db,
+            server=server,
+            user_id=int(user.id),
+        )
         is None
     )
 
