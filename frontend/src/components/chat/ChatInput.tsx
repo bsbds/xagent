@@ -144,6 +144,13 @@ type ScheduledAttachmentUpload = {
 const uploadAbortError = (message: string) =>
   new DOMException(message, "AbortError");
 
+// A 15-minute request window permits a 100 MiB-class attachment to upload at
+// roughly 115 KiB/s while still ensuring one stalled request cannot own the
+// component FIFO indefinitely.
+const ATTACHMENT_UPLOAD_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const uploadTimeoutError = () =>
+  new DOMException("Attachment upload timed out", "TimeoutError");
+
 /** A component-owned FIFO that prevents one selection from bursting storage. */
 class AttachmentUploadQueue {
   private readonly pending: ScheduledAttachmentUpload[] = [];
@@ -495,6 +502,7 @@ export function ChatInput({
       const controller = new AbortController();
       uploadAbortControllersRef.current.set(file, controller);
       return uploadQueueRef.current!.schedule(async () => {
+        let didUploadTimeout = false;
         try {
           const currentTaskType = mode || 'task';
 
@@ -516,13 +524,33 @@ export function ChatInput({
             // Default to task mode if not specified
             formData.append('task_type', currentTaskType);
 
-            const response = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
-              method: 'POST',
-              body: formData,
-              signal: controller.signal
+            let uploadDeadline: ReturnType<typeof setTimeout> | undefined;
+            const clearUploadDeadline = () => {
+              if (uploadDeadline === undefined) return;
+              clearTimeout(uploadDeadline);
+              uploadDeadline = undefined;
+            };
+            controller.signal.addEventListener("abort", clearUploadDeadline, {
+              once: true,
             });
 
-            const parsed = await parseApiResponse(response);
+            let response: Response;
+            let parsed: Awaited<ReturnType<typeof parseApiResponse>>;
+            try {
+              uploadDeadline = setTimeout(() => {
+                didUploadTimeout = true;
+                controller.abort(uploadTimeoutError());
+              }, ATTACHMENT_UPLOAD_REQUEST_TIMEOUT_MS);
+              response = await apiRequest(`${getUploadApiUrl()}/api/files/upload`, {
+                method: 'POST',
+                body: formData,
+                signal: controller.signal
+              });
+              parsed = await parseApiResponse(response);
+            } finally {
+              clearUploadDeadline();
+              controller.signal.removeEventListener("abort", clearUploadDeadline);
+            }
 
             if (response.ok && isJsonRecord(parsed.data)) {
               const data = parsed.data;
@@ -541,7 +569,12 @@ export function ChatInput({
             }
           }
         } catch (error) {
-          if (
+          if (didUploadTimeout) {
+            failedFiles.add(file);
+            uploadErrorMessage = uploadErrorMessage
+              || t("files.uploadFailed")
+              || "Failed to upload some files";
+          } else if (
             controller.signal.aborted
             || (error instanceof DOMException && error.name === 'AbortError')
           ) {

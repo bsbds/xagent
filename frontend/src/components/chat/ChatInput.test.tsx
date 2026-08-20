@@ -1398,17 +1398,28 @@ describe("ChatInput", () => {
     expect(container.querySelector('button[type="submit"]')).toBeDisabled()
   })
 
-  it("serializes immediate attachment uploads in selection order", async () => {
-    const completions = new Map<File, () => void>()
+  it("serializes production attachment requests in repeated-selection order", async () => {
+    const completions: Array<() => void> = []
+    const requestedFiles: File[] = []
     let activeUploads = 0
     let maximumActiveUploads = 0
-    const uploadFile = vi.fn((file: File) => {
+    apiRequestMock.mockImplementation((url: string, options?: RequestInit) => {
+      if (url !== "http://upload.local/api/files/upload") {
+        return Promise.resolve(emptyJsonResponse())
+      }
+
+      const body = options?.body as FormData
+      const requestedFile = body.get("file") as File
+      requestedFiles.push(requestedFile)
       activeUploads += 1
       maximumActiveUploads = Math.max(maximumActiveUploads, activeUploads)
-      return new Promise<{ file_id: string }>(resolve => {
-        completions.set(file, () => {
+      return new Promise<Response>(resolve => {
+        completions.push(() => {
           activeUploads -= 1
-          resolve({ file_id: `id-${file.name}` })
+          resolve(new Response(
+            JSON.stringify({ success: true, file_id: `id-${requestedFile.name}` }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ))
         })
       })
     })
@@ -1423,7 +1434,6 @@ describe("ChatInput", () => {
           onFilesChange={setFiles}
           onInputChange={vi.fn()}
           onSend={vi.fn()}
-          uploadFile={uploadFile}
         />
       )
     }
@@ -1439,18 +1449,139 @@ describe("ChatInput", () => {
     fireEvent.change(fileInput, { target: { files: files.slice(0, 2) } })
     fireEvent.change(fileInput, { target: { files: files.slice(2) } })
 
-    await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(1))
-    expect(uploadFile.mock.calls[0][0]).toBe(files[0])
+    await waitFor(() => expect(requestedFiles).toEqual([files[0]]))
 
     for (let index = 0; index < files.length; index += 1) {
-      await act(async () => completions.get(files[index])?.())
+      await act(async () => completions[index]?.())
       if (index + 1 < files.length) {
-        await waitFor(() => expect(uploadFile).toHaveBeenCalledTimes(index + 2))
-        expect(uploadFile.mock.calls[index + 1][0]).toBe(files[index + 1])
+        await waitFor(() => expect(requestedFiles).toHaveLength(index + 2))
+        expect(requestedFiles[index + 1]).toBe(files[index + 1])
       }
     }
 
+    expect(requestedFiles).toEqual(files)
     expect(maximumActiveUploads).toBe(1)
+  })
+
+  it("aborts an active production upload and promotes the next queued file", async () => {
+    const uploadSignals: AbortSignal[] = []
+    let completeSecondUpload: (() => void) | undefined
+    apiRequestMock.mockImplementation((url: string, options?: RequestInit) => {
+      if (url !== "http://upload.local/api/files/upload") {
+        return Promise.resolve(emptyJsonResponse())
+      }
+
+      const signal = options?.signal as AbortSignal
+      uploadSignals.push(signal)
+      if (uploadSignals.length === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(signal.reason ?? new DOMException("Upload cancelled", "AbortError"))
+          }, { once: true })
+        })
+      }
+      return new Promise<Response>(resolve => {
+        completeSecondUpload = () => resolve(new Response(
+          JSON.stringify({ success: true, file_id: "second-id" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ))
+      })
+    })
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+      return (
+        <ChatInput
+          files={files}
+          hideConfig
+          inputValue=""
+          onFilesChange={setFiles}
+          onInputChange={vi.fn()}
+          onSend={vi.fn()}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    const first = new File(["one"], "one.txt")
+    const second = new File(["two"], "two.txt")
+
+    fireEvent.change(fileInput, { target: { files: [first, second] } })
+    await waitFor(() => expect(uploadSignals).toHaveLength(1))
+
+    fireEvent.click(screen.getAllByTitle("common.cancel")[0])
+
+    expect(uploadSignals[0].aborted).toBe(true)
+    await waitFor(() => expect(uploadSignals).toHaveLength(2))
+    expect(uploadSignals[1].aborted).toBe(false)
+    await act(async () => completeSecondUpload?.())
+    await waitFor(() => expect(screen.queryByText("one.txt")).not.toBeInTheDocument())
+    expect(screen.getByText("two.txt")).toBeInTheDocument()
+  })
+
+  it("aborts a hung production upload at its deadline and promotes the queue", async () => {
+    vi.useFakeTimers()
+    try {
+      const uploadSignals: AbortSignal[] = []
+      apiRequestMock.mockImplementation((url: string, options?: RequestInit) => {
+        if (url !== "http://upload.local/api/files/upload") {
+          return Promise.resolve(emptyJsonResponse())
+        }
+
+        const signal = options?.signal as AbortSignal
+        uploadSignals.push(signal)
+        if (uploadSignals.length === 1) {
+          return new Promise<Response>((_resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              reject(signal.reason ?? new DOMException("Upload timed out", "TimeoutError"))
+            }, { once: true })
+          })
+        }
+        return Promise.resolve(new Response(
+          JSON.stringify({ success: true, file_id: "second-id" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ))
+      })
+
+      function Harness() {
+        const [files, setFiles] = React.useState<File[]>([])
+        return (
+          <ChatInput
+            files={files}
+            hideConfig
+            inputValue=""
+            onFilesChange={setFiles}
+            onInputChange={vi.fn()}
+            onSend={vi.fn()}
+          />
+        )
+      }
+
+      const { container } = render(<Harness />)
+      const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+      const first = new File(["one"], "one.txt")
+      const second = new File(["two"], "two.txt")
+
+      fireEvent.change(fileInput, { target: { files: [first, second] } })
+      await act(async () => undefined)
+      expect(uploadSignals).toHaveLength(1)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15 * 60 * 1000)
+      })
+
+      expect(uploadSignals[0].aborted).toBe(true)
+      expect(uploadSignals).toHaveLength(2)
+      expect(screen.queryByText("one.txt")).not.toBeInTheDocument()
+      expect(screen.getByText("two.txt")).toBeInTheDocument()
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "files.uploadFailed",
+        expect.objectContaining({ duration: 8000 }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("cancels a queued equal-name file without aborting the active upload", async () => {
