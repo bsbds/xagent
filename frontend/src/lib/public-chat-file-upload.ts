@@ -5,10 +5,10 @@ export interface PublicChatUploadedFile {
   type?: string
 }
 
-interface UploadPublicChatFileOptions {
+interface UploadPublicChatFilesOptions {
   url: string
   accessToken: string
-  file: File
+  files: File[]
   taskType: string
   taskId?: number | string | null
   fallbackError: string
@@ -16,21 +16,35 @@ interface UploadPublicChatFileOptions {
 
 interface PublicChatUploadResponse {
   success?: boolean
-  file_id?: unknown
+  files?: unknown
   detail?: unknown
   message?: unknown
 }
 
-export async function uploadPublicChatFile({
+function uploadErrorMessage(
+  data: PublicChatUploadResponse | null,
+  fallbackError: string,
+): string {
+  return typeof data?.detail === "string"
+    ? data.detail
+    : typeof data?.message === "string"
+      ? data.message
+      : fallbackError
+}
+
+/** Uploads one public-chat attachment set in a single backend transaction. */
+export async function uploadPublicChatFiles({
   url,
   accessToken,
-  file,
+  files,
   taskType,
   taskId,
   fallbackError,
-}: UploadPublicChatFileOptions): Promise<PublicChatUploadedFile> {
+}: UploadPublicChatFilesOptions): Promise<PublicChatUploadedFile[]> {
+  if (files.length === 0) return []
+
   const formData = new FormData()
-  formData.append("file", file)
+  files.forEach(file => formData.append("files", file))
   formData.append("task_type", taskType)
   if (taskId != null) {
     formData.append("task_id", taskId.toString())
@@ -42,21 +56,27 @@ export async function uploadPublicChatFile({
     body: formData,
   })
   const data = await response.json().catch(() => null) as PublicChatUploadResponse | null
-  const fileId = typeof data?.file_id === "string" ? data.file_id : null
+  const uploaded = Array.isArray(data?.files)
+    ? data.files.flatMap((item, index) => {
+        if (typeof item !== "object" || item === null) return []
+        const record = item as Record<string, unknown>
+        if (typeof record.file_id !== "string") return []
+        const source = files[index]
+        return [{
+          file_id: record.file_id,
+          name: typeof record.filename === "string" ? record.filename : source?.name,
+          size: typeof record.file_size === "number" ? record.file_size : source?.size,
+          type: typeof record.mime_type === "string" ? record.mime_type : source?.type,
+        }]
+      })
+    : []
 
-  if (!response.ok || data?.success !== true || !fileId) {
-    const backendMessage = typeof data?.detail === "string"
-      ? data.detail
-      : typeof data?.message === "string"
-        ? data.message
-        : null
-    throw new Error(backendMessage || fallbackError)
+  if (!response.ok || data?.success !== true) {
+    throw new Error(uploadErrorMessage(data, fallbackError))
+  }
+  if (uploaded.length !== files.length) {
+    throw new Error(fallbackError)
   }
 
-  return {
-    file_id: fileId,
-    name: file.name,
-    size: file.size,
-    type: file.type,
-  }
+  return uploaded
 }

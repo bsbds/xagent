@@ -20,6 +20,11 @@ const app = vi.hoisted(() => ({
     transport?: AppProviderTransportConfig
   },
   startScreenProps: null as null | {
+    onSend: (
+      message: string,
+      files: File[],
+      config?: Record<string, string>,
+    ) => Promise<void>
     voiceInputEnabled?: boolean
   },
 }))
@@ -761,5 +766,92 @@ describe("PublicAgentChatPage", () => {
     expect(app.setTaskId).toHaveBeenCalledWith(71, { navigate: false })
     expect(app.setTaskId).not.toHaveBeenCalledWith(null, { navigate: false })
     expect(localStorage.getItem(taskKey)).toBe("71")
+  })
+
+  it("uploads an established share turn as one multipart batch", async () => {
+    localStorage.clear()
+    const first = new File(["first"], "first.txt", { type: "text/plain" })
+    const second = new File(["second"], "second.txt", { type: "text/plain" })
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(successfulAgentAuth))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        file_id: "first-id",
+        files: [
+          { file_id: "first-id", filename: "first.txt", file_size: 5, mime_type: "text/plain" },
+          { file_id: "second-id", filename: "second.txt", file_size: 6, mime_type: "text/plain" },
+        ],
+      }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "second-id" }))
+
+    renderSharePage()
+    await screen.findByRole("button", { name: "start:Support Agent" })
+
+    const uploadFiles = app.provider?.transport?.uploadFiles
+    expect(uploadFiles).toEqual(expect.any(Function))
+    await expect(uploadFiles?.([first, second], {
+      taskId: 42,
+      taskType: "task",
+    })).resolves.toEqual([
+      { file_id: "first-id", name: "first.txt", size: 5, type: "text/plain" },
+      { file_id: "second-id", name: "second.txt", size: 6, type: "text/plain" },
+    ])
+
+    const uploadCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://api.example/api/share/files/upload",
+    )
+    expect(uploadCalls).toHaveLength(1)
+    const body = uploadCalls[0][1]?.body as FormData
+    expect(body.getAll("files")).toEqual([first, second])
+    expect(body.get("file")).toBeNull()
+    expect(body.get("task_id")).toBe("42")
+  })
+
+  it("uploads workforce opening attachments as one multipart batch", async () => {
+    const first = new File(["first"], "first.txt", { type: "text/plain" })
+    const second = new File(["second"], "second.txt", { type: "text/plain" })
+    fetchMock.mockImplementation((url: string, request?: RequestInit) => {
+      if (url === "https://api.example/api/widget/auth") {
+        return Promise.resolve(jsonResponse(successfulWorkforceAuth))
+      }
+      if (url === "https://api.example/api/widget/files/upload") {
+        const body = request?.body as FormData
+        const singleFile = body.get("file") as File | null
+        return Promise.resolve(jsonResponse({
+          success: true,
+          file_id: singleFile ? `${singleFile.name}-id` : undefined,
+          files: [
+            { file_id: "first.txt-id", filename: "first.txt", file_size: 5, mime_type: "text/plain" },
+            { file_id: "second.txt-id", filename: "second.txt", file_size: 6, mime_type: "text/plain" },
+          ],
+        }))
+      }
+      if (url === "https://api.example/api/widget/chat/task/create") {
+        return Promise.resolve(jsonResponse(widgetTaskResponse(43, "running")))
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    renderWidgetPage({ searchAgentId: null, widgetKey: "widget-secret" })
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+
+    await app.startScreenProps?.onSend(
+      "first message",
+      [first, second],
+      { mode: "balanced" },
+    )
+
+    const uploadCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "https://api.example/api/widget/files/upload",
+    )
+    expect(uploadCalls).toHaveLength(1)
+    const uploadBody = uploadCalls[0][1]?.body as FormData
+    expect(uploadBody.getAll("files")).toEqual([first, second])
+    const taskCreateCall = fetchMock.mock.calls.find(
+      ([url]) => url === "https://api.example/api/widget/chat/task/create",
+    )
+    expect(JSON.parse(taskCreateCall?.[1]?.body as string)).toMatchObject({
+      files: ["first.txt-id", "second.txt-id"],
+    })
   })
 })

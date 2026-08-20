@@ -7,7 +7,7 @@ import { TaskConversationPanel } from "@/components/task/task-conversation-panel
 import { AppProvider, useApp, type AppProviderTransportConfig } from "@/contexts/app-context-chat"
 import { usePublicFileAccessPolicy } from "@/contexts/file-access-context"
 import { useI18n } from "@/contexts/i18n-context"
-import { uploadPublicChatFile } from "@/lib/public-chat-file-upload"
+import { uploadPublicChatFiles } from "@/lib/public-chat-file-upload"
 import { normalizeTaskStatus } from "@/lib/task-status"
 import {
   getApiUrl,
@@ -274,13 +274,13 @@ function PublicConversationContent({
       // exists yet) and threaded in as file ids BEFORE the run begins;
       // otherwise the first turn never sees them.
       if (workforceId && files?.length) {
-        const uploaded = await Promise.all(files.map((file) => uploadPublicChatFile({
+        const uploaded = await uploadPublicChatFiles({
           url: `${getApiUrl()}${publicApiPrefix}/files/upload`,
           accessToken,
-          file,
+          files,
           taskType: "task",
           fallbackError: t("files.uploadFailed"),
-        })))
+        })
         taskPayload.files = uploaded.map((item) => item.file_id)
       }
 
@@ -601,16 +601,14 @@ export function PublicAgentChatPage({
       `${baseUrl}/${authMode === "share" ? "api/share" : "api/widget"}/chat/ws/${taskId}${token ? `?token=${token}` : ""}`,
     fileAccess,
     uploadFiles: (files, params) =>
-      Promise.all(files.map((file) =>
-        uploadPublicChatFile({
-          url: `${getApiUrl()}/${authMode === "share" ? "api/share" : "api/widget"}/files/upload`,
-          accessToken: publicAccessToken,
-          file,
-          taskType: params.taskType,
-          taskId: params.taskId,
-          fallbackError: t("files.uploadFailed"),
-        }),
-      )),
+      uploadPublicChatFiles({
+        url: `${getApiUrl()}/${authMode === "share" ? "api/share" : "api/widget"}/files/upload`,
+        accessToken: publicAccessToken,
+        files,
+        taskType: params.taskType,
+        taskId: params.taskId,
+        fallbackError: t("files.uploadFailed"),
+      }),
   }), [authMode, fileAccess, publicAccessToken, t])
 
   if (isInitializing) {
