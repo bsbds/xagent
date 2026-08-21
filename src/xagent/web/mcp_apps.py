@@ -445,6 +445,40 @@ def _builtin_server_candidates(db: Session, app_info: Mapping[str, Any]) -> list
     return candidates
 
 
+def validate_unique_builtin_oauth_server_candidate(
+    db: Session,
+    server: Any,
+    *,
+    app_info: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Require one catalog app to resolve to exactly the supplied server row.
+
+    This identity-only check intentionally ignores current transport and launch
+    fields so policy construction can retain a unique drifted row for runtime
+    rejection. It does reject duplicate app-ID/display-name definitions.
+    """
+    resolved_app = (
+        dict(app_info)
+        if app_info is not None
+        else get_strict_app_for_mcp_server(db, server)
+    )
+    if resolved_app is None:
+        raise BuiltinOAuthServerDefinitionError(
+            f"MCP server {getattr(server, 'name', '')!r} has no catalog identity"
+        )
+    candidates = _builtin_server_candidates(db, resolved_app)
+    server_id = getattr(server, "id", None)
+    if len(candidates) != 1:
+        raise BuiltinOAuthServerDefinitionError(
+            f"builtin OAuth app {resolved_app.get('id')!r} has multiple MCP server definitions"
+        )
+    if server_id is None or getattr(candidates[0], "id", None) != server_id:
+        raise BuiltinOAuthServerDefinitionError(
+            f"MCP server {getattr(server, 'name', '')!r} is not the unique catalog definition"
+        )
+    return dict(resolved_app)
+
+
 def validate_builtin_oauth_server_definition(
     db: Session,
     server: Any,
@@ -453,8 +487,8 @@ def validate_builtin_oauth_server_definition(
     require_visible: bool = True,
 ) -> Dict[str, Any]:
     """Validate one stored row as the canonical definition for its catalog app."""
-    app_info = get_strict_app_for_mcp_server(db, server)
-    if app_info is None or app_info.get("auth_type") != "builtin_oauth":
+    app_info = validate_unique_builtin_oauth_server_candidate(db, server)
+    if app_info.get("auth_type") != "builtin_oauth":
         raise BuiltinOAuthServerDefinitionError(
             f"MCP server {getattr(server, 'name', '')!r} is not builtin OAuth"
         )

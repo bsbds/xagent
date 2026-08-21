@@ -410,6 +410,44 @@ def test_visibility_helper_rejects_multiple_server_definitions(oauth_db) -> None
         helper(db, user_id=int(user.id), app_id="calendar")
 
 
+def test_runtime_validator_rejects_multiple_canonical_server_candidates(
+    oauth_db,
+) -> None:
+    db, _user = oauth_db
+    db.add(
+        PublicMCPApp(
+            app_id="calendar",
+            name="Google Calendar",
+            transport="oauth",
+            provider_name="custom",
+            launch_config={"command": "calendar"},
+            is_visible_in_connector=True,
+        )
+    )
+    servers = [
+        MCPServer(
+            name="calendar",
+            managed="external",
+            transport="oauth",
+            auth={"app_id": "calendar", "provider": "custom"},
+        ),
+        MCPServer(
+            name="Google Calendar",
+            managed="external",
+            transport="oauth",
+            auth={"app_id": "calendar", "provider": "custom"},
+        ),
+    ]
+    db.add_all(servers)
+    db.commit()
+
+    validator = getattr(mcp_apps, "validate_builtin_oauth_server_definition")
+    error = getattr(mcp_apps, "BuiltinOAuthServerDefinitionError")
+    for server in servers:
+        with pytest.raises(error, match="multiple"):
+            validator(db, server, app_id="calendar")
+
+
 def test_visibility_helper_leaves_commit_and_rollback_to_caller(oauth_db) -> None:
     db, user = oauth_db
     db.add(
