@@ -79,7 +79,7 @@ Marked tasks do not remain isolated when executed by an older worker. Keep publi
 
 ### Deployment impact
 
-The `user_oauth` table gets a nullable `resource_owner_key` column, and existing rows keep a null value. This foundation explicitly scopes non-Gmail OAuth consumers to that ordinary namespace. Gmail behavior remains unchanged here; the immediately following Gmail lifecycle release installs its complete owner boundary before any release can create actor-owned credentials.
+The `user_oauth` table gets a nullable `resource_owner_key` column, and existing rows keep a null value. The foundation explicitly scopes non-Gmail OAuth consumers to that ordinary namespace. This Gmail lifecycle release completes the Gmail owner boundary before any release can create actor-owned credentials.
 
 Two partial unique indexes replace `uq_user_provider_account`. One index protects ordinary rows. The other index separates actor-owned namespaces. Standard SQL null semantics permit duplicate identities when `provider_user_id` is null. This behavior applies to ordinary and actor-owned rows.
 
@@ -180,7 +180,21 @@ For local SQLite, run `PRAGMA index_list('user_oauth');` and `PRAGMA index_info(
 
 Run `PRAGMA foreign_key_list('user_oauth');`. Require exactly one FK on `user_id`. This FK must target `users.id` with a `CASCADE` delete action. On PostgreSQL, inspect the `user_oauth` constraints. Require the same single cascade before you enable actor-owned rows.
 
-Verify existing cloud-storage and builtin OAuth connections. Confirm that seeded non-null-owner test rows do not appear in ordinary catalog or token paths.
+Before restarting Gmail watch processing, run this query on either supported database:
+
+```sql
+SELECT count(*)
+FROM gmail_watch_states AS watch
+LEFT JOIN user_oauth AS account ON account.id = watch.oauth_account_id
+WHERE account.id IS NULL
+   OR watch.user_id <> account.user_id
+   OR account.provider <> 'gmail'
+   OR account.resource_owner_key IS NOT NULL;
+```
+
+The result must be zero. A nonzero result identifies an orphan watch, a user mismatch, a non-Gmail account, or a non-ordinary account. Repair or remove the watch before rollout.
+
+Verify existing cloud-storage, Gmail, and builtin OAuth connections. Confirm that seeded non-null-owner test rows do not appear in ordinary catalog, token, or trigger paths.
 
 ### Rollback
 

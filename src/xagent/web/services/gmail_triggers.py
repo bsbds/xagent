@@ -14,8 +14,8 @@ from google.auth.transport.requests import (
     Request,
 )
 from google.oauth2.credentials import Credentials
-from sqlalchemy import case, or_
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, or_
+from sqlalchemy.orm import Session, aliased
 
 from ...config import (
     get_gmail_watch_enabled,
@@ -26,7 +26,12 @@ from ..models.gmail_watch import GmailWatchState
 from ..models.oauth_provider import OAuthProvider
 from ..models.trigger import AgentTrigger, TriggerProvisioningStatus, TriggerType
 from ..models.user_oauth import UserOAuth
+from .ops_signals import (
+    GMAIL_OAUTH_OWNERSHIP_MISMATCH,
+    register_degradation,
+)
 from .time_utils import coerce_utc as _coerce_utc
+from .user_oauth import get_scoped_user_oauth_account, user_oauth_owner_clause
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +195,11 @@ def _credentials_expiry(value: datetime | None) -> datetime | None:
 
 
 def build_gmail_service(db: Session, oauth_account: UserOAuth) -> Any:
-    """Build an authenticated Gmail API client for a connected Gmail account."""
+    """Build Gmail trigger access for one ordinary connected account."""
+    if oauth_account.resource_owner_key is not None:
+        raise GmailWatchConfigurationError(
+            "actor-owned OAuth credentials cannot back Gmail triggers"
+        )
     client_id, client_secret = _get_google_oauth_config(db)
     if not client_id or not client_secret:
         raise GmailWatchConfigurationError("Google OAuth configuration missing")
@@ -308,6 +317,80 @@ def _renew_watch_for_account(
     return state
 
 
+def _trigger_oauth_account_id(config: Any) -> int | None:
+    """Return an explicit trigger binding, or None for legacy fallback."""
+    value = config.get("oauth_account_id") if isinstance(config, dict) else None
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _enabled_gmail_account_references(db: Session) -> tuple[set[int], set[int]]:
+    """Return valid and invalid account IDs referenced by enabled triggers."""
+    trigger_rows = (
+        db.query(AgentTrigger.user_id, AgentTrigger.config, AgentTrigger.resource_id)
+        .filter(
+            AgentTrigger.type == TriggerType.GMAIL.value,
+            AgentTrigger.enabled.is_(True),
+        )
+        .all()
+    )
+    explicit_users: dict[int, set[int]] = {}
+    legacy_keys: set[tuple[int, str]] = set()
+    unscoped_legacy_users: set[int] = set()
+    for user_id, config, resource_id in trigger_rows:
+        account_id = _trigger_oauth_account_id(config)
+        if account_id is not None:
+            explicit_users.setdefault(account_id, set()).add(int(user_id))
+            continue
+        email = str(resource_id or "").strip().lower()
+        if email:
+            legacy_keys.add((int(user_id), email))
+        else:
+            # Pre-binding triggers had neither an account id nor a mailbox
+            # resource. Preserve their user-wide renewal behavior.
+            unscoped_legacy_users.add(int(user_id))
+
+    candidate_filter = []
+    if explicit_users:
+        candidate_filter.append(UserOAuth.id.in_(explicit_users))
+    legacy_user_ids = {
+        user_id for user_id, _email in legacy_keys
+    } | unscoped_legacy_users
+    if legacy_user_ids:
+        candidate_filter.append(UserOAuth.user_id.in_(legacy_user_ids))
+    accounts = (
+        db.query(UserOAuth).filter(or_(*candidate_filter)).all()
+        if candidate_filter
+        else []
+    )
+
+    valid: set[int] = set()
+    invalid: set[int] = set(explicit_users)
+    for account in accounts:
+        account_id = int(account.id)
+        account_user_id = int(account.user_id)
+        ordinary_gmail = (
+            account.provider == "gmail" and account.resource_owner_key is None
+        )
+        explicitly_referenced = account_user_id in explicit_users.get(account_id, ())
+        legacy_referenced = (
+            account_user_id in unscoped_legacy_users
+            or (
+                account_user_id,
+                str(account.email or "").strip().lower(),
+            )
+            in legacy_keys
+        )
+        if (explicitly_referenced or legacy_referenced) and ordinary_gmail:
+            valid.add(account_id)
+        elif account_id in explicit_users or legacy_referenced:
+            invalid.add(account_id)
+    invalid.difference_update(valid)
+    return valid, invalid
+
+
 def scan_due_gmail_watch_renewals(
     db: Session,
     *,
@@ -321,28 +404,81 @@ def scan_due_gmail_watch_renewals(
     scan_time = _coerce_utc(now) or datetime.now(timezone.utc)
     renew_before = scan_time + timedelta(seconds=get_gmail_watch_renewal_lead_seconds())
     batch_size = max(1, min(int(limit), 500))
-    enabled_gmail_users = (
-        db.query(AgentTrigger.user_id.label("user_id"))
+    valid_account_ids, invalid_account_ids = _enabled_gmail_account_references(db)
+    referenced_account_ids = valid_account_ids | invalid_account_ids
+    if not referenced_account_ids:
+        return 0
+
+    due_watch = or_(
+        GmailWatchState.watch_expiration.is_(None),
+        GmailWatchState.watch_expiration <= renew_before,
+    )
+    invalid_states = (
+        db.query(GmailWatchState)
+        .outerjoin(
+            UserOAuth,
+            UserOAuth.id == GmailWatchState.oauth_account_id,
+        )
         .filter(
-            AgentTrigger.type == TriggerType.GMAIL.value,
-            AgentTrigger.enabled.is_(True),
+            GmailWatchState.oauth_account_id.in_(referenced_account_ids),
+            due_watch,
+            ~and_(
+                GmailWatchState.status == TriggerProvisioningStatus.FAILED.value,
+                GmailWatchState.last_error.like(
+                    "Gmail watch OAuth ownership mismatch:%"
+                ),
+            ),
+            or_(
+                UserOAuth.id.is_(None),
+                UserOAuth.user_id != GmailWatchState.user_id,
+                UserOAuth.provider != "gmail",
+                UserOAuth.resource_owner_key.is_not(None),
+            ),
         )
         .distinct()
-        .subquery()
+        .order_by(GmailWatchState.watch_expiration, GmailWatchState.id)
+        .limit(batch_size)
+        .all()
+    )
+    if invalid_states:
+        from .gmail_provisioning import register_gmail_watch_ownership_mismatch
+
+        for invalid_state in invalid_states:
+            detail = register_gmail_watch_ownership_mismatch(invalid_state)
+            setattr(
+                invalid_state,
+                "status",
+                TriggerProvisioningStatus.FAILED.value,
+            )
+            setattr(invalid_state, "last_error", detail)
+            db.add(invalid_state)
+        db.commit()
+
+    any_watch_state_alias = aliased(GmailWatchState)
+    any_watch_state = (
+        db.query(any_watch_state_alias.id)
+        .filter(any_watch_state_alias.oauth_account_id == UserOAuth.id)
+        .correlate(UserOAuth)
+        .exists()
     )
     rows = (
         db.query(UserOAuth, GmailWatchState)
-        .join(enabled_gmail_users, enabled_gmail_users.c.user_id == UserOAuth.user_id)
         .outerjoin(
             GmailWatchState,
-            GmailWatchState.oauth_account_id == UserOAuth.id,
+            and_(
+                GmailWatchState.oauth_account_id == UserOAuth.id,
+                GmailWatchState.user_id == UserOAuth.user_id,
+            ),
         )
-        .filter(UserOAuth.provider == "gmail")
+        .filter(
+            UserOAuth.id.in_(valid_account_ids),
+            UserOAuth.provider == "gmail",
+            user_oauth_owner_clause(None),
+        )
         .filter(
             or_(
-                GmailWatchState.id.is_(None),
-                GmailWatchState.watch_expiration.is_(None),
-                GmailWatchState.watch_expiration <= renew_before,
+                and_(GmailWatchState.id.is_not(None), due_watch),
+                and_(GmailWatchState.id.is_(None), ~any_watch_state),
             )
         )
         .order_by(
@@ -538,10 +674,25 @@ async def collect_gmail_pubsub_events(
     if not email_address or not notification.history_id:
         return GmailPubsubEventCollection(events=[], skipped=1)
 
-    oauth_account = (
-        db.query(UserOAuth).filter(UserOAuth.id == int(state.oauth_account_id)).first()
+    oauth_account = get_scoped_user_oauth_account(
+        db,
+        user_id=int(state.user_id),
+        account_id=int(state.oauth_account_id),
+        resource_owner_key=None,
     )
     if oauth_account is None:
+        logger.warning(
+            "Skipping Gmail callback for watch state %s: OAuth account %s is "
+            "missing or not ordinary for user %s",
+            state.id,
+            state.oauth_account_id,
+            state.user_id,
+        )
+        register_degradation(
+            GMAIL_OAUTH_OWNERSHIP_MISMATCH,
+            f"Gmail watch state {state.id} cannot resolve ordinary OAuth "
+            f"account {state.oauth_account_id} for user {state.user_id}",
+        )
         return GmailPubsubEventCollection(events=[], skipped=1)
 
     state_id = int(state.id)
@@ -620,15 +771,20 @@ async def collect_gmail_pubsub_events(
             raise GmailTriggerError(error_message) from watch_exc
         return GmailPubsubEventCollection(events=[], skipped=1)
 
-    triggers = (
-        db.query(AgentTrigger)
-        .filter(
-            AgentTrigger.user_id == int(state.user_id),
-            AgentTrigger.type == TriggerType.GMAIL.value,
-            AgentTrigger.enabled.is_(True),
+    triggers = [
+        trigger
+        for trigger in (
+            db.query(AgentTrigger)
+            .filter(
+                AgentTrigger.user_id == int(state.user_id),
+                AgentTrigger.type == TriggerType.GMAIL.value,
+                AgentTrigger.enabled.is_(True),
+            )
+            .all()
         )
-        .all()
-    )
+        if (bound_account_id := _trigger_oauth_account_id(trigger.config)) is None
+        or bound_account_id == int(state.oauth_account_id)
+    ]
 
     events: list[GmailCollectedEvent] = []
     skipped = 0

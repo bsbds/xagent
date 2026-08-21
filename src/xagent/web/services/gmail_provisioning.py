@@ -45,7 +45,17 @@ from ..models.trigger import (
     TriggerType,
 )
 from ..models.user_oauth import UserOAuth
+from .ops_signals import (
+    GMAIL_OAUTH_OWNERSHIP_MISMATCH,
+    register_degradation,
+)
 from .time_utils import coerce_utc as _coerce_utc
+from .user_oauth import (
+    get_scoped_user_oauth_account,
+    get_user_oauth_account_by_id,
+    scoped_user_oauth_query,
+    user_oauth_owner_clause,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +93,23 @@ def gmail_watch_disabled_error() -> str:
 
 class GmailProvisioningError(RuntimeError):
     """Raised when per-mailbox Gmail provisioning cannot proceed."""
+
+
+def gmail_watch_ownership_mismatch_error(state: GmailWatchState) -> str:
+    """Describe a watch row that cannot resolve its exact ordinary owner."""
+    return (
+        "Gmail watch OAuth ownership mismatch: state "
+        f"{state.id} cannot resolve ordinary account {state.oauth_account_id} "
+        f"for user {state.user_id}"
+    )
+
+
+def register_gmail_watch_ownership_mismatch(state: GmailWatchState) -> str:
+    """Expose an invalid watch/account relationship without changing the row."""
+    detail = gmail_watch_ownership_mismatch_error(state)
+    logger.warning(detail)
+    register_degradation(GMAIL_OAUTH_OWNERSHIP_MISMATCH, detail)
+    return detail
 
 
 @contextmanager
@@ -321,7 +348,7 @@ def _coerce_oauth_account_id(value: Any) -> int | None:
 
 def _referenced_gmail_oauth_account_ids(
     db: Session,
-    accounts: Sequence[tuple[int, str]],
+    accounts: Sequence[tuple[int, int, str]],
 ) -> set[int]:
     """Resolve enabled Gmail trigger bindings for a bounded account batch.
 
@@ -330,12 +357,18 @@ def _referenced_gmail_oauth_account_ids(
     account binding exists; this preserves the explicit choice when multiple
     OAuth accounts share one email address.
     """
-    account_ids = {int(account_id) for account_id, _email in accounts}
-    account_ids_by_email: dict[str, set[int]] = {}
-    for account_id, raw_email in accounts:
+    account_users = {
+        int(account_id): int(user_id) for account_id, user_id, _email in accounts
+    }
+    account_ids = set(account_users)
+    account_ids_by_owner_email: dict[tuple[int, str], set[int]] = {}
+    for account_id, user_id, raw_email in accounts:
         email = str(raw_email or "").strip().lower()
         if email:
-            account_ids_by_email.setdefault(email, set()).add(int(account_id))
+            account_ids_by_owner_email.setdefault(
+                (int(user_id), email),
+                set(),
+            ).add(int(account_id))
     if not account_ids:
         return set()
 
@@ -348,29 +381,41 @@ def _referenced_gmail_oauth_account_ids(
     # fails there while passing on SQLite. Duplicate rows are harmless because
     # the loop below accumulates into a set.
     candidate_rows = (
-        db.query(AgentTrigger.config, AgentTrigger.resource_id)
+        db.query(
+            AgentTrigger.user_id,
+            AgentTrigger.config,
+            AgentTrigger.resource_id,
+        )
         .filter(
             AgentTrigger.type == TriggerType.GMAIL.value,
             AgentTrigger.enabled.is_(True),
             or_(
                 binding_text.in_({str(account_id) for account_id in account_ids}),
-                func.lower(AgentTrigger.resource_id).in_(account_ids_by_email),
+                func.lower(AgentTrigger.resource_id).in_(
+                    {email for _user_id, email in account_ids_by_owner_email}
+                ),
             ),
         )
         .all()
     )
 
     referenced: set[int] = set()
-    for raw_config, raw_resource_id in candidate_rows:
+    for trigger_user_id, raw_config, raw_resource_id in candidate_rows:
         config = raw_config if isinstance(raw_config, dict) else {}
         bound_account_id = _coerce_oauth_account_id(config.get("oauth_account_id"))
         if bound_account_id in account_ids:
-            referenced.add(bound_account_id)
+            if account_users[bound_account_id] == int(trigger_user_id):
+                referenced.add(bound_account_id)
             continue
         if bound_account_id is not None:
             continue
         resource_id = str(raw_resource_id or "").strip().lower()
-        referenced.update(account_ids_by_email.get(resource_id, ()))
+        referenced.update(
+            account_ids_by_owner_email.get(
+                (int(trigger_user_id), resource_id),
+                (),
+            )
+        )
     return referenced
 
 
@@ -405,6 +450,8 @@ def _get_or_create_watch_state(
             topic_name="",
         )
         db.add(state)
+    elif int(state.user_id) != int(oauth_account.user_id):
+        raise GmailProvisioningError(register_gmail_watch_ownership_mismatch(state))
     mark_pending(state)
     try:
         db.commit()
@@ -418,6 +465,8 @@ def _get_or_create_watch_state(
         if adopted is None:  # pragma: no cover - row deleted between retries
             raise
         state = adopted
+        if int(state.user_id) != int(oauth_account.user_id):
+            raise GmailProvisioningError(register_gmail_watch_ownership_mismatch(state))
         mark_pending(state)
         db.commit()
     db.refresh(state)
@@ -765,6 +814,7 @@ def reconcile_gmail_push_endpoints(
             db.query(
                 GmailWatchState.id,
                 GmailWatchState.oauth_account_id,
+                GmailWatchState.user_id,
                 GmailWatchState.email,
                 GmailWatchState.callback_id,
                 GmailWatchState.subscription_name,
@@ -783,12 +833,20 @@ def reconcile_gmail_push_endpoints(
         last_state_id = int(state_rows[-1].id)
         referenced_account_ids = _referenced_gmail_oauth_account_ids(
             db,
-            [(int(row.oauth_account_id), str(row.email or "")) for row in state_rows],
+            [
+                (
+                    int(row.oauth_account_id),
+                    int(row.user_id),
+                    str(row.email or ""),
+                )
+                for row in state_rows
+            ],
         )
 
         for (
             state_id,
             oauth_account_id,
+            _state_user_id,
             raw_email,
             raw_callback_id,
             raw_subscription_name,
@@ -871,20 +929,31 @@ def ensure_gmail_mailbox_provisioned(
     publisher_factory: PublisherFactory | None = None,
     subscriber_factory: SubscriberFactory | None = None,
 ) -> GmailWatchState:
-    """Idempotently provision Pub/Sub resources and a Gmail watch for a mailbox.
+    """Idempotently provision Pub/Sub resources for one ordinary mailbox.
 
-    Never raises for provisioning failures: the watch state converges to
-    failed with a clear last_error, and later reconcile attempts retry.
+    Actor-owned credentials are execution-only and cannot create machine-user
+    Gmail triggers. Other provisioning failures converge to a failed watch
+    state for later reconciliation.
     """
+    if oauth_account.resource_owner_key is not None:
+        raise GmailProvisioningError(
+            "actor-owned OAuth credentials cannot provision Gmail watches"
+        )
     oauth_account_id = int(oauth_account.id)
+    oauth_account_user_id = int(oauth_account.user_id)
     with _gmail_watch_transition_lock(db, oauth_account_id) as transition_db:
         transition_account = (
             oauth_account
             if transition_db is db
-            else transition_db.query(UserOAuth)
-            .filter(UserOAuth.id == oauth_account_id)
-            .one()
+            else get_scoped_user_oauth_account(
+                transition_db,
+                user_id=oauth_account_user_id,
+                account_id=oauth_account_id,
+                resource_owner_key=None,
+            )
         )
+        if transition_account is None:
+            raise GmailProvisioningError("ordinary Gmail OAuth account not found")
         state = _ensure_gmail_mailbox_provisioned_locked(
             transition_db,
             transition_account,
@@ -988,10 +1057,16 @@ def _provision_in_fresh_session(oauth_account_id: int) -> None:
 
     db = get_session_local()()
     try:
-        oauth_account = (
-            db.query(UserOAuth).filter(UserOAuth.id == oauth_account_id).first()
+        oauth_account = get_user_oauth_account_by_id(
+            db,
+            account_id=oauth_account_id,
+            resource_owner_key=None,
         )
         if oauth_account is None:
+            logger.warning(
+                "Cannot provision Gmail watch without ordinary OAuth account %s",
+                oauth_account_id,
+            )
             return
         ensure_gmail_mailbox_provisioned(db, oauth_account)
     except Exception:
@@ -1000,6 +1075,40 @@ def _provision_in_fresh_session(oauth_account_id: int) -> None:
         )
     finally:
         db.close()
+
+
+def _watch_state_for_owned_trigger(
+    db: Session,
+    trigger: AgentTrigger,
+    oauth_account_id: int,
+) -> tuple[GmailWatchState | None, str | None]:
+    """Resolve a watch only when its account and trigger have one owner."""
+    state = (
+        db.query(GmailWatchState)
+        .filter(GmailWatchState.oauth_account_id == oauth_account_id)
+        .first()
+    )
+    account = get_scoped_user_oauth_account(
+        db,
+        user_id=int(trigger.user_id),
+        account_id=oauth_account_id,
+        resource_owner_key=None,
+    )
+    if account is not None and (
+        state is None or int(state.user_id) == int(trigger.user_id)
+    ):
+        return state, None
+    if state is not None:
+        return state, register_gmail_watch_ownership_mismatch(state)
+
+    detail = (
+        "Gmail watch OAuth ownership mismatch: trigger "
+        f"{trigger.id} cannot resolve ordinary account {oauth_account_id} "
+        f"for user {trigger.user_id}"
+    )
+    logger.warning(detail)
+    register_degradation(GMAIL_OAUTH_OWNERSHIP_MISMATCH, detail)
+    return None, detail
 
 
 def provision_gmail_trigger(
@@ -1035,12 +1144,21 @@ def provision_gmail_trigger(
         db.commit()
         return status
 
+    state, ownership_error = _watch_state_for_owned_trigger(
+        db,
+        trigger,
+        int(oauth_account_id),
+    )
+    if ownership_error is not None:
+        status = TriggerProvisioningStatus.FAILED.value
+        setattr(trigger, "provisioning_status", status)
+        setattr(trigger, "provisioning_error", ownership_error)
+        db.add(trigger)
+        db.commit()
+        db.refresh(trigger)
+        return status
+
     if not get_gmail_watch_enabled():
-        state = (
-            db.query(GmailWatchState)
-            .filter(GmailWatchState.oauth_account_id == int(oauth_account_id))
-            .first()
-        )
         if state is None:
             status = TriggerProvisioningStatus.FAILED.value
             error: str | None = gmail_watch_disabled_error()
@@ -1075,12 +1193,15 @@ def provision_gmail_trigger(
     thread.join(timeout)
 
     db.expire_all()
-    state = (
-        db.query(GmailWatchState)
-        .filter(GmailWatchState.oauth_account_id == int(oauth_account_id))
-        .first()
+    state, ownership_error = _watch_state_for_owned_trigger(
+        db,
+        trigger,
+        int(oauth_account_id),
     )
-    if thread.is_alive() or state is None:
+    if ownership_error is not None:
+        status = TriggerProvisioningStatus.FAILED.value
+        error = ownership_error
+    elif thread.is_alive() or state is None:
         status = TriggerProvisioningStatus.PENDING.value
         error = None
     else:
@@ -1200,6 +1321,20 @@ def _reconcile_gmail_trigger_batch(
         (int(state.user_id), str(state.email or "").strip().lower()): state
         for state in states
     }
+    state_account_ids = {int(state.oauth_account_id) for state in states}
+    ordinary_account_users = {
+        int(account_id): int(user_id)
+        for account_id, user_id in (
+            db.query(UserOAuth.id, UserOAuth.user_id)
+            .filter(
+                UserOAuth.id.in_(state_account_ids),
+                user_oauth_owner_clause(None),
+            )
+            .all()
+            if state_account_ids
+            else ()
+        )
+    }
 
     updated = 0
     for trigger in candidates:
@@ -1215,6 +1350,11 @@ def _reconcile_gmail_trigger_batch(
                 continue
             status = TriggerProvisioningStatus.FAILED.value
             error = gmail_watch_disabled_error()
+        elif ordinary_account_users.get(int(state.oauth_account_id)) != int(
+            state.user_id
+        ) or int(state.user_id) != int(trigger.user_id):
+            status = TriggerProvisioningStatus.FAILED.value
+            error = register_gmail_watch_ownership_mismatch(state)
         else:
             status, error = _trigger_facing_status(state)
         if (
@@ -1260,21 +1400,19 @@ def release_gmail_mailbox_if_unused(
         return False
 
     email = str(state.email or "").strip().lower()
-    remaining = (
-        db.query(AgentTrigger.id)
-        .filter(
-            AgentTrigger.type == TriggerType.GMAIL.value,
-            AgentTrigger.enabled.is_(True),
-            func.lower(AgentTrigger.resource_id) == email,
-        )
-        .count()
+    is_referenced = int(oauth_account_id) in _referenced_gmail_oauth_account_ids(
+        db,
+        [(int(oauth_account_id), int(state.user_id), email)],
     )
-    if remaining > 0:
+    if is_referenced:
         db.commit()
         return False
 
-    oauth_account = (
-        db.query(UserOAuth).filter(UserOAuth.id == int(oauth_account_id)).first()
+    oauth_account = get_scoped_user_oauth_account(
+        db,
+        user_id=int(state.user_id),
+        account_id=int(oauth_account_id),
+        resource_owner_key=None,
     )
     if oauth_account is not None:
         try:
@@ -1282,6 +1420,28 @@ def release_gmail_mailbox_if_unused(
             service.users().stop(userId="me").execute()
         except Exception as exc:
             logger.warning("Failed to stop Gmail watch for %s: %s", email, exc)
+            # Keep every cleanup handle so a later release attempt can retry
+            # the remote stop before deleting local or Pub/Sub resources.
+            db.commit()
+            return False
+    else:
+        logger.warning(
+            "Cannot stop Gmail watch for state %s: OAuth account %s is missing "
+            "or not ordinary for user %s",
+            state.id,
+            oauth_account_id,
+            state.user_id,
+        )
+        register_degradation(
+            GMAIL_OAUTH_OWNERSHIP_MISMATCH,
+            f"Gmail watch state {state.id} cannot resolve ordinary OAuth "
+            f"account {oauth_account_id} for user {state.user_id}",
+        )
+        # Preserve every cleanup handle until an operator repairs the owner
+        # mismatch. Deleting Pub/Sub resources or this row while Gmail stop()
+        # was impossible would orphan the remote watch permanently.
+        db.commit()
+        return False
 
     project_id = get_gmail_pubsub_project_id()
     if project_id:
@@ -1350,19 +1510,39 @@ def sweep_gmail_provisioning(
     )
     referenced_account_ids = _referenced_gmail_oauth_account_ids(
         db,
-        [(int(state.oauth_account_id), str(state.email or "")) for state in candidates],
+        [
+            (
+                int(state.oauth_account_id),
+                int(state.user_id),
+                str(state.email or ""),
+            )
+            for state in candidates
+        ],
     )
 
     attempts = 0
     for state in candidates:
         if int(state.oauth_account_id) not in referenced_account_ids:
             continue
-        oauth_account = (
-            db.query(UserOAuth)
-            .filter(UserOAuth.id == int(state.oauth_account_id))
-            .first()
+        oauth_account = get_scoped_user_oauth_account(
+            db,
+            user_id=int(state.user_id),
+            account_id=int(state.oauth_account_id),
+            resource_owner_key=None,
         )
         if oauth_account is None:
+            logger.warning(
+                "Skipping Gmail provisioning sweep for watch state %s: OAuth "
+                "account %s is missing or not ordinary for user %s",
+                state.id,
+                state.oauth_account_id,
+                state.user_id,
+            )
+            register_degradation(
+                GMAIL_OAUTH_OWNERSHIP_MISMATCH,
+                f"Gmail watch state {state.id} cannot resolve ordinary OAuth "
+                f"account {state.oauth_account_id} for user {state.user_id}",
+            )
             continue
         ensure_gmail_mailbox_provisioned(
             db,
@@ -1419,13 +1599,24 @@ def best_effort_provision_gmail_watches_for_user(
     # this function share the ``XAGENT_GMAIL_WATCH_ENABLED`` gate.
     try:
         accounts = (
-            db.query(UserOAuth)
-            .filter(UserOAuth.user_id == int(user_id), UserOAuth.provider == "gmail")
+            scoped_user_oauth_query(
+                db,
+                user_id=int(user_id),
+                resource_owner_key=None,
+            )
+            .filter(UserOAuth.provider == "gmail")
             .all()
         )
         referenced_account_ids = _referenced_gmail_oauth_account_ids(
             db,
-            [(int(account.id), str(account.email or "")) for account in accounts],
+            [
+                (
+                    int(account.id),
+                    int(account.user_id),
+                    str(account.email or ""),
+                )
+                for account in accounts
+            ],
         )
     except Exception as exc:
         db.rollback()
