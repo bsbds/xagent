@@ -370,8 +370,9 @@ def _validate_canonical_builtin_oauth_server(
 
     if failures:
         raise BuiltinOAuthServerDefinitionError(
-            f"MCP server {getattr(server, 'name', '')!r} is not a canonical "
-            f"builtin OAuth definition: {', '.join(sorted(set(failures)))}"
+            f"OAuth app {app_id!r} conflicts with an existing MCP server: "
+            f"{getattr(server, 'name', '')!r} is not a canonical builtin OAuth "
+            f"definition ({', '.join(sorted(set(failures)))})"
         )
 
 
