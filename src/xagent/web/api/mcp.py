@@ -35,8 +35,11 @@ from ...core.tools.core.mcp.model import MASKED_SECRET_VALUE, SENSITIVE_AUTH_FIE
 from ...core.utils.encryption import decrypt_value, encrypt_value
 from ..auth_dependencies import get_current_user, is_admin_user
 from ..mcp_apps import (
+    BuiltinOAuthServerDefinitionError,
     get_all_mcp_apps,
     get_app_by_name,
+    get_strict_app_for_mcp_server,
+    mcp_server_claims_reserved_catalog_identity,
     restrict_to_app_scoped_oauth_grant,
 )
 from ..models.custom_api import CustomApi, UserCustomApi
@@ -1397,6 +1400,16 @@ def _auth_metadata_tampered(incoming_auth: Any, current_auth: Any) -> bool:
     )
 
 
+def _config_auth_app_id(config: Any) -> tuple[bool, Any]:
+    """Return presence/value for the reserved stable catalog identity key."""
+    if not isinstance(config, dict):
+        return False, None
+    auth = config.get("auth")
+    if not isinstance(auth, dict) or "app_id" not in auth:
+        return False, None
+    return True, auth.get("app_id")
+
+
 def _global_config_tampered(server_data: MCPServerUpdate, server: MCPServer) -> bool:
     """True if a payload changes owner-only global fields (non-secret ones)."""
     fields_set = server_data.model_fields_set
@@ -1469,6 +1482,7 @@ def _db_server_to_response(
     app_id: Optional[str] = None,
     provider: Optional[str] = None,
     is_admin: bool = False,
+    db: Session | None = None,
 ) -> MCPServerResponse:
     """Convert database MCPServer to response model."""
     # Get status from manager if available
@@ -1487,6 +1501,15 @@ def _db_server_to_response(
     if isinstance(config.get("env"), dict):
         config["env"] = _mask_env(config["env"])
 
+    can_edit_global = _check_mcp_permission(user_mcp, is_admin, require="edit")
+    if (
+        can_edit_global
+        and not is_admin
+        and db is not None
+        and mcp_server_claims_reserved_catalog_identity(db, server)
+    ):
+        can_edit_global = False
+
     return MCPServerResponse(
         id=server.id,
         user_id=user_mcp.user_id,
@@ -1501,7 +1524,7 @@ def _db_server_to_response(
         runtime_input_schema=server.runtime_input_schema,
         runtime_bindings=server.runtime_bindings,
         allow_delegated_authorization=bool(server.allow_delegated_authorization),
-        can_edit_global=_check_mcp_permission(user_mcp, is_admin, require="edit"),
+        can_edit_global=can_edit_global,
         transport_display=server.transport_display,
         created_at=_format_optional_datetime(server.created_at),
         updated_at=_format_optional_datetime(server.updated_at),
@@ -2521,6 +2544,7 @@ def get_mcp_servers(
                     app_id,
                     provider,
                     is_admin=is_admin,
+                    db=db,
                 )
             )
 
@@ -2559,6 +2583,7 @@ def get_mcp_servers(
                         app_id,
                         provider,
                         is_admin=is_admin,
+                        db=db,
                     )
                 )
 
@@ -2634,6 +2659,7 @@ def get_mcp_server(
             app_id,
             provider,
             is_admin=getattr(current_user, "is_admin", False),
+            db=db,
         )
 
     except HTTPException:
@@ -3022,6 +3048,7 @@ def connect_mcp_app(
         manager,
         app_id=str(app_info["id"]),
         is_admin=getattr(current_user, "is_admin", False),
+        db=db,
     )
 
 
@@ -3142,6 +3169,16 @@ def create_mcp_server(
                 ),
             )
 
+        # ``auth.app_id`` is platform-owned stable identity. Custom server
+        # payloads must never claim it, including IDs not yet present in the
+        # catalog (which could become trusted after a later catalog addition).
+        claimed_app_id, _ = _config_auth_app_id(server_data.config)
+        if claimed_app_id and not getattr(current_user, "is_admin", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="config.auth.app_id is reserved for catalog connectors",
+            )
+
         # Build and validate config
         try:
             config = _build_server_config(server_data)
@@ -3199,7 +3236,11 @@ def create_mcp_server(
 
         logger.info(f"Created MCP server '{server_data.name}' for user {user_id}")
         return _db_server_to_response(
-            server, user_mcp, manager, is_admin=getattr(current_user, "is_admin", False)
+            server,
+            user_mcp,
+            manager,
+            is_admin=getattr(current_user, "is_admin", False),
+            db=db,
         )
 
     except HTTPException:
@@ -3240,9 +3281,28 @@ def update_mcp_server(
 
         user_mcp, server = result
         old_name = str(server.name)
-        can_edit_global = _check_mcp_permission(
-            user_mcp, getattr(current_user, "is_admin", False), require="edit"
+        is_admin = bool(getattr(current_user, "is_admin", False))
+        can_edit_global = _check_mcp_permission(user_mcp, is_admin, require="edit")
+        protected_catalog_identity = mcp_server_claims_reserved_catalog_identity(
+            db, server
         )
+        if protected_catalog_identity and not is_admin:
+            can_edit_global = False
+
+        incoming_has_app_id, incoming_app_id = _config_auth_app_id(server_data.config)
+        current_auth = server.auth if isinstance(server.auth, dict) else {}
+        if (
+            incoming_has_app_id
+            and not is_admin
+            and (
+                "app_id" not in current_auth
+                or incoming_app_id != current_auth.get("app_id")
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="config.auth.app_id is reserved for catalog connectors",
+            )
 
         # Non-owners may not touch the shared global config (env, command, etc.);
         # they only get to set their own per-user env override below. Reject a
@@ -3295,46 +3355,51 @@ def update_mcp_server(
             else user_mcp.is_active,
         )
 
-        # Build and validate config
-        try:
-            config = _build_server_config(update_data, server)
-            fields_set = server_data.model_fields_set
-            runtime_input_schema = (
-                server_data.runtime_input_schema
-                if can_edit_global and "runtime_input_schema" in fields_set
-                else server.runtime_input_schema
-            )
-            runtime_bindings = (
-                server_data.runtime_bindings
-                if can_edit_global and "runtime_bindings" in fields_set
-                else server.runtime_bindings
-            )
-            allow_delegated_authorization = (
-                bool(server_data.allow_delegated_authorization)
-                if can_edit_global and "allow_delegated_authorization" in fields_set
-                else bool(server.allow_delegated_authorization)
-            )
-            _validate_mcp_runtime_config(
-                runtime_input_schema=runtime_input_schema,
-                runtime_bindings=runtime_bindings,
-                allow_delegated_authorization=allow_delegated_authorization,
-                static_headers=config.headers,
-            )
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid configuration: {str(e)}",
-            )
+        fields_set = server_data.model_fields_set
+        runtime_input_schema = (
+            server_data.runtime_input_schema
+            if can_edit_global and "runtime_input_schema" in fields_set
+            else server.runtime_input_schema
+        )
+        runtime_bindings = (
+            server_data.runtime_bindings
+            if can_edit_global and "runtime_bindings" in fields_set
+            else server.runtime_bindings
+        )
+        allow_delegated_authorization = (
+            bool(server_data.allow_delegated_authorization)
+            if can_edit_global and "allow_delegated_authorization" in fields_set
+            else bool(server.allow_delegated_authorization)
+        )
 
-        # Update server fields (global config; no-op values for non-owners)
-        try:
-            _update_server_from_config(server, config)
-        except ValueError as exc:
-            db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid environment variables: {exc}",
-            ) from exc
+        # Official builtin rows use the internal ``oauth`` pseudo-transport and
+        # may have display names containing spaces; neither is valid input to
+        # the custom-server MCPServerConfig model. Per-user-only updates must
+        # therefore bypass global config reconstruction entirely.
+        config: MCPServerConfig | None = None
+        if can_edit_global:
+            try:
+                config = _build_server_config(update_data, server)
+                _validate_mcp_runtime_config(
+                    runtime_input_schema=runtime_input_schema,
+                    runtime_bindings=runtime_bindings,
+                    allow_delegated_authorization=allow_delegated_authorization,
+                    static_headers=config.headers,
+                )
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid configuration: {str(e)}",
+                )
+
+            try:
+                _update_server_from_config(server, config)
+            except ValueError as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid environment variables: {exc}",
+                ) from exc
         if can_edit_global:
             orm_server = cast(Any, server)
             if "runtime_input_schema" in fields_set:
@@ -3376,7 +3441,11 @@ def update_mcp_server(
 
         logger.info(f"Updated MCP server '{server.name}' for user {user_id}")
         return _db_server_to_response(
-            server, user_mcp, manager, is_admin=getattr(current_user, "is_admin", False)
+            server,
+            user_mcp,
+            manager,
+            is_admin=getattr(current_user, "is_admin", False),
+            db=db,
         )
 
     except HTTPException:
@@ -3471,10 +3540,19 @@ async def delete_mcp_server(
 
         # If it's an OAuth server, also delete the corresponding OAuth tokens
         if server.transport == "oauth":
-            from ..mcp_apps import get_app_by_name
-
-            # Find the corresponding app_id and provider
-            app_info = get_app_by_name(db, str(server.name))
+            # Stable ``auth.app_id`` works for both app-ID and legacy display-name
+            # rows. Ambiguous historical metadata must not turn disconnect into
+            # a raw 500; association cleanup may proceed without guessing which
+            # credential namespace to delete.
+            try:
+                app_info = get_strict_app_for_mcp_server(db, server)
+            except BuiltinOAuthServerDefinitionError:
+                app_info = None
+                logger.warning(
+                    "Skipped ordinary OAuth credential cleanup for ambiguous MCP "
+                    "catalog identity",
+                    extra={"mcp_server_id": int(server_id)},
+                )
             if app_info:
                 provider = app_info.get("provider")
                 app_id = app_info.get("id")
@@ -3645,7 +3723,11 @@ async def toggle_mcp_server(
         )
 
         return _db_server_to_response(
-            server, user_mcp, manager, is_admin=getattr(current_user, "is_admin", False)
+            server,
+            user_mcp,
+            manager,
+            is_admin=getattr(current_user, "is_admin", False),
+            db=db,
         )
 
     except HTTPException:

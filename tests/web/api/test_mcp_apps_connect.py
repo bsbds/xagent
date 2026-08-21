@@ -583,6 +583,192 @@ def test_create_server_rejects_catalog_app_id(test_db, name):
     assert exc.value.status_code == 400
 
 
+def test_create_server_rejects_reserved_auth_app_id(test_db):
+    """Only trusted catalog provisioning may stamp stable catalog identity."""
+    from fastapi import HTTPException
+
+    from xagent.web.api.mcp import MCPServerCreate, create_mcp_server
+
+    with pytest.raises(HTTPException) as exc:
+        create_mcp_server(
+            MCPServerCreate(
+                name="custom-remote",
+                transport="streamable_http",
+                config={
+                    "url": "https://custom.example/mcp",
+                    "auth": {"app_id": "future-catalog-app"},
+                },
+            ),
+            current_user=_user(test_db, 1),
+            db=test_db,
+        )
+
+    assert exc.value.status_code == 400
+    assert "app_id" in str(exc.value.detail)
+    assert (
+        test_db.query(MCPServer).filter(MCPServer.name == "custom-remote").count() == 0
+    )
+
+
+def test_update_server_rejects_reserved_auth_app_id(test_db):
+    """A custom row cannot claim official identity through resulting config."""
+    from fastapi import HTTPException
+
+    from xagent.web.api.mcp import (
+        MCPServerCreate,
+        MCPServerUpdate,
+        create_mcp_server,
+        update_mcp_server,
+    )
+
+    created = create_mcp_server(
+        MCPServerCreate(
+            name="custom-remote",
+            transport="streamable_http",
+            config={"url": "https://custom.example/mcp"},
+        ),
+        current_user=_user(test_db, 1),
+        db=test_db,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        update_mcp_server(
+            created.id,
+            MCPServerUpdate(config={"auth": {"app_id": "google-maps"}}),
+            current_user=_user(test_db, 1),
+            db=test_db,
+        )
+
+    assert exc.value.status_code == 400
+    server = test_db.query(MCPServer).filter(MCPServer.id == created.id).one()
+    assert server.auth is None
+
+
+def _add_owned_builtin_oauth_server(test_db) -> tuple[MCPServer, UserMCPServer]:
+    test_db.add(
+        PublicMCPApp(
+            app_id="calendar",
+            name="Google Calendar",
+            description="Calendar",
+            transport="oauth",
+            provider_name="google",
+            launch_config={"command": "calendar"},
+            is_visible_in_connector=True,
+        )
+    )
+    server = MCPServer(
+        name="Google Calendar",
+        description="Calendar",
+        managed="external",
+        transport="oauth",
+        auth={"app_id": "calendar", "provider": "google"},
+    )
+    test_db.add(server)
+    test_db.flush()
+    association = UserMCPServer(
+        user_id=1,
+        mcpserver_id=server.id,
+        is_owner=True,
+        can_edit=True,
+        can_delete=True,
+        is_active=True,
+    )
+    test_db.add(association)
+    test_db.commit()
+    return server, association
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        pytest.param(
+            {"transport": "stdio", "config": {"command": "/bin/evil"}}, id="transport"
+        ),
+        pytest.param({"name": "custom-calendar"}, id="name"),
+        pytest.param(
+            {"runtime_input_schema": {"secrets": {"token": {"type": "string"}}}},
+            id="runtime-schema",
+        ),
+        pytest.param({"allow_delegated_authorization": True}, id="delegation"),
+    ],
+)
+def test_owned_builtin_oauth_definition_rejects_global_update(test_db, update):
+    """Historical ownership never permits mutation of shared official metadata."""
+    from fastapi import HTTPException
+
+    from xagent.web.api.mcp import MCPServerUpdate, update_mcp_server
+
+    server, _association = _add_owned_builtin_oauth_server(test_db)
+
+    with pytest.raises(HTTPException) as exc:
+        update_mcp_server(
+            server.id,
+            MCPServerUpdate(**update),
+            current_user=_user(test_db, 1),
+            db=test_db,
+        )
+
+    assert exc.value.status_code == 403
+    test_db.refresh(server)
+    assert server.name == "Google Calendar"
+    assert server.transport == "oauth"
+    assert server.command is None
+    assert server.runtime_input_schema is None
+    assert server.allow_delegated_authorization is False
+
+
+def test_owned_builtin_oauth_definition_allows_per_user_update(test_db):
+    """Protecting the shared row must not block activation or user env state."""
+    from xagent.core.utils.encryption import decrypt_env_dict
+    from xagent.web.api.mcp import MCPServerUpdate, update_mcp_server
+
+    server, association = _add_owned_builtin_oauth_server(test_db)
+
+    response = update_mcp_server(
+        server.id,
+        MCPServerUpdate(is_active=False, user_env={"PREFERENCE": "mine"}),
+        current_user=_user(test_db, 1),
+        db=test_db,
+    )
+
+    assert response.is_active is False
+    assert response.can_edit_global is False
+    test_db.refresh(association)
+    assert association.is_active is False
+    assert decrypt_env_dict(association.env) == {"PREFERENCE": "mine"}
+    test_db.refresh(server)
+    assert server.auth == {"app_id": "calendar", "provider": "google"}
+
+
+def test_custom_server_without_reserved_identity_remains_editable(test_db):
+    """The immutability rule must not broaden to ordinary custom servers."""
+    from xagent.web.api.mcp import (
+        MCPServerCreate,
+        MCPServerUpdate,
+        create_mcp_server,
+        update_mcp_server,
+    )
+
+    created = create_mcp_server(
+        MCPServerCreate(
+            name="custom-editable",
+            transport="stdio",
+            config={"command": "python", "args": ["-m", "old"]},
+        ),
+        current_user=_user(test_db, 1),
+        db=test_db,
+    )
+
+    updated = update_mcp_server(
+        created.id,
+        MCPServerUpdate(config={"command": "python", "args": ["-m", "new"]}),
+        current_user=_user(test_db, 1),
+        db=test_db,
+    )
+
+    assert updated.config["args"] == ["-m", "new"]
+
+
 def test_connect_rejects_oauth_app(test_db):
     """OAuth apps must go through the OAuth flow, not this key-based path."""
     from fastapi import HTTPException

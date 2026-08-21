@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from xagent.core.utils.encryption import encrypt_value
+from xagent.web import mcp_apps
 from xagent.web.api import auth as auth_api
 from xagent.web.api.auth import (
     create_access_token,
@@ -195,12 +196,241 @@ def test_trusted_start_rejects_app_without_visible_server_link(oauth_db) -> None
     db, user = oauth_db
     app, server, association = _visible_calendar(db, user, active=False)
 
-    with pytest.raises(ValueError, match="visible MCP server"):
+    expected_error = getattr(
+        auth_api, "ActorBuiltinOAuthServerNotVisibleError", ValueError
+    )
+    with pytest.raises(expected_error, match="visible MCP server"):
         _trusted_start(db, user, ACTOR_ALICE)
 
     assert app.app_id == "calendar"
     assert server.id is not None
     assert association.is_active is False
+
+
+def test_visibility_helper_creates_one_nonowning_machine_link(oauth_db) -> None:
+    """Trusted setup creates visibility metadata, never an actor credential."""
+    db, user = oauth_db
+    app = PublicMCPApp(
+        app_id="calendar",
+        name="Google Calendar",
+        description="Calendar",
+        transport="oauth",
+        provider_name="custom",
+        launch_config={"command": "calendar"},
+        is_visible_in_connector=True,
+    )
+    db.add(app)
+    db.commit()
+
+    helper = getattr(mcp_apps, "ensure_builtin_oauth_server_visibility_for_user", None)
+    assert helper is not None
+    first = helper(db, user_id=int(user.id), app_id="calendar")
+    second = helper(db, user_id=int(user.id), app_id="calendar")
+
+    assert first.id == second.id
+    assert first.name == "Google Calendar"
+    assert first.managed == "external"
+    assert first.transport == "oauth"
+    assert first.auth == {"app_id": "calendar", "provider": "custom"}
+    links = db.query(UserMCPServer).all()
+    assert len(links) == 1
+    assert links[0].user_id == user.id
+    assert links[0].is_active is True
+    assert links[0].is_owner is False
+    assert links[0].can_edit is False
+    assert links[0].can_delete is False
+    assert db.query(UserOAuth).count() == 0
+
+
+def test_visibility_helper_reactivates_without_downgrading_permissions(
+    oauth_db,
+) -> None:
+    db, user = oauth_db
+    _app, server, association = _visible_calendar(db, user, active=False)
+    association.can_edit = True
+    association.can_delete = True
+    db.commit()
+
+    helper = getattr(mcp_apps, "ensure_builtin_oauth_server_visibility_for_user", None)
+    assert helper is not None
+    result = helper(db, user_id=int(user.id), app_id="calendar")
+
+    assert result.id == server.id
+    db.refresh(association)
+    assert association.is_active is True
+    assert association.can_edit is True
+    assert association.can_delete is True
+
+
+def test_visibility_helper_adopts_only_a_canonical_legacy_definition(oauth_db) -> None:
+    db, user = oauth_db
+    app = PublicMCPApp(
+        app_id="calendar",
+        name="Google Calendar",
+        description="Current description",
+        transport="oauth",
+        provider_name="custom",
+        launch_config={"command": "calendar"},
+        is_visible_in_connector=True,
+    )
+    legacy = MCPServer(
+        name="Google Calendar",
+        description="Legacy description",
+        managed="external",
+        transport="oauth",
+        auth={"provider": "custom"},
+    )
+    db.add_all([app, legacy])
+    db.commit()
+
+    helper = getattr(mcp_apps, "ensure_builtin_oauth_server_visibility_for_user", None)
+    assert helper is not None
+    result = helper(db, user_id=int(user.id), app_id="calendar")
+
+    assert result.id == legacy.id
+    assert result.auth == {"app_id": "calendar", "provider": "custom"}
+    assert result.description == "Current description"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("command", "/bin/evil"),
+        ("args", ["--pwn"]),
+        ("url", "https://evil.example/mcp"),
+        ("env", {"TOKEN": "secret"}),
+        ("headers", {"Authorization": "Bearer secret"}),
+        ("runtime_input_schema", {"secrets": {"token": {"type": "string"}}}),
+        ("allow_delegated_authorization", True),
+        ("docker_image", "evil:latest"),
+    ],
+)
+def test_visibility_helper_rejects_noncanonical_executable_fields(
+    oauth_db, field, value
+) -> None:
+    db, user = oauth_db
+    app = PublicMCPApp(
+        app_id="calendar",
+        name="Google Calendar",
+        description="Calendar",
+        transport="oauth",
+        provider_name="custom",
+        launch_config={"command": "calendar"},
+        is_visible_in_connector=True,
+    )
+    server = MCPServer(
+        name="Google Calendar",
+        description="Calendar",
+        managed="external",
+        transport="oauth",
+        auth={"app_id": "calendar", "provider": "custom"},
+    )
+    setattr(server, field, value)
+    db.add_all([app, server])
+    db.commit()
+
+    helper = getattr(mcp_apps, "ensure_builtin_oauth_server_visibility_for_user", None)
+    assert helper is not None
+    error = getattr(mcp_apps, "BuiltinOAuthServerDefinitionError", ValueError)
+    with pytest.raises(error, match="canonical"):
+        helper(db, user_id=int(user.id), app_id="calendar")
+
+    assert db.query(UserMCPServer).count() == 0
+
+
+def test_visibility_helper_rejects_duplicate_legacy_catalog_names(oauth_db) -> None:
+    db, user = oauth_db
+    db.add_all(
+        [
+            PublicMCPApp(
+                app_id="calendar",
+                name="Google Calendar",
+                transport="oauth",
+                provider_name="custom",
+                launch_config={"command": "calendar"},
+                is_visible_in_connector=True,
+            ),
+            PublicMCPApp(
+                app_id="calendar-secondary",
+                name="Google Calendar",
+                transport="oauth",
+                provider_name="custom",
+                launch_config={"command": "calendar-secondary"},
+                is_visible_in_connector=True,
+            ),
+            MCPServer(
+                name="Google Calendar",
+                managed="external",
+                transport="oauth",
+            ),
+        ]
+    )
+    db.commit()
+
+    helper = getattr(mcp_apps, "ensure_builtin_oauth_server_visibility_for_user", None)
+    assert helper is not None
+    error = getattr(mcp_apps, "BuiltinOAuthServerDefinitionError", ValueError)
+    with pytest.raises(error, match="ambiguous"):
+        helper(db, user_id=int(user.id), app_id="calendar")
+
+
+def test_visibility_helper_rejects_multiple_server_definitions(oauth_db) -> None:
+    db, user = oauth_db
+    db.add(
+        PublicMCPApp(
+            app_id="calendar",
+            name="Google Calendar",
+            transport="oauth",
+            provider_name="custom",
+            launch_config={"command": "calendar"},
+            is_visible_in_connector=True,
+        )
+    )
+    db.add_all(
+        [
+            MCPServer(
+                name="calendar",
+                managed="external",
+                transport="oauth",
+                auth={"app_id": "calendar", "provider": "custom"},
+            ),
+            MCPServer(
+                name="Google Calendar",
+                managed="external",
+                transport="oauth",
+            ),
+        ]
+    )
+    db.commit()
+
+    helper = getattr(mcp_apps, "ensure_builtin_oauth_server_visibility_for_user", None)
+    assert helper is not None
+    error = getattr(mcp_apps, "BuiltinOAuthServerDefinitionError", ValueError)
+    with pytest.raises(error, match="multiple"):
+        helper(db, user_id=int(user.id), app_id="calendar")
+
+
+def test_visibility_helper_leaves_commit_and_rollback_to_caller(oauth_db) -> None:
+    db, user = oauth_db
+    db.add(
+        PublicMCPApp(
+            app_id="calendar",
+            name="Google Calendar",
+            transport="oauth",
+            provider_name="custom",
+            launch_config={"command": "calendar"},
+            is_visible_in_connector=True,
+        )
+    )
+    db.commit()
+
+    helper = getattr(mcp_apps, "ensure_builtin_oauth_server_visibility_for_user", None)
+    assert helper is not None
+    helper(db, user_id=int(user.id), app_id="calendar")
+    db.rollback()
+
+    assert db.query(MCPServer).count() == 0
+    assert db.query(UserMCPServer).count() == 0
 
 
 def test_trusted_start_rejects_same_named_server_linked_to_another_app(

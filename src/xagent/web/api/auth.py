@@ -1412,6 +1412,10 @@ def generic_oauth_login(
     )
 
 
+class ActorBuiltinOAuthServerNotVisibleError(ValueError):
+    """Raised when actor OAuth lacks a canonical account/team-visible server."""
+
+
 def _require_actor_builtin_oauth_server_visibility(
     db: Session,
     *,
@@ -1428,26 +1432,22 @@ def _require_actor_builtin_oauth_server_visibility(
     before provider consent begins and the callback verifies it again before
     persisting the token.
     """
-    from ..mcp_apps import get_app_by_id, get_app_for_mcp_server
+    from ..mcp_apps import (
+        BuiltinOAuthServerDefinitionError,
+        validate_builtin_oauth_server_definition,
+    )
     from ..models.mcp import MCPServer, UserMCPServer
     from ..services.connector_team_scope import team_connector_ids
 
-    if get_app_by_id(db, app_id) is None:
-        matching_server_ids: set[int] = set()
-    else:
-        # Use the same stable app identity rule as runtime credential
-        # resolution. A server with auth.app_id must match that ID; only legacy
-        # rows without app_id may resolve through their exact catalog name.
-        matching_server_ids = {
-            int(server.id)
-            for server in db.query(MCPServer)
-            .filter(MCPServer.transport == "oauth")
-            .all()
-            if (
-                (server_app := get_app_for_mcp_server(db, server)) is not None
-                and server_app.get("id") == app_id
+    matching_server_ids: set[int] = set()
+    for server in db.query(MCPServer).all():
+        try:
+            validate_builtin_oauth_server_definition(
+                db, server, app_id=app_id, require_visible=True
             )
-        }
+        except BuiltinOAuthServerDefinitionError:
+            continue
+        matching_server_ids.add(int(server.id))
 
     personal_link = None
     if matching_server_ids:
@@ -1462,7 +1462,7 @@ def _require_actor_builtin_oauth_server_visibility(
         )
     team_server_ids = team_connector_ids(db, team_id=governing_team_id)["mcp"]
     if personal_link is None and matching_server_ids.isdisjoint(team_server_ids):
-        raise ValueError(
+        raise ActorBuiltinOAuthServerNotVisibleError(
             f"actor builtin OAuth app {app_id!r} has no visible MCP server for "
             "the account or governing team"
         )
@@ -1720,10 +1720,12 @@ def _ensure_user_mcp_server(
     *,
     associate_user: bool = True,
 ) -> None:
-    """Provision shared OAuth MCP metadata and optionally associate the user."""
-    from sqlalchemy.exc import IntegrityError
-
-    from ..models.mcp import MCPServer, UserMCPServer
+    """Provision canonical OAuth metadata and preserve ordinary ownership."""
+    from ..mcp_apps import (
+        ensure_builtin_oauth_server_definition,
+        ensure_builtin_oauth_server_visibility_for_user,
+    )
+    from ..models.mcp import UserMCPServer
 
     # Symmetric with the key-based gate in _ensure_catalog_app_server: only apps
     # classified as builtin_oauth may land here. Otherwise a key-based app routed
@@ -1734,85 +1736,28 @@ def _ensure_user_mcp_server(
             "connected via the OAuth flow."
         )
 
-    def _oauth_auth_metadata() -> dict[str, str]:
-        metadata = {"app_id": str(app_info["id"])}
-        provider = app_info.get("provider")
-        if provider:
-            metadata["provider"] = str(provider)
-        return metadata
-
-    def _ensure_server_matches_oauth_app(server: MCPServer) -> None:
-        if server.transport != "oauth":
-            raise ValueError(
-                f"OAuth app '{app_info['name']}' conflicts with an existing MCP server "
-                f"using transport '{server.transport}'. Delete or rename that custom "
-                "server before connecting the official OAuth app."
-            )
-
-        auth: dict[str, Any] = server.auth if isinstance(server.auth, dict) else {}
-        expected_app_id = str(app_info["id"])
-        existing_app_id = auth.get("app_id")
-        if existing_app_id and str(existing_app_id) != expected_app_id:
-            raise ValueError(
-                f"OAuth app '{app_info['name']}' conflicts with MCP server metadata "
-                f"for app '{existing_app_id}'."
-            )
-
-        expected_provider = app_info.get("provider")
-        existing_provider = auth.get("provider")
-        if (
-            expected_provider
-            and existing_provider
-            and str(existing_provider) != str(expected_provider)
-        ):
-            raise ValueError(
-                f"OAuth app '{app_info['name']}' conflicts with MCP server provider "
-                f"'{existing_provider}'."
-            )
-
-        auth.update(_oauth_auth_metadata())
-        cast(Any, server).auth = auth
-        server.description = app_info.get("description") or server.description
-
-    mcp_server = db.query(MCPServer).filter(MCPServer.name == app_info["name"]).first()
-    if not mcp_server:
-        mcp_server = MCPServer(
-            name=app_info["name"],
-            description=app_info["description"],
-            managed="external",
-            transport="oauth",
-            auth=_oauth_auth_metadata(),
-        )
-        db.add(mcp_server)
-        try:
-            db.flush()
-        except IntegrityError:
-            db.rollback()
-            mcp_server = (
-                db.query(MCPServer).filter(MCPServer.name == app_info["name"]).first()
-            )
-            if not mcp_server:
-                raise
-
-    _ensure_server_matches_oauth_app(mcp_server)
-
+    app_id = str(app_info["id"])
     if not associate_user:
+        ensure_builtin_oauth_server_definition(db, app_id=app_id)
         return
 
-    user_mcp = (
+    server = ensure_builtin_oauth_server_visibility_for_user(
+        db, user_id=int(user_id), app_id=app_id
+    )
+    association = (
         db.query(UserMCPServer)
         .filter(
-            UserMCPServer.user_id == user_id,
-            UserMCPServer.mcpserver_id == mcp_server.id,
+            UserMCPServer.user_id == int(user_id),
+            UserMCPServer.mcpserver_id == int(server.id),
         )
-        .first()
+        .one()
     )
-
-    if not user_mcp:
-        user_mcp = UserMCPServer(
-            user_id=user_id, mcpserver_id=mcp_server.id, is_owner=True, is_active=True
-        )
-        db.add(user_mcp)
+    # Preserve the historical ordinary-owner contract. Global catalog identity
+    # is protected at the MCP update boundary, while ownership continues to
+    # authorize this user's disconnect and legacy response semantics.
+    cast(Any, association).is_owner = True
+    cast(Any, association).is_active = True
+    db.flush()
 
 
 def generic_oauth_callback(
