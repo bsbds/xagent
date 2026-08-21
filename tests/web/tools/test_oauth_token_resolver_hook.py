@@ -499,6 +499,66 @@ async def test_actor_policy_rejects_drifted_builtin_before_native_transport(
 
 
 @pytest.mark.asyncio
+async def test_actor_policy_rejects_duplicate_canonical_server_candidates(
+    db_session,
+):
+    db, user = db_session
+    display_server = _add_oauth_server(
+        db,
+        user,
+        launch_config=_launch_config(),
+    )
+    app_id_server = MCPServer(
+        name="resolver-google-drive",
+        description="Duplicate Google Drive server",
+        managed="external",
+        transport="oauth",
+        auth={"app_id": "resolver-google-drive", "provider": "google"},
+    )
+    db.add(app_id_server)
+    db.flush()
+    db.add(
+        UserMCPServer(
+            user_id=user.id,
+            mcpserver_id=app_id_server.id,
+            is_owner=False,
+            is_active=True,
+        )
+    )
+    _add_user_oauth(
+        db,
+        user,
+        provider="resolver-google-drive",
+        access_token="must-not-run",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset(
+            {int(display_server.id), int(app_id_server.id)}
+        ),
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    )
+    configs = await tool_config.get_mcp_server_configs()
+
+    assert {config["config"]["server_id"] for config in configs} == {
+        int(display_server.id),
+        int(app_id_server.id),
+    }
+    for config in configs:
+        assert config["transport"] == "unavailable"
+        assert config["config"]["reason"] == (
+            "actor_policy_builtin_oauth_definition_invalid"
+        )
+        assert "must-not-run" not in str(config)
+
+
+@pytest.mark.asyncio
 async def test_actor_policy_rejects_builtin_oauth_server_outside_allowlist(db_session):
     db, user = db_session
     server = _add_oauth_server(db, user, launch_config=_launch_config())
