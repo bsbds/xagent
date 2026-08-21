@@ -113,15 +113,15 @@ If the migration reports `UserOAuth schema is partially owner-aware`, do not res
 
 If SQLite reports that an owner-aware schema name exists before migration, query `sqlite_master` for that name. Identify its relation type, owning table, and definition. After you create a backup, remove or rename only the unrelated colliding table, index, or view. Then retry `alembic upgrade head`. If either database reports `owner-aware UserOAuth schema has incorrect indexes`, do not use the database. Compare the index columns, uniqueness flags, and predicates with the definitions below. Repair or remove incorrect indexes before you retry the migration.
 
-This release also adds a trusted, server-side helper for starting actor-owned builtin OAuth. xagent has no production caller for the helper, so merging the change does not create actor rows by itself.
+This release also adds trusted server-side helpers for canonical builtin OAuth definitions, non-owning user visibility, and actor-owned OAuth starts. xagent has no production caller for the actor helper, so merging the change does not create actor rows by itself. Ordinary users can no longer change the global identity, transport, or launch configuration of official builtin OAuth definitions; per-user activation, environment state, credentials, and disconnect behavior remain user-scoped.
 
 ### Prerequisites and configuration
 
 This change has no new environment variable or dependency.
 
-Before a trusted downstream caller starts an actor flow, the target builtin OAuth server must already be visible through an active personal `UserMCPServer` link or through the exact team that owns the governing agent. `start_builtin_oauth_for_resource_owner` rejects the flow when neither path exists. The callback checks the signed governing-team scope again before storing the credential.
+Before a trusted downstream caller starts an actor flow, it may call `ensure_builtin_oauth_server_visibility_for_user` to create or repair a canonical non-owning account link. The target server must then be visible through that active `UserMCPServer` link or through the exact team that owns the governing agent. `start_builtin_oauth_for_resource_owner` rejects the flow when neither path exists. The callback checks the signed governing-team scope again before storing the credential.
 
-Keep the downstream caller disabled until the migration is complete and every API worker runs this version.
+Keep the downstream caller disabled until the migration is complete and every API and task worker runs this version. Older API workers can still mutate official definitions, and older task workers do not reject actor-allowed definitions that drift into a native transport.
 
 ### Deployment and migration steps
 
@@ -152,11 +152,12 @@ Do not backfill `resource_owner_key`. A null owner identifies an ordinary creden
 
 The xagent merge is dormant. If a trusted downstream product activates the helper:
 
-1. Confirm that every API worker runs this version.
-2. Confirm the governing agent's exact team or personal account can see the target builtin OAuth server.
-3. Enable the downstream caller.
-4. Complete one actor OAuth flow and verify that its `resource_owner_key` is non-null.
-5. Verify that the callback did not create or reactivate a personal MCP association and did not run ordinary post-commit OAuth side effects.
+1. Confirm that every API and task worker runs this version.
+2. Call `ensure_builtin_oauth_server_visibility_for_user` for the trusted account and target app, or confirm that the governing agent's exact team already exposes the canonical definition.
+3. Verify that the account link is active and non-owning and that no team link was created by the user-visibility helper.
+4. Enable the downstream caller.
+5. Complete one actor OAuth flow and verify that its `resource_owner_key` is non-null.
+6. Verify that the callback did not create or reactivate another personal MCP association and did not run ordinary post-commit OAuth side effects.
 
 ### Verification and monitoring
 
@@ -213,6 +214,10 @@ The result must be zero. A nonzero result identifies an orphan watch, a user mis
 Verify existing cloud-storage, Gmail, and builtin OAuth connections. Confirm that non-null-owner rows do not appear in ordinary catalog, token, or trigger paths.
 
 After actor setup is enabled, connect the same builtin application for two actor keys. Confirm that the stored rows remain separate and that reconnecting one actor replaces only that actor's row.
+
+Verify that a non-admin custom-server create or update carrying `config.auth.app_id` is rejected. Verify that an ordinary historical owner cannot change an official builtin definition's global transport or launch fields but can still toggle and disconnect their own association.
+
+For a fail-closed smoke test in a non-production database, change an actor-allowed definition away from the canonical OAuth shape before reconstructing a task. The task must report `actor_policy_builtin_oauth_definition_invalid`; it must not load the row through stdio or an HTTP native transport. Restore the canonical definition before continuing.
 
 ### Rollback
 
