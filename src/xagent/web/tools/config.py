@@ -91,6 +91,7 @@ UNAVAILABLE_MCP_CREDENTIAL_MESSAGE = "MCP server credentials are unavailable."
 MCP_UNAVAILABLE_REASONS = frozenset(
     {
         "actor_policy_selector_not_supported",
+        "actor_policy_builtin_oauth_definition_invalid",
         "actor_policy_requires_builtin_oauth",
         "actor_policy_server_not_allowed",
         "authorization_required",
@@ -3246,9 +3247,45 @@ class WebToolConfig(BaseToolConfig):
             getattr(server, "allow_delegated_authorization", False)
         )
         actor_policy = self._mcp_runtime_authorization_policy
+        actor_builtin_app_info: Dict[str, Any] | None = None
+        if (
+            actor_policy is not None
+            and int(server.id) in actor_policy.allowed_builtin_oauth_server_ids
+        ):
+            # Actor provenance is authoritative before transport dispatch. A
+            # definition that drifted from the protected builtin OAuth shape
+            # must never fall through to stdio/HTTP native MCP handling.
+            from ...web.mcp_apps import (
+                BuiltinOAuthServerDefinitionError,
+                validate_builtin_oauth_server_definition,
+            )
+
+            try:
+                actor_builtin_app_info = validate_builtin_oauth_server_definition(
+                    self.db,
+                    server,
+                    require_visible=True,
+                )
+            except BuiltinOAuthServerDefinitionError:
+                policy_diagnostic = mcp_oauth_runtime_diagnostic(
+                    server,
+                    code="actor_policy_builtin_oauth_definition_invalid",
+                    message=(
+                        "Actor-scoped builtin OAuth definition is unavailable or "
+                        "no longer canonical"
+                    ),
+                    resource_owner_key=actor_policy.builtin_oauth_resource_owner_key,
+                )
+                self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                return self._build_unavailable_mcp_config(
+                    server=server,
+                    reason="actor_policy_builtin_oauth_definition_invalid",
+                    diagnostic=policy_diagnostic,
+                )
+
         # Actor ownership applies only to builtin OAuth. Native MCP servers
-        # remain installer-configured capabilities of the workspace account
-        # and therefore retain their existing runtime configuration.
+        # absent from the actor allowlist remain installer-configured
+        # capabilities of the workspace account and retain existing behavior.
         runtime_values = self._get_connector_runtime_for("mcp", int(server.id))
         config: Dict[str, Any] = {
             "id": int(server.id),
@@ -3276,7 +3313,7 @@ class WebToolConfig(BaseToolConfig):
             # The provider might be linkedin, google, etc. based on the app config
             from ...web.mcp_apps import get_app_for_mcp_server
 
-            app_info = get_app_for_mcp_server(self.db, server)
+            app_info = actor_builtin_app_info or get_app_for_mcp_server(self.db, server)
             if app_info is None:
                 logger.warning(
                     "OAuth MCP server '%s' has no matching catalog app",

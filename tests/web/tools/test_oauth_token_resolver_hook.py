@@ -466,6 +466,39 @@ async def test_cached_config_switches_to_second_actor_credential(db_session):
 
 
 @pytest.mark.asyncio
+async def test_actor_policy_rejects_drifted_builtin_before_native_transport(
+    db_session,
+):
+    """An actor-allowed catalog server can never fall through as native MCP."""
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    server.transport = "stdio"
+    server.command = "/bin/evil"
+    server.args = ["--pwn"]
+    db.commit()
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
+        allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    )
+    configs = await tool_config.get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_builtin_oauth_definition_invalid",
+    )
+    diagnostic = tool_config.get_mcp_oauth_diagnostics()[0]
+    assert diagnostic["code"] == "actor_policy_builtin_oauth_definition_invalid"
+    assert "/bin/evil" not in str(configs[0])
+
+
+@pytest.mark.asyncio
 async def test_actor_policy_rejects_builtin_oauth_server_outside_allowlist(db_session):
     db, user = db_session
     server = _add_oauth_server(db, user, launch_config=_launch_config())
@@ -492,13 +525,19 @@ async def test_actor_policy_rejects_builtin_oauth_server_outside_allowlist(db_se
 
 
 @pytest.mark.asyncio
-async def test_actor_policy_reports_unclassified_oauth_server(db_session, monkeypatch):
+async def test_actor_policy_rejects_catalog_app_that_is_no_longer_builtin(
+    db_session,
+):
     db, user = db_session
     server = _add_oauth_server(db, user, launch_config=_launch_config())
-    monkeypatch.setattr(
-        "xagent.web.mcp_apps.get_app_for_mcp_server",
-        lambda db, candidate: {"auth_type": "mcp_oauth"},
+    app = (
+        db.query(PublicMCPApp)
+        .filter(PublicMCPApp.app_id == "resolver-google-drive")
+        .one()
     )
+    app.transport = "stdio"
+    app.launch_config = {"command": "custom-native"}
+    db.commit()
     policy = MCPBuiltinOAuthActorPolicy(
         builtin_oauth_resource_owner_key="toby:slack:41:UALICE",
         allowed_builtin_oauth_server_ids=frozenset({int(server.id)}),
@@ -514,7 +553,7 @@ async def test_actor_policy_reports_unclassified_oauth_server(db_session, monkey
     _assert_unavailable_mcp_config(
         configs[0],
         server,
-        reason="actor_policy_requires_builtin_oauth",
+        reason="actor_policy_builtin_oauth_definition_invalid",
     )
     assert tool_config.get_mcp_oauth_diagnostics()[0]["resource_owner_key"] == (
         "toby:slack:41:UALICE"
@@ -592,7 +631,7 @@ async def test_actor_builtin_oauth_refresh_retains_owner_key(
 
 
 @pytest.mark.asyncio
-async def test_actor_builtin_oauth_drops_task_runtime_after_binding_resolution(
+async def test_actor_builtin_oauth_rejects_task_runtime_bindings(
     db_session, monkeypatch
 ):
     db, user = db_session
@@ -638,8 +677,13 @@ async def test_actor_builtin_oauth_drops_task_runtime_after_binding_resolution(
         env_source_by_id={},
     )
 
-    assert raw_config["config"]["env"]["GOOGLE_ACCESS_TOKEN"] == "alice-token"
+    _assert_unavailable_mcp_config(
+        raw_config,
+        server,
+        reason="actor_policy_builtin_oauth_definition_invalid",
+    )
     assert "connector_runtime" not in raw_config
+    assert "task-supplied-token" not in str(raw_config)
 
 
 @pytest.mark.asyncio
