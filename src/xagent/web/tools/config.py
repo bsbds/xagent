@@ -3255,13 +3255,19 @@ class WebToolConfig(BaseToolConfig):
         )
         actor_policy = self._mcp_runtime_authorization_policy
         actor_builtin_app_info: Dict[str, Any] | None = None
-        if (
-            actor_policy is not None
-            and int(server.id) in actor_policy.allowed_builtin_oauth_server_ids
-        ):
+        candidate_builtin_server_ids = (
+            cast(
+                frozenset[int],
+                actor_policy.candidate_builtin_oauth_server_ids,
+            )
+            if actor_policy is not None
+            else frozenset()
+        )
+        if actor_policy is not None and int(server.id) in candidate_builtin_server_ids:
             # Actor provenance is authoritative before transport dispatch. A
             # definition that drifted from the protected builtin OAuth shape
-            # must never fall through to stdio/HTTP native MCP handling.
+            # must never fall through to stdio/HTTP native MCP handling, even
+            # when the current actor has no credential for the candidate.
             from ...web.mcp_apps import (
                 BuiltinOAuthServerDefinitionError,
                 validate_builtin_oauth_server_definition,

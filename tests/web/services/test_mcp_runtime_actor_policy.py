@@ -9,10 +9,20 @@ from xagent.web.services.mcp_runtime import MCPBuiltinOAuthActorPolicy
 def test_actor_policy_normalizes_builtin_oauth_owner_key() -> None:
     policy = MCPBuiltinOAuthActorPolicy(
         builtin_oauth_resource_owner_key="  actor:alice  ",
+        candidate_builtin_oauth_server_ids=frozenset({7}),
         allowed_builtin_oauth_server_ids=frozenset({7}),
     )
 
     assert policy.builtin_oauth_resource_owner_key == "actor:alice"
+
+
+def test_actor_policy_rejects_allowed_server_outside_candidate_set() -> None:
+    with pytest.raises(ValueError, match="subset"):
+        MCPBuiltinOAuthActorPolicy(
+            builtin_oauth_resource_owner_key="actor:alice",
+            candidate_builtin_oauth_server_ids=frozenset({7}),
+            allowed_builtin_oauth_server_ids=frozenset({8}),
+        )
 
 
 @pytest.mark.parametrize("value", [None, 7, True, "", "   "])

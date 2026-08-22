@@ -23,13 +23,19 @@ class MCPBuiltinOAuthActorPolicyRequiredError(RuntimeError):
 class MCPBuiltinOAuthActorPolicy:
     """Server-owned boundary for actor-scoped builtin OAuth execution.
 
-    ``allowed_builtin_oauth_server_ids`` contains only builtin OAuth server IDs connected by
+    ``candidate_builtin_oauth_server_ids`` records visible server rows that
+    claim reserved builtin identity. Xagent validates those rows before
+    transport dispatch even when the current actor has no credential, so a
+    drifted definition cannot fall through to native MCP execution.
+
+    ``allowed_builtin_oauth_server_ids`` is the candidate subset connected by
     the current actor. Native MCP servers remain workspace-account
     configuration and follow their existing shared runtime behavior.
     """
 
     builtin_oauth_resource_owner_key: str
     allowed_builtin_oauth_server_ids: frozenset[int]
+    candidate_builtin_oauth_server_ids: frozenset[int] | None = None
 
     def __post_init__(self) -> None:
         owner_key = normalize_user_oauth_resource_owner_key(
@@ -37,18 +43,33 @@ class MCPBuiltinOAuthActorPolicy:
         )
         if owner_key is None:
             raise ValueError("builtin_oauth_resource_owner_key must not be null")
-        server_ids = frozenset(self.allowed_builtin_oauth_server_ids)
-        if any(
-            isinstance(server_id, bool)
-            or not isinstance(server_id, int)
-            or server_id <= 0
-            for server_id in server_ids
+        allowed_server_ids = frozenset(self.allowed_builtin_oauth_server_ids)
+        candidate_server_ids = (
+            allowed_server_ids
+            if self.candidate_builtin_oauth_server_ids is None
+            else frozenset(self.candidate_builtin_oauth_server_ids)
+        )
+        for field_name, server_ids in (
+            ("candidate_builtin_oauth_server_ids", candidate_server_ids),
+            ("allowed_builtin_oauth_server_ids", allowed_server_ids),
         ):
+            if any(
+                isinstance(server_id, bool)
+                or not isinstance(server_id, int)
+                or server_id <= 0
+                for server_id in server_ids
+            ):
+                raise ValueError(f"{field_name} must contain positive integer IDs")
+        if not allowed_server_ids.issubset(candidate_server_ids):
             raise ValueError(
-                "allowed_builtin_oauth_server_ids must contain positive integer IDs"
+                "allowed_builtin_oauth_server_ids must be a subset of "
+                "candidate_builtin_oauth_server_ids"
             )
         object.__setattr__(self, "builtin_oauth_resource_owner_key", owner_key)
-        object.__setattr__(self, "allowed_builtin_oauth_server_ids", server_ids)
+        object.__setattr__(
+            self, "candidate_builtin_oauth_server_ids", candidate_server_ids
+        )
+        object.__setattr__(self, "allowed_builtin_oauth_server_ids", allowed_server_ids)
 
 
 @dataclass(frozen=True)

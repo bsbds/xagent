@@ -527,6 +527,38 @@ async def test_actor_policy_rejects_drifted_builtin_before_native_transport(
 
 
 @pytest.mark.asyncio
+async def test_actor_policy_fences_unconnected_drifted_builtin_before_native_transport(
+    db_session,
+):
+    """Builtin provenance remains fenced when this actor has no credential."""
+    db, user = db_session
+    server = _add_oauth_server(db, user, launch_config=_launch_config())
+    server.transport = "stdio"
+    server.command = "/bin/evil"
+    server.args = ["--pwn"]
+    db.commit()
+    policy = MCPBuiltinOAuthActorPolicy(
+        builtin_oauth_resource_owner_key="toby:slack:41:UBOB",
+        candidate_builtin_oauth_server_ids=frozenset({int(server.id)}),
+        allowed_builtin_oauth_server_ids=frozenset(),
+    )
+
+    tool_config = _tool_config(
+        db,
+        user,
+        mcp_runtime_authorization_policy=policy,
+    )
+    configs = await tool_config.get_mcp_server_configs()
+
+    _assert_unavailable_mcp_config(
+        configs[0],
+        server,
+        reason="actor_policy_builtin_oauth_definition_invalid",
+    )
+    assert "/bin/evil" not in str(configs[0])
+
+
+@pytest.mark.asyncio
 async def test_actor_policy_rejects_duplicate_canonical_server_candidates(
     db_session,
 ):
