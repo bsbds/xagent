@@ -329,3 +329,46 @@ Valid only until step 8 restarts the writers. Until that point a v17 server has 
 Roll back rather than repair in place when verification fails after a partial restore under v17. A cluster left half-populated by an interrupted restore is not a state to diagnose during an outage. If the v16 volume copy is unavailable, restore the verified dump from step 3 onto a v16 cluster initialized from `16-bookworm`.
 
 After v17 accepts writes the volume copy is stale, and restoring it discards everything written since the cutover. Recovery from that point means taking a fresh v17 backup and reconciling the two, not a copy-back.
+## 2026-08-21 — Trusted actor builtin OAuth
+
+### Deployment impact
+
+This release adds `actor_oauth_flow_states`, a minimal table whose only columns are the single-use nonce digest and its expiration. Trusted server-side OAuth starts bind the signed state to a per-flow `Secure`, `HttpOnly`, `SameSite=Lax` browser cookie. The callback atomically deletes one unexpired nonce and commits that claim before exchanging the provider code. No actor, user, provider, app, team, or consumption-history claim is duplicated in the table.
+
+Ordinary OAuth entry points and callbacks retain their existing state, cookie, credential, MCP-link, and post-callback behavior. Trusted actor callbacks write only the exact `resource_owner_key` namespace and do not run ordinary Gmail post-callback provisioning.
+
+### Prerequisites and entry-point gate
+
+Keep personal Connect and actor task dispatch disabled until this complete rollout finishes. The owner-aware `20260818_user_oauth_resource_owner` migration must already be current, the Gmail ordinary-owner fence must run on every Gmail API/callback/trigger/worker process, and the Gmail watch-ownership query in the preceding section must return zero.
+
+Before enabling a trusted start, xagent-saas must create or repair the active, non-owning personal `UserMCPServer` link for the exact xagent user. Governing-team discovery remains a SaaS concern; no governing-team identifier is accepted by this xagent flow or placed in callback state.
+
+### Migration and deployment order
+
+1. Keep personal Connect and actor task dispatch disabled, and drain active actor turns.
+2. Verify every Gmail process runs the ordinary-owner fence and require the Gmail watch-ownership query above to return zero.
+3. Apply Alembic revisions in this exact order: `20260818_user_oauth_resource_owner`, then `20260821_actor_oauth_flow_states`. Run `alembic upgrade 20260821_actor_oauth_flow_states` (or `alembic upgrade head` only when this revision is the reviewed head).
+4. Deploy the same reviewed application revision to every API, OAuth callback, and task worker. Do not allow an owner-blind or nonce-blind worker to remain or restart.
+5. Check every process's reported application commit and Alembic revision. Require the reviewed application commit and `20260821_actor_oauth_flow_states` everywhere before continuing.
+6. Run the PostgreSQL concurrent-callback release test with `XAGENT_TEST_POSTGRES_URL` set. It must prove that two concurrent callbacks produce one nonce claim, one provider exchange, and one actor credential write. A skipped or failed concurrency test blocks activation.
+7. Enable personal Connect first. Enable actor task dispatch only after an end-to-end callback confirms the exact actor credential and confirms that ordinary Gmail provisioning did not run.
+
+This section is an operator procedure only. It does not claim that any production migration, deployment, query, version check, or concurrency gate has been executed.
+
+### Verification and monitoring
+
+Confirm that `alembic current` reports `20260821_actor_oauth_flow_states`. Inspect `actor_oauth_flow_states` and require exactly `nonce VARCHAR(64) PRIMARY KEY NOT NULL` and `expires_at TIMESTAMP NOT NULL`; no other columns or indexes are expected.
+
+Exercise missing/wrong cookie, tampered state, replay, expired/unknown nonce, inactive or removed personal link, duplicate definition, and catalog-drift cases. Each must fail before provider exchange and credential writes. Confirm that ordinary OAuth still completes without an actor-flow cookie and still runs its baseline post-callback work.
+
+Monitor callback failures by reason without logging raw `resource_owner_key`, provider codes, browser cookie values, or tokens. Expired nonce rows contain no identity claims and may be deleted operationally after their expiration.
+
+### Rollback
+
+1. Disable personal Connect and actor task dispatch.
+2. Drain active actor turns and stop every xagent and Toby database writer.
+3. Wait at least ten minutes, the actor OAuth flow TTL, so every browser flow minted by the new entry point expires. Do not roll an active flow onto a nonce-blind callback.
+4. Remove actor-owned credentials before any owner-blind application revision can start. Keep the Gmail ordinary-owner fence while any actor-owned Gmail row exists.
+5. Deploy the compatible pre-activation xagent-saas and xagent revisions together, verify their versions, and then restart workers.
+
+The nonce table may remain after the feature is disabled. Drop it with `alembic downgrade 20260818_user_oauth_resource_owner` only during a coordinated downgrade after entry points are disabled and all flows have expired. Do not downgrade the owner-aware storage revision while actor-owned credentials exist.
