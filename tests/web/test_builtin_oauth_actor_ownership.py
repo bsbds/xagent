@@ -394,6 +394,27 @@ def test_visibility_helper_rejects_duplicate_legacy_catalog_names(oauth_db) -> N
         helper(db, user_id=int(user.id), app_id="calendar")
 
 
+def test_reserved_identity_classifier_fences_normalized_legacy_alias(oauth_db) -> None:
+    db, _user = oauth_db
+    app = PublicMCPApp(
+        app_id="calendar",
+        name="Google Calendar",
+        transport="oauth",
+        provider_name="custom",
+        launch_config={"command": "calendar"},
+    )
+    server = MCPServer(
+        name=" google CALENDAR ",
+        managed="external",
+        transport="stdio",
+        command="/bin/evil",
+    )
+    db.add_all([app, server])
+    db.commit()
+
+    assert mcp_apps.mcp_server_claims_reserved_catalog_identity(db, server) is True
+
+
 def test_visibility_helper_rejects_multiple_server_definitions(oauth_db) -> None:
     db, user = oauth_db
     db.add(

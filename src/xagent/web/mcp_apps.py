@@ -289,8 +289,9 @@ def mcp_server_claims_reserved_catalog_identity(db: Session, server: Any) -> boo
     ``auth.app_id`` is reserved even when its value is not in today's catalog,
     preventing a historical custom row from becoming trusted after a future
     catalog addition. Unique legacy builtin OAuth rows are protected too.
-    Ambiguous legacy identity is conservatively protected until an operator
-    repairs it.
+    Ambiguous and normalized legacy aliases are conservatively protected until
+    an operator repairs them. Normalized matching is used only for fencing; it
+    never grants trusted catalog identity.
     """
     auth = getattr(server, "auth", None)
     if isinstance(auth, Mapping) and "app_id" in auth:
@@ -299,7 +300,21 @@ def mcp_server_claims_reserved_catalog_identity(db: Session, server: Any) -> boo
         app_info = get_strict_app_for_mcp_server(db, server)
     except BuiltinOAuthServerDefinitionError:
         return True
-    return bool(app_info and app_info.get("auth_type") == "builtin_oauth")
+    if app_info and app_info.get("auth_type") == "builtin_oauth":
+        return True
+
+    server_key = _normalized_catalog_key(getattr(server, "name", None))
+    if server_key is None:
+        return False
+    return any(
+        _app_to_dict(app).get("auth_type") == "builtin_oauth"
+        and server_key
+        in {
+            _normalized_catalog_key(app.app_id),
+            _normalized_catalog_key(app.name),
+        }
+        for app in db.query(PublicMCPApp).all()
+    )
 
 
 _CANONICAL_EMPTY_SERVER_FIELDS = (
