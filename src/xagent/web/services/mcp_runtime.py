@@ -16,6 +16,14 @@ from .user_oauth import normalize_user_oauth_resource_owner_key
 HTTP_MCP_TRANSPORTS = frozenset({"sse", "websocket", "streamable_http"})
 
 
+class MCPBuiltinOAuthActorPolicyRequiredError(RuntimeError):
+    """A marked task was used without its trusted actor policy."""
+
+
+class MCPBuiltinOAuthActorPolicyMismatchError(RuntimeError):
+    """A task's already-bound actor policy was replaced."""
+
+
 @dataclass(frozen=True)
 class MCPBuiltinOAuthActorPolicy:
     """Trusted actor owner namespace for builtin OAuth MCP execution.
