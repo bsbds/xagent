@@ -25,6 +25,7 @@ from ....config import (
 )
 from ...models.gmail_watch import GmailWatchState
 from ...models.trigger import AgentTrigger, TriggerProvisioningStatus, TriggerType
+from ...models.user_oauth import UserOAuth
 from ..gmail_provisioning import (
     GMAIL_WATCH_DISABLED_ERROR,
     gmail_callback_url,
@@ -162,9 +163,16 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _watch_state_for_callback(db: Session, callback_id: str) -> GmailWatchState | None:
+    """Resolve a callback only through a same-user ordinary Gmail account."""
     return (
         db.query(GmailWatchState)
-        .filter(GmailWatchState.callback_id == callback_id)
+        .join(UserOAuth, UserOAuth.id == GmailWatchState.oauth_account_id)
+        .filter(
+            GmailWatchState.callback_id == callback_id,
+            UserOAuth.user_id == GmailWatchState.user_id,
+            UserOAuth.provider == "gmail",
+            UserOAuth.resource_owner_key.is_(None),
+        )
         .first()
     )
 

@@ -200,3 +200,45 @@ Because this release cannot create actor-owned rows, the downgrade remains avail
 SQLite can commit each schema operation separately during a batch-table rebuild. If a downgrade fails, do not retry against the changed database. For a disposable local database, delete and recreate it through normal application startup. Otherwise, restore the verified backup. Make sure that `alembic current` reports the owner-aware revision before you retry the downgrade.
 
 The migration refuses the downgrade if a non-null owner row exists. If a caller created such a row, disable that caller. Revoke and remove the credential with an approved procedure. Then retry the downgrade.
+
+## 2026-08-23 — Gmail ordinary-owner fence
+
+### Deployment impact
+
+This release adds no schema, dependency, environment variable, or cleanup state. It restricts Gmail watch and trigger code to ordinary OAuth rows.
+
+Actor-owned Gmail credentials remain available to builtin MCP tools. Gmail provisioning, renewal, callback, trigger, and release paths reject these rows.
+
+### Prerequisites and configuration
+
+Keep every actor-owned credential writer disabled during this rollout. The owner-aware OAuth migration above must already be current.
+
+### Deployment and migration steps
+
+1. Deploy this release to every Gmail API, callback, trigger, dispatcher, and worker process.
+2. Make sure that no older process remains.
+3. Run the ownership query below.
+4. If the result is not zero, keep actor credential writers disabled and repair the invalid watch bindings.
+5. Enable actor credential writers only after the result is zero.
+
+### Verification and monitoring
+
+Run this query before actor credential writers become active:
+
+```sql
+SELECT count(*)
+FROM gmail_watch_states AS watch
+LEFT JOIN user_oauth AS account ON account.id = watch.oauth_account_id
+WHERE account.id IS NULL
+   OR watch.user_id <> account.user_id
+   OR account.provider <> 'gmail'
+   OR account.resource_owner_key IS NOT NULL;
+```
+
+The result must be zero. Existing ordinary Gmail watch and trigger tests must also pass before deployment.
+
+### Rollback
+
+Keep this fence during an actor-feature rollback. Disable actor credential writers before you roll back another actor layer.
+
+Revert this fence only after the ownership query proves that no actor-owned Gmail credential remains. A normal actor-feature rollback does not revert this release.

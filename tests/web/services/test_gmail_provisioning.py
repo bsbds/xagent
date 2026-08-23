@@ -3127,7 +3127,7 @@ def test_gmail_trigger_lookup_resolves_bindings_on_postgresql(
 
     referenced = gmail_provisioning._referenced_gmail_oauth_account_ids(
         db,
-        [(int(account.id), str(account.email or ""))],
+        [(int(account.id), int(user.id), str(account.email or ""))],
     )
 
     assert referenced == {int(account.id)}

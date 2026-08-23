@@ -27,6 +27,7 @@ from ..models.oauth_provider import OAuthProvider
 from ..models.trigger import AgentTrigger, TriggerProvisioningStatus, TriggerType
 from ..models.user_oauth import UserOAuth
 from .time_utils import coerce_utc as _coerce_utc
+from .user_oauth import get_scoped_user_oauth_account
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,15 @@ def _credentials_expiry(value: datetime | None) -> datetime | None:
 
 
 def build_gmail_service(db: Session, oauth_account: UserOAuth) -> Any:
-    """Build an authenticated Gmail API client for a connected Gmail account."""
+    """Build Gmail trigger access for one ordinary connected account."""
+    if (
+        str(oauth_account.provider) != "gmail"
+        or oauth_account.resource_owner_key is not None
+    ):
+        raise GmailWatchConfigurationError(
+            "Gmail watch access requires an ordinary Gmail account"
+        )
+
     client_id, client_secret = _get_google_oauth_config(db)
     if not client_id or not client_secret:
         raise GmailWatchConfigurationError("Google OAuth configuration missing")
@@ -337,7 +346,10 @@ def scan_due_gmail_watch_renewals(
             GmailWatchState,
             GmailWatchState.oauth_account_id == UserOAuth.id,
         )
-        .filter(UserOAuth.provider == "gmail")
+        .filter(
+            UserOAuth.provider == "gmail",
+            UserOAuth.resource_owner_key.is_(None),
+        )
         .filter(
             or_(
                 GmailWatchState.id.is_(None),
@@ -357,6 +369,14 @@ def scan_due_gmail_watch_renewals(
     renewed = 0
     for oauth_account, state in rows:
         user_id = int(oauth_account.user_id)
+        if state is not None and int(state.user_id) != user_id:
+            logger.warning(
+                "Skipping Gmail renewal for account %s because watch %s "
+                "belongs to another user",
+                oauth_account.id,
+                state.id,
+            )
+            continue
 
         try:
             _renew_watch_for_account(
@@ -538,10 +558,20 @@ async def collect_gmail_pubsub_events(
     if not email_address or not notification.history_id:
         return GmailPubsubEventCollection(events=[], skipped=1)
 
-    oauth_account = (
-        db.query(UserOAuth).filter(UserOAuth.id == int(state.oauth_account_id)).first()
+    oauth_account = get_scoped_user_oauth_account(
+        db,
+        user_id=int(state.user_id),
+        account_id=int(state.oauth_account_id),
+        resource_owner_key=None,
     )
-    if oauth_account is None:
+    if oauth_account is None or str(oauth_account.provider) != "gmail":
+        logger.warning(
+            "Skipping Gmail callback for watch %s because account %s is not "
+            "an ordinary Gmail account for user %s",
+            state.id,
+            state.oauth_account_id,
+            state.user_id,
+        )
         return GmailPubsubEventCollection(events=[], skipped=1)
 
     state_id = int(state.id)

@@ -27,6 +27,7 @@ from xagent.web.models.trigger import (
 )
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
+from xagent.web.services import gmail_triggers
 from xagent.web.services.gmail_provisioning import (
     GMAIL_WATCH_DISABLED_ERROR,
     gmail_topic_path,
@@ -244,10 +245,16 @@ def _create_user(db, username: str = "gmail-watch-user") -> User:
     return user
 
 
-def _create_gmail_oauth(db, user: User) -> UserOAuth:
+def _create_gmail_oauth(
+    db,
+    user: User,
+    *,
+    resource_owner_key: str | None = None,
+) -> UserOAuth:
     oauth = UserOAuth(
         user_id=int(user.id),
         provider="gmail",
+        resource_owner_key=resource_owner_key,
         access_token="access-token",
         refresh_token="refresh-token",
         provider_user_id="provider-user",
@@ -451,6 +458,73 @@ def test_gmail_provider_verifies_oidc_with_stored_audience_and_service_account(
         assert result.verified is True
         assert result.attested_resource_id == "codeacme17@gmail.com"
         assert seen == {"token": "oidc-token", "audience": state.push_audience}
+    finally:
+        db.close()
+
+
+def test_gmail_provider_rejects_actor_owned_callback_state() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-actor-provider-user")
+        oauth = _create_gmail_oauth(
+            db,
+            user,
+            resource_owner_key="toby:slack:41:UALICE",
+        )
+        _mark_unified_gmail_trigger(db, _create_gmail_trigger(db, user))
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-actor-provider",
+        )
+        verifier_calls: list[str] = []
+
+        def fake_verify(_token: str, audience: str) -> dict[str, object]:
+            verifier_calls.append(audience)
+            return {
+                "iss": "https://accounts.google.com",
+                "aud": audience,
+            }
+
+        context = type(
+            "Context",
+            (),
+            {
+                "callback_id": "cb-actor-provider",
+                "header": lambda _self, name: (
+                    "Bearer oidc-token" if name.lower() == "authorization" else None
+                ),
+            },
+        )()
+        provider = GmailProvider(oidc_verifier=fake_verify)
+
+        assert provider.locate_trigger(db, "cb-actor-provider") is None
+        result = asyncio.run(
+            provider.verify(
+                context,
+                db=db,
+                trigger=None,
+                raw_body=b"{}",
+            )
+        )
+        assert result.verified is False
+        assert verifier_calls == []
+
+        asyncio.run(
+            provider.finalize_callback(
+                db=db,
+                context=context,
+                trigger=None,
+                events=[],
+                raw_body=_gmail_pubsub_push_body(
+                    claimed_email="codeacme17@gmail.com",
+                    history_id="222",
+                ),
+            )
+        )
+        db.refresh(state)
+        assert state.history_id == "100"
     finally:
         db.close()
 
@@ -1244,6 +1318,25 @@ def test_build_gmail_service_accepts_aware_expiry_with_real_credentials(
         db.close()
 
 
+def test_build_gmail_service_rejects_actor_owned_account() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-actor-service-user")
+        oauth = _create_gmail_oauth(
+            db,
+            user,
+            resource_owner_key="toby:slack:41:UALICE",
+        )
+
+        with pytest.raises(
+            GmailWatchConfigurationError,
+            match="ordinary Gmail account",
+        ):
+            build_gmail_service(db, oauth)
+    finally:
+        db.close()
+
+
 def test_build_gmail_service_persists_refreshed_expiry_as_utc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1388,6 +1481,11 @@ def test_best_effort_provisioning_targets_only_referenced_mailboxes(
     try:
         user = _create_user(db, "gmail-watch-needed")
         _create_gmail_oauth(db, user)
+        _create_gmail_oauth(
+            db,
+            user,
+            resource_owner_key="toby:slack:41:UALICE",
+        )
 
         gmail_provisioning.best_effort_provision_gmail_watches_for_user(
             db, user_id=int(user.id), context="test"
@@ -1399,6 +1497,45 @@ def test_best_effort_provisioning_targets_only_referenced_mailboxes(
             db, user_id=int(user.id), context="test"
         )
         assert calls == ["codeacme17@gmail.com"]
+    finally:
+        db.close()
+
+
+def test_best_effort_provisioning_ignores_another_users_trigger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xagent.web.services import gmail_provisioning
+
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")
+    provisioned_account_ids: list[int] = []
+
+    def fake_ensure(_db, account, **_kwargs):
+        provisioned_account_ids.append(int(account.id))
+        return None
+
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "ensure_gmail_mailbox_provisioned",
+        fake_ensure,
+    )
+    db = _direct_db_session()
+    try:
+        owner = _create_user(db, "gmail-cross-user-owner")
+        account = _create_gmail_oauth(db, owner)
+        other_user = _create_user(db, "gmail-cross-user-trigger")
+        _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(db, other_user),
+            resource_id=str(account.email),
+        )
+
+        gmail_provisioning.best_effort_provision_gmail_watches_for_user(
+            db,
+            user_id=int(owner.id),
+            context="test",
+        )
+
+        assert provisioned_account_ids == []
     finally:
         db.close()
 
@@ -1476,6 +1613,39 @@ def test_collect_gmail_pubsub_events_collects_matching_trigger_events() -> None:
         # does, only after all events fired.
         db.refresh(state)
         assert state.history_id == "100"
+    finally:
+        db.close()
+
+
+def test_collect_gmail_pubsub_events_skips_actor_owned_watch_account() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-actor-callback-user")
+        oauth = _create_gmail_oauth(
+            db,
+            user,
+            resource_owner_key="toby:slack:41:UALICE",
+        )
+        state = _create_gmail_watch_state(db, user, oauth)
+
+        def unexpected_service_factory(_db, _oauth):
+            raise AssertionError("actor-owned account reached Gmail API")
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address="codeacme17@gmail.com",
+                    history_id="222",
+                    pubsub_message_id="pubsub-actor",
+                ),
+                state=state,
+                service_factory=unexpected_service_factory,
+            )
+        )
+
+        assert result.events == []
+        assert result.skipped == 1
     finally:
         db.close()
 
@@ -2547,6 +2717,43 @@ def test_scan_due_gmail_watch_renewals_respects_enabled_flag_and_expiration(
             )
             == 1
         )
+    finally:
+        db.close()
+
+
+def test_scan_due_gmail_watch_renewals_excludes_actor_owned_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-actor-renewal-user")
+        oauth = _create_gmail_oauth(
+            db,
+            user,
+            resource_owner_key="toby:slack:41:UALICE",
+        )
+        _create_gmail_trigger(db, user)
+        renewed_ids: list[int] = []
+
+        def record_renewal(_db, account, *, service_factory):
+            renewed_ids.append(int(account.id))
+            return object()
+
+        monkeypatch.setattr(
+            gmail_triggers,
+            "_renew_watch_for_account",
+            record_renewal,
+        )
+
+        renewed = scan_due_gmail_watch_renewals(
+            db,
+            now=datetime(2026, 6, 29, tzinfo=timezone.utc),
+        )
+
+        assert renewed == 0
+        assert renewed_ids == []
+        assert int(oauth.id) not in renewed_ids
     finally:
         db.close()
 
