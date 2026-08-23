@@ -200,6 +200,17 @@ WHERE account.id IS NULL
 
 The result must be zero. A nonzero result identifies an orphan watch, a user mismatch, a non-Gmail account, or a non-ordinary account. Repair or remove the watch before rollout.
 
+After rollout, monitor durable cleanup retries:
+
+```sql
+SELECT count(*)
+FROM gmail_watch_states
+WHERE status = 'failed'
+  AND last_error LIKE 'Gmail watch cleanup pending:%';
+```
+
+The sweep retries these rows even when Gmail watch registration is disabled. A count that does not return to zero indicates a persistent Gmail or Pub/Sub cleanup failure.
+
 Verify existing cloud-storage, Gmail, and builtin OAuth connections. Confirm that seeded non-null-owner test rows do not appear in ordinary catalog, token, or trigger paths.
 
 ### Rollback

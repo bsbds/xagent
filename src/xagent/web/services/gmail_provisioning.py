@@ -76,6 +76,7 @@ GMAIL_WATCH_DISABLED_ERROR = (
     "Gmail watch registration is disabled "
     "(set XAGENT_GMAIL_WATCH_ENABLED=true to enable)"
 )
+GMAIL_WATCH_CLEANUP_PENDING_PREFIX = "Gmail watch cleanup pending:"
 
 
 def gmail_watch_disabled_error() -> str:
@@ -1447,11 +1448,21 @@ def release_gmail_mailbox_if_unused(
             service = service_factory(db, oauth_account)
             service.users().stop(userId="me").execute()
         except Exception as exc:
-            logger.warning("Failed to stop Gmail watch for %s: %s", email, exc)
-            # Keep every cleanup handle so a later release attempt can retry
-            # the remote stop before deleting local or Pub/Sub resources.
-            db.commit()
-            return False
+            if _is_not_found(exc):
+                logger.info("Gmail watch for %s was already stopped", email)
+            else:
+                logger.warning("Failed to stop Gmail watch for %s: %s", email, exc)
+                # Keep every cleanup handle and a durable retry marker so the
+                # periodic sweep can resume teardown after a process restart.
+                setattr(state, "status", TriggerProvisioningStatus.FAILED.value)
+                setattr(
+                    state,
+                    "last_error",
+                    f"{GMAIL_WATCH_CLEANUP_PENDING_PREFIX} Gmail stop failed: {exc}",
+                )
+                db.add(state)
+                db.commit()
+                return False
     else:
         logger.warning(
             "Cannot stop Gmail watch for state %s: OAuth account %s is missing "
@@ -1471,6 +1482,7 @@ def release_gmail_mailbox_if_unused(
         db.commit()
         return False
 
+    cleanup_errors: list[str] = []
     project_id = get_gmail_pubsub_project_id()
     if project_id:
         subscription_path = str(
@@ -1486,11 +1498,24 @@ def release_gmail_mailbox_if_unused(
                 logger.warning(
                     "Failed to delete subscription %s: %s", subscription_path, exc
                 )
+                cleanup_errors.append(f"subscription deletion failed: {exc}")
         try:
             publisher_factory().delete_topic(request={"topic": topic_path})
         except Exception as exc:
             if not _is_not_found(exc):
                 logger.warning("Failed to delete topic %s: %s", topic_path, exc)
+                cleanup_errors.append(f"topic deletion failed: {exc}")
+
+    if cleanup_errors:
+        setattr(state, "status", TriggerProvisioningStatus.FAILED.value)
+        setattr(
+            state,
+            "last_error",
+            f"{GMAIL_WATCH_CLEANUP_PENDING_PREFIX} {'; '.join(cleanup_errors)}",
+        )
+        db.add(state)
+        db.commit()
+        return False
 
     db.delete(state)
     db.commit()
@@ -1507,23 +1532,43 @@ def sweep_gmail_provisioning(
     publisher_factory: PublisherFactory | None = None,
     subscriber_factory: SubscriberFactory | None = None,
 ) -> int:
-    """Retry stale pending and failed Gmail registrations.
+    """Retry durable Gmail cleanup and registration work.
 
-    Only mailboxes still referenced by an enabled Gmail trigger are retried.
-    Returns the number of registration attempts. Registration retries are
-    gated on ``XAGENT_GMAIL_WATCH_ENABLED`` (like the renewal scan), so this
-    function re-registers nothing while the feature is switched off.
-    Trigger-status reconciliation runs either way, though: it does not touch
-    the cloud, and skipping it while disabled would leave disabled/expired
-    statuses frozen instead of observable through the trigger API.
+    Cleanup retries run even when watch registration is disabled because they
+    remove delivery resources rather than create them. Registration retries
+    remain gated on ``XAGENT_GMAIL_WATCH_ENABLED`` and cover only mailboxes
+    referenced by enabled Gmail triggers. Returns the total recovery attempts.
+    Trigger-status reconciliation runs either way so disabled or expired
+    states remain observable through the trigger API.
     """
+    batch_size = max(1, min(limit, 500))
+    cleanup_candidates = (
+        db.query(GmailWatchState.oauth_account_id)
+        .filter(
+            GmailWatchState.status == TriggerProvisioningStatus.FAILED.value,
+            GmailWatchState.last_error.like(f"{GMAIL_WATCH_CLEANUP_PENDING_PREFIX}%"),
+        )
+        .order_by(GmailWatchState.updated_at.asc(), GmailWatchState.id.asc())
+        .limit(batch_size)
+        .all()
+    )
+    cleanup_attempts = 0
+    for (oauth_account_id,) in cleanup_candidates:
+        release_gmail_mailbox_if_unused(
+            db,
+            int(oauth_account_id),
+            service_factory=service_factory,
+            publisher_factory=publisher_factory,
+            subscriber_factory=subscriber_factory,
+        )
+        cleanup_attempts += 1
+
     if not get_gmail_watch_enabled():
-        reconcile_gmail_trigger_provisioning(db, batch_size=max(1, min(limit, 500)))
-        return 0
+        reconcile_gmail_trigger_provisioning(db, batch_size=batch_size)
+        return cleanup_attempts
 
     scan_time = now or _now()
     stale_before = scan_time - timedelta(seconds=stale_pending_seconds)
-    batch_size = max(1, min(limit, 500))
     retryable = or_(
         GmailWatchState.status == TriggerProvisioningStatus.FAILED.value,
         and_(
@@ -1615,7 +1660,7 @@ def sweep_gmail_provisioning(
     # are not sweep candidates, so the trigger-facing status is reconciled
     # here unconditionally, paged by the sweep's own limit.
     reconcile_gmail_trigger_provisioning(db, batch_size=max(1, min(limit, 500)))
-    return attempts
+    return cleanup_attempts + attempts
 
 
 def best_effort_provision_gmail_watches_for_user(

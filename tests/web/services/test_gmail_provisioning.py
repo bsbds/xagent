@@ -1018,6 +1018,167 @@ def test_unregister_preserves_cleanup_handles_when_remote_stop_fails(
     assert publisher.deleted_topics == []
 
 
+def test_sweep_retries_unreferenced_cleanup_after_remote_stop_failure(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FlakyStop:
+        def __init__(self) -> None:
+            self.stop_attempts = 0
+
+        def users(self) -> FlakyStop:
+            return self
+
+        def stop(self, *, userId: str) -> FlakyStop:
+            assert userId == "me"
+            return self
+
+        def execute(self) -> dict[str, object]:
+            self.stop_attempts += 1
+            if self.stop_attempts == 1:
+                raise RuntimeError("remote stop failed")
+            return {}
+
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    service = FlakyStop()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    state_id = int(state.id)
+
+    assert (
+        release_gmail_mailbox_if_unused(
+            db_session,
+            int(account.id),
+            service_factory=lambda _db, _account: service,
+            publisher_factory=lambda: publisher,
+            subscriber_factory=lambda: subscriber,
+        )
+        is False
+    )
+    db_session.refresh(state)
+    assert state.status == TriggerProvisioningStatus.FAILED.value
+    assert str(state.last_error).startswith("Gmail watch cleanup pending:")
+
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "false")
+    assert (
+        sweep_gmail_provisioning(
+            db_session,
+            service_factory=lambda _db, _account: service,
+            publisher_factory=lambda: publisher,
+            subscriber_factory=lambda: subscriber,
+        )
+        == 1
+    )
+    assert service.stop_attempts == 2
+    assert subscriber.deleted_subscriptions == [state.subscription_name]
+    assert publisher.deleted_topics == [state.topic_name]
+    assert db_session.get(GmailWatchState, state_id) is None
+
+
+def test_sweep_retries_cleanup_when_pubsub_deletion_fails(
+    db_session: Session,
+) -> None:
+    class FlakySubscriber(FakeSubscriber):
+        def __init__(self) -> None:
+            super().__init__()
+            self.delete_attempts = 0
+
+        def delete_subscription(self, *, request: dict[str, str]) -> None:
+            self.delete_attempts += 1
+            if self.delete_attempts == 1:
+                raise RuntimeError("subscription deletion failed")
+            super().delete_subscription(request=request)
+
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FlakySubscriber()
+    service = FakeGmailService()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: service,
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    state_id = int(state.id)
+
+    assert (
+        release_gmail_mailbox_if_unused(
+            db_session,
+            int(account.id),
+            service_factory=lambda _db, _account: service,
+            publisher_factory=lambda: publisher,
+            subscriber_factory=lambda: subscriber,
+        )
+        is False
+    )
+    db_session.refresh(state)
+    assert state.status == TriggerProvisioningStatus.FAILED.value
+    assert "subscription deletion failed" in str(state.last_error)
+
+    assert (
+        sweep_gmail_provisioning(
+            db_session,
+            service_factory=lambda _db, _account: service,
+            publisher_factory=lambda: publisher,
+            subscriber_factory=lambda: subscriber,
+        )
+        == 1
+    )
+    assert subscriber.delete_attempts == 2
+    assert db_session.get(GmailWatchState, state_id) is None
+
+
+def test_release_treats_an_already_stopped_gmail_watch_as_converged(
+    db_session: Session,
+) -> None:
+    from google.api_core.exceptions import NotFound
+
+    class AlreadyStopped:
+        def users(self) -> AlreadyStopped:
+            return self
+
+        def stop(self, *, userId: str) -> AlreadyStopped:
+            assert userId == "me"
+            return self
+
+        def execute(self) -> NoReturn:
+            raise NotFound("watch is already absent")
+
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    state_id = int(state.id)
+
+    assert release_gmail_mailbox_if_unused(
+        db_session,
+        int(account.id),
+        service_factory=lambda _db, _account: AlreadyStopped(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    assert subscriber.deleted_subscriptions == [state.subscription_name]
+    assert publisher.deleted_topics == [state.topic_name]
+    assert db_session.get(GmailWatchState, state_id) is None
+
+
 async def test_gmail_provider_register_unregister_offload_sync_sdk_work(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1077,6 +1238,46 @@ async def test_gmail_provider_register_unregister_offload_sync_sdk_work(
         "to_thread:fake_release",
         f"release:{account.id}",
     ]
+
+
+async def test_gmail_provider_unregister_resolves_legacy_mailbox_binding(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xagent.web.services.trigger_providers.gmail import GmailProvider
+
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account)
+    setattr(trigger, "config", {"watch_label": "INBOX"})
+    db_session.add(trigger)
+    db_session.commit()
+    ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=FakePublisher,
+        subscriber_factory=FakeSubscriber,
+    )
+    released: list[int] = []
+
+    monkeypatch.setattr(
+        "xagent.web.services.trigger_providers.gmail.release_gmail_mailbox_if_unused",
+        lambda _db, account_id: released.append(int(account_id)),
+    )
+
+    async def run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "xagent.web.services.trigger_providers.gmail.asyncio.to_thread",
+        run_inline,
+    )
+
+    await GmailProvider().unregister(db_session, trigger, dict(trigger.config))
+
+    assert released == [int(account.id)]
 
 
 def test_slow_registration_returns_pending_then_reconciles_to_active(

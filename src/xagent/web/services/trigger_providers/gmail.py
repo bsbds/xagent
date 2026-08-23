@@ -460,13 +460,32 @@ class GmailProvider:
         )
 
     async def unregister(self, db: Session, trigger: AgentTrigger, config: Any) -> None:
-        # The binding must come from config: CRUD passes the trigger's
-        # previous config, and on delete the trigger row no longer exists.
+        # Modern bindings come from the previous config because CRUD may have
+        # already rebound or deleted the trigger row. Supported legacy rows
+        # carry only the mailbox resource, so resolve every watch for that
+        # user's mailbox and let reference-counted release decide which one is
+        # now unused.
         oauth_account_id = _binding_oauth_account_id(config)
         if oauth_account_id is not None:
-            await asyncio.to_thread(
-                release_gmail_mailbox_if_unused, db, oauth_account_id
-            )
+            account_ids = [oauth_account_id]
+        else:
+            mailbox = _normalized_email(trigger.resource_id)
+            if not mailbox:
+                return
+            account_ids = [
+                int(row.oauth_account_id)
+                for row in (
+                    db.query(GmailWatchState.oauth_account_id)
+                    .filter(
+                        GmailWatchState.user_id == int(trigger.user_id),
+                        func.lower(GmailWatchState.email) == mailbox,
+                    )
+                    .order_by(GmailWatchState.oauth_account_id.asc())
+                    .all()
+                )
+            ]
+        for account_id in account_ids:
+            await asyncio.to_thread(release_gmail_mailbox_if_unused, db, account_id)
 
     async def parse_events(
         self,

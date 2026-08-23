@@ -8,7 +8,7 @@ from xagent.web import app as app_module
 
 
 @pytest.mark.asyncio
-async def test_trigger_dispatcher_skips_gmail_scan_when_watch_disabled(
+async def test_trigger_dispatcher_runs_cleanup_sweep_when_watch_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -21,6 +21,9 @@ async def test_trigger_dispatcher_skips_gmail_scan_when_watch_disabled(
         return FakeSession
 
     def fake_scan_due_gmail_watch_renewals(_db) -> int:
+        return 0
+
+    def fake_sweep_gmail_provisioning(_db) -> int:
         return 0
 
     def fake_scan_due_scheduled_triggers(_db):
@@ -49,6 +52,10 @@ async def test_trigger_dispatcher_skips_gmail_scan_when_watch_disabled(
         fake_scan_due_gmail_watch_renewals,
     )
     monkeypatch.setattr(
+        "xagent.web.services.gmail_provisioning.sweep_gmail_provisioning",
+        fake_sweep_gmail_provisioning,
+    )
+    monkeypatch.setattr(
         "xagent.web.services.triggers.scan_due_scheduled_triggers",
         fake_scan_due_scheduled_triggers,
     )
@@ -71,10 +78,11 @@ async def test_trigger_dispatcher_skips_gmail_scan_when_watch_disabled(
             batch_size=25,
         )
 
-    # Scheduled triggers are scanned in-process every tick (no Celery needed),
-    # but the Gmail watch-renewal scan stays gated off when watch is disabled.
+    # Scheduled triggers and cleanup run in-process every tick (no Celery
+    # needed), but Gmail watch renewal stays gated when registration is off.
     assert "_scan_due_scheduled_triggers_tick" in calls
     assert "_scan_due_gmail_watch_renewals_tick" not in calls
+    assert "_sweep_gmail_provisioning_tick" in calls
     assert "_reap_stale_preview_workforce_runs_tick" in calls
 
 

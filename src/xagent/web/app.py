@@ -339,12 +339,15 @@ async def _run_trigger_dispatcher(
                                 "Trigger dispatcher renewed %s Gmail watch(es)",
                                 renewed,
                             )
-                        swept = await asyncio.to_thread(_sweep_gmail_provisioning_tick)
-                        if swept:
-                            logger.info(
-                                "Trigger dispatcher retried %s Gmail registration(s)",
-                                swept,
-                            )
+                    # Cleanup must keep running when registration is disabled;
+                    # the sweep gates only its registration phase internally.
+                    swept = await asyncio.to_thread(_sweep_gmail_provisioning_tick)
+                    if swept:
+                        logger.info(
+                            "Trigger dispatcher processed %s Gmail watch "
+                            "recovery attempt(s)",
+                            swept,
+                        )
                 finally:
                     next_gmail_watch_scan_at = (
                         now + get_gmail_watch_renewal_interval_seconds()
