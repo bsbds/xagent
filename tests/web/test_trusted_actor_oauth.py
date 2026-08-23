@@ -20,6 +20,9 @@ from xagent.web.api.auth import (
     generic_oauth_callback,
     generic_oauth_login,
 )
+from xagent.web.builtin_mcp_registry import (
+    get_builtin_execution_fields_and_optional_scopes,
+)
 from xagent.web.models.database import Base
 from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.public_mcp import PublicMCPApp
@@ -249,14 +252,19 @@ def test_actor_start_rejects_duplicate_builtin_definitions(oauth_db) -> None:
 
 def test_visibility_setup_rejects_normalized_reserved_alias(oauth_db) -> None:
     db, user = oauth_db
+    execution, _optional_scopes = get_builtin_execution_fields_and_optional_scopes(
+        "google-calendar"
+    )
+    assert execution is not None
     db.add_all(
         [
             PublicMCPApp(
                 app_id="google-calendar",
-                name="Google Calendar",
-                transport="oauth",
-                provider_name="custom",
-                launch_config={"command": "calendar"},
+                name=str(execution["name"]),
+                transport=str(execution["transport"]),
+                provider_name=str(execution["provider_name"]),
+                oauth_scopes=list(execution["oauth_scopes"]),
+                launch_config=dict(execution["launch_config"]),
                 is_visible_in_connector=True,
             ),
             MCPServer(
@@ -272,6 +280,74 @@ def test_visibility_setup_rejects_normalized_reserved_alias(oauth_db) -> None:
         mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
             db, user_id=int(user.id), app_id="google-calendar"
         )
+
+
+def test_actor_start_rejects_seeded_catalog_execution_drift(oauth_db) -> None:
+    db, user = oauth_db
+    execution, _optional_scopes = get_builtin_execution_fields_and_optional_scopes(
+        "gmail"
+    )
+    assert execution is not None
+    app = PublicMCPApp(
+        app_id="gmail",
+        name=str(execution["name"]),
+        transport=str(execution["transport"]),
+        provider_name="evil",
+        oauth_scopes=list(execution["oauth_scopes"]),
+        launch_config=dict(execution["launch_config"]),
+        is_visible_in_connector=True,
+    )
+    server = MCPServer(
+        name=str(execution["name"]),
+        managed="external",
+        transport="oauth",
+        auth={"app_id": "gmail", "provider": execution["provider_name"]},
+    )
+    db.add_all([app, server])
+    db.flush()
+    db.add(
+        UserMCPServer(
+            user_id=int(user.id),
+            mcpserver_id=int(server.id),
+            is_owner=False,
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    with pytest.raises(ValueError, match="catalog.*drift|persisted"):
+        auth_api.start_builtin_oauth_for_resource_owner(
+            provider=str(execution["provider_name"]),
+            app_id="gmail",
+            user=user,
+            resource_owner_key=ACTOR_ALICE,
+            db=db,
+            db_provider=_provider(),
+        )
+
+
+def test_visibility_setup_repairs_existing_link_to_nonowning_shape(oauth_db) -> None:
+    db, user = oauth_db
+    _server, link = _catalog_link(db, user)
+    link.is_owner = True
+    link.can_edit = True
+    link.can_delete = True
+    link.is_shared = True
+    link.is_active = False
+    db.commit()
+
+    mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
+        db,
+        user_id=int(user.id),
+        app_id="calendar",
+    )
+    db.refresh(link)
+
+    assert link.is_owner is False
+    assert link.can_edit is False
+    assert link.can_delete is False
+    assert link.is_shared is False
+    assert link.is_active is True
 
 
 def test_actor_start_rejects_provider_catalog_mismatch(oauth_db) -> None:

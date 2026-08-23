@@ -239,6 +239,35 @@ def _strict_catalog_app_by_id(
             f"builtin OAuth catalog app {app_id!r} has ambiguous normalized identity"
         )
 
+    execution_fields, _optional_scopes = (
+        get_builtin_execution_fields_and_optional_scopes(app.app_id)
+    )
+    if execution_fields is not None:
+        persisted_execution = {
+            "name": app.name,
+            "transport": app.transport,
+            "provider_name": app.provider_name,
+            "oauth_scopes": list(app.oauth_scopes or []),
+            "launch_config": app.launch_config or {},
+        }
+        expected_execution = {
+            "name": execution_fields["name"],
+            "transport": execution_fields["transport"],
+            "provider_name": execution_fields["provider_name"],
+            "oauth_scopes": list(execution_fields["oauth_scopes"]),
+            "launch_config": execution_fields["launch_config"],
+        }
+        drifted_fields = sorted(
+            field
+            for field, expected in expected_execution.items()
+            if persisted_execution[field] != expected
+        )
+        if drifted_fields:
+            raise BuiltinOAuthServerDefinitionError(
+                f"builtin OAuth catalog app {app_id!r} has persisted catalog "
+                f"drift ({', '.join(drifted_fields)})"
+            )
+
     app_info = _app_to_dict(app)
     if require_builtin_oauth and app_info.get("auth_type") != "builtin_oauth":
         raise BuiltinOAuthServerDefinitionError(
@@ -536,6 +565,10 @@ def ensure_builtin_oauth_server_visibility_for_user(
                     "builtin OAuth visibility race did not converge"
                 ) from exc
     cast_association: Any = association
+    cast_association.is_owner = False
+    cast_association.can_edit = False
+    cast_association.can_delete = False
+    cast_association.is_shared = False
     cast_association.is_active = True
     db.flush()
     return server
