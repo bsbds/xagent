@@ -1180,6 +1180,49 @@ def test_release_treats_an_already_stopped_gmail_watch_as_converged(
     assert db_session.get(GmailWatchState, state_id) is None
 
 
+def test_oauth_account_deletion_waits_for_durable_watch_cleanup(
+    db_session: Session,
+) -> None:
+    request_deletion = getattr(
+        gmail_provisioning,
+        "request_gmail_oauth_account_deletion",
+        None,
+    )
+    assert callable(request_deletion)
+
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    service = FakeGmailService()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: service,
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    state_id = int(state.id)
+
+    assert request_deletion(db_session, int(account.id)) is False
+    db_session.refresh(state)
+    assert state.status == TriggerProvisioningStatus.FAILED.value
+    assert str(state.last_error).startswith("Gmail watch cleanup pending:")
+    assert db_session.get(UserOAuth, int(account.id)) is account
+
+    assert (
+        sweep_gmail_provisioning(
+            db_session,
+            service_factory=lambda _db, _account: service,
+            publisher_factory=lambda: publisher,
+            subscriber_factory=lambda: subscriber,
+        )
+        == 1
+    )
+    assert db_session.get(GmailWatchState, state_id) is None
+    assert request_deletion(db_session, int(account.id)) is True
+
+
 def test_release_converges_when_production_gmail_stop_returns_http_404(
     db_session: Session,
 ) -> None:

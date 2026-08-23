@@ -38,10 +38,13 @@ from xagent.web.api.mcp import (
 )
 from xagent.web.models import MCPOAuthClient, MCPOAuthFlowState, MCPOAuthGrant
 from xagent.web.models.database import Base
+from xagent.web.models.gmail_watch import GmailWatchState
 from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.mcp_oauth import mcp_oauth_client_registration_lookup_hash
 from xagent.web.models.public_mcp import PublicMCPApp
 from xagent.web.models.user import User
+from xagent.web.models.user_oauth import UserOAuth
+from xagent.web.services import connector_team_scope
 from xagent.web.services import mcp_oauth as mcp_oauth_service
 from xagent.web.services.mcp_oauth import (
     MCP_OAUTH_PERSISTED_VALUE_MAX_LENGTH,
@@ -2094,6 +2097,125 @@ async def test_local_mcp_oauth_listing_omits_auth_type_when_deactivated(db_sessi
         if a["id"] == "records"
     )
     assert "auth_type" not in records
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_preserves_gmail_watch_cleanup_handles(
+    db_session,
+) -> None:
+    db, user, _other_user = db_session
+    server = _add_mcp_oauth_server(
+        db,
+        user,
+        name="Gmail",
+        transport="oauth",
+    )
+    db.add(
+        PublicMCPApp(
+            app_id="gmail",
+            name="Gmail",
+            description="Gmail app",
+            transport="oauth",
+            provider_name="gmail",
+            launch_config={},
+        )
+    )
+    account = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        resource_owner_key=None,
+        provider_user_id="gmail-user",
+        email="owner@gmail.example",
+        access_token="gmail-token",
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email="owner@gmail.example",
+        history_id="1",
+        topic_name="gmail-topic",
+        subscription_name="gmail-subscription",
+    )
+    db.add(state)
+    db.commit()
+    state_id = int(state.id)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_mcp_server(int(server.id), current_user=user, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert db.get(UserOAuth, int(account.id)) is account
+    retained_state = db.get(GmailWatchState, state_id)
+    assert retained_state is not None
+    assert str(retained_state.last_error).startswith("Gmail watch cleanup pending:")
+    assert db.get(MCPServer, int(server.id)) is server
+
+
+@pytest.mark.asyncio
+async def test_denied_team_mcp_delete_does_not_schedule_gmail_cleanup(
+    db_session,
+) -> None:
+    db, user, _other_user = db_session
+    server = _add_mcp_oauth_server(
+        db,
+        user,
+        name="Gmail",
+        transport="oauth",
+    )
+    db.add(
+        PublicMCPApp(
+            app_id="gmail",
+            name="Gmail",
+            description="Gmail app",
+            transport="oauth",
+            provider_name="gmail",
+            launch_config={},
+        )
+    )
+    account = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        resource_owner_key=None,
+        provider_user_id="gmail-user",
+        email="owner@gmail.example",
+        access_token="gmail-token",
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email="owner@gmail.example",
+        history_id="1",
+        topic_name="gmail-topic",
+        subscription_name="gmail-subscription",
+    )
+    db.add(state)
+    db.commit()
+    state_id = int(state.id)
+
+    connector_team_scope.set_connector_team_hooks(
+        deleted=lambda *_args: connector_team_scope.ConnectorDeleteDecision(
+            team_owned=True,
+            authorized=False,
+        )
+    )
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_mcp_server(int(server.id), current_user=user, db=db)
+    finally:
+        connector_team_scope.set_connector_team_hooks()
+
+    assert exc_info.value.status_code == 403
+    retained_state = db.get(GmailWatchState, state_id)
+    assert retained_state is not None
+    assert retained_state.last_error is None
+    assert db.get(UserOAuth, int(account.id)) is account
+    assert db.get(MCPServer, int(server.id)) is server
 
 
 @pytest.mark.asyncio

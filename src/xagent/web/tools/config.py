@@ -3169,7 +3169,8 @@ class WebToolConfig(BaseToolConfig):
             if not is_valid:
                 logger.warning(
                     "OAUTH CONFIG: Token for '%s' is invalid and could not be refreshed. "
-                    "Deleting OAuth record to prompt user for reconnection.",
+                    "Disconnecting the OAuth record or preserving Gmail cleanup "
+                    "ownership for reconnection.",
                     provider_name,
                 )
                 # A failed flush leaves the transaction unusable. Roll it back,
@@ -3182,6 +3183,26 @@ class WebToolConfig(BaseToolConfig):
                     resource_owner_key=None,
                 )
                 if oauth_account is not None:
+                    if str(oauth_account.provider) == "gmail":
+                        from ..services.gmail_provisioning import (
+                            GmailProvisioningError,
+                            request_gmail_oauth_account_deletion,
+                        )
+
+                        try:
+                            ready_to_delete = request_gmail_oauth_account_deletion(
+                                oauth_db,
+                                account_id,
+                            )
+                        except GmailProvisioningError:
+                            # Keep the account and watch handles so a later
+                            # reconnect can restore credentials in place.
+                            ready_to_delete = False
+                        if not ready_to_delete:
+                            return _LegacyOAuthTokenResolution(
+                                access_token=None,
+                                refresh_failed=True,
+                            )
                     oauth_db.delete(oauth_account)
                     oauth_db.commit()
                 return _LegacyOAuthTokenResolution(

@@ -16,6 +16,7 @@ from xagent.core.tools.adapters.vibe.connector_runtime import ConnectorRuntimeEr
 from xagent.core.tools.adapters.vibe.mcp_adapter import MCPToolAdapter
 from xagent.core.utils.encryption import encrypt_value
 from xagent.web.models.database import Base
+from xagent.web.models.gmail_watch import GmailWatchState
 from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.oauth_provider import OAuthProvider
 from xagent.web.models.public_mcp import PublicMCPApp
@@ -894,6 +895,65 @@ async def test_user_oauth_refresh_failure_retains_unavailable_and_deletes_invali
             .first()
             is None
         )
+
+
+@pytest.mark.asyncio
+async def test_invalid_gmail_token_preserves_watch_cleanup_ownership(
+    db_session,
+    monkeypatch,
+):
+    db, user = db_session
+    oauth_server = _add_oauth_server(
+        db,
+        user,
+        name="Gmail",
+        app_id="resolver-gmail",
+        provider="gmail",
+        launch_config=_launch_config(),
+    )
+    oauth_account = _add_user_oauth(
+        db,
+        user,
+        provider="gmail",
+        access_token="expired-secret-token",
+    )
+    account_id = int(oauth_account.id)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=account_id,
+        email="owner@gmail.example",
+        history_id="1",
+        topic_name="gmail-topic",
+        subscription_name="gmail-subscription",
+    )
+    db.add(state)
+    db.commit()
+    state_id = int(state.id)
+    isolated_session_factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False
+    )
+
+    async def fail_refresh(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(web_tools_config, "refresh_oauth_token_if_needed", fail_refresh)
+
+    configs = await _tool_config(
+        db, user, db_factory=isolated_session_factory
+    ).get_mcp_server_configs()
+
+    assert [config["name"] for config in configs] == [oauth_server.name]
+    _assert_unavailable_mcp_config(
+        configs[0],
+        oauth_server,
+        reason="oauth_token_refresh_failed",
+        oauth_token_required=True,
+    )
+    with isolated_session_factory() as verification_db:
+        assert verification_db.get(UserOAuth, account_id) is not None
+        retained_state = verification_db.get(GmailWatchState, state_id)
+        assert retained_state is not None
+        assert str(retained_state.last_error).startswith("Gmail watch cleanup pending:")
 
 
 @pytest.mark.asyncio

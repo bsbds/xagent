@@ -3469,6 +3469,69 @@ async def delete_mcp_server(
                 detail="Only a team admin can delete a team MCP server",
             )
 
+        # Legacy OAuth applications can share ordinary UserOAuth rows with
+        # Gmail trigger delivery. Team authorization runs first. When cleanup
+        # is needed, roll back hook-side mutations before committing the
+        # durable cleanup request; the user retries the disconnect afterward.
+        if server.transport == "oauth":
+            from ..mcp_apps import get_app_by_name
+
+            deletion_app = get_app_by_name(db, str(server.name))
+            if deletion_app:
+                deletion_providers = restrict_to_app_scoped_oauth_grant(
+                    deletion_app.get("id"),
+                    [deletion_app.get("provider"), deletion_app.get("id")],
+                )
+                if "gmail" in {str(value) for value in deletion_providers}:
+                    from ..models.gmail_watch import GmailWatchState
+                    from ..services.gmail_provisioning import (
+                        GmailProvisioningError,
+                        request_gmail_oauth_accounts_deletion,
+                    )
+
+                    gmail_account_ids = [
+                        int(account.id)
+                        for account in list_scoped_user_oauth_accounts(
+                            db,
+                            user_id=int(user_id),
+                            resource_owner_key=None,
+                        )
+                        if str(account.provider) == "gmail"
+                    ]
+                    has_watch_state = bool(gmail_account_ids) and (
+                        db.query(GmailWatchState.id)
+                        .filter(GmailWatchState.oauth_account_id.in_(gmail_account_ids))
+                        .first()
+                        is not None
+                    )
+                    if has_watch_state:
+                        db.rollback()
+                        try:
+                            cleanup_scheduled = not (
+                                request_gmail_oauth_accounts_deletion(
+                                    db,
+                                    gmail_account_ids,
+                                )
+                            )
+                        except GmailProvisioningError as exc:
+                            raise HTTPException(
+                                status_code=409, detail=str(exc)
+                            ) from exc
+                        if cleanup_scheduled:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    "Gmail watch cleanup was scheduled; retry MCP "
+                                    "disconnection after cleanup completes"
+                                ),
+                            )
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Gmail cleanup state changed; retry MCP disconnection"
+                            ),
+                        )
+
         # If it's an OAuth server, also delete the corresponding OAuth tokens
         if server.transport == "oauth":
             from ..mcp_apps import get_app_by_name

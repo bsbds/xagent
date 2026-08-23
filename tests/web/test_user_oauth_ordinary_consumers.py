@@ -11,6 +11,7 @@ from xagent.web.api.cloud_storage import (
     list_connected_accounts,
 )
 from xagent.web.models.database import Base
+from xagent.web.models.gmail_watch import GmailWatchState
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
 from xagent.web.services.gmail_provisioning import (
@@ -85,6 +86,42 @@ async def test_cloud_account_delete_cannot_address_an_actor_row(oauth_rows) -> N
 
     assert exc_info.value.status_code == 404
     assert db.get(UserOAuth, int(actor.id)) is not None
+
+
+@pytest.mark.asyncio
+async def test_cloud_gmail_account_delete_preserves_cleanup_handles(oauth_rows) -> None:
+    db, user, _ordinary, _actor, _actor_gmail = oauth_rows
+    gmail = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        resource_owner_key=None,
+        provider_user_id="ordinary-gmail",
+        email="ordinary@gmail.example",
+        access_token="ordinary-gmail",
+    )
+    db.add(gmail)
+    db.commit()
+    db.refresh(gmail)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(gmail.id),
+        email="ordinary@gmail.example",
+        history_id="1",
+        topic_name="gmail-topic",
+        subscription_name="gmail-subscription",
+    )
+    db.add(state)
+    db.commit()
+    state_id = int(state.id)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_connected_account(int(gmail.id), db=db, user=user)
+
+    assert exc_info.value.status_code == 409
+    assert db.get(UserOAuth, int(gmail.id)) is gmail
+    retained_state = db.get(GmailWatchState, state_id)
+    assert retained_state is not None
+    assert str(retained_state.last_error).startswith("Gmail watch cleanup pending:")
 
 
 def test_cloud_credentials_cannot_select_an_actor_row_by_id(oauth_rows) -> None:

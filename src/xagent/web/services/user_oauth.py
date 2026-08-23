@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy.orm import Query, Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from ..models.gmail_watch import GmailWatchState
 from ..models.user_oauth import (
     USER_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
     UserOAuth,
@@ -131,14 +132,32 @@ def delete_scoped_user_oauth_accounts(
     An empty sequence deletes nothing. Requiring explicit provider names keeps
     a missing or falsy filter from becoming a namespace-wide deletion.
     Transaction ownership remains with the caller; this function never
-    commits. Callers must not retain matching identity-mapped rows because the
-    bulk delete does not synchronize those in-memory objects.
+    commits. Ordinary Gmail rows with retained watch state are rejected so a
+    caller cannot cascade away durable cleanup handles; callers must request
+    Gmail cleanup before retrying the deletion. Callers must not retain
+    matching identity-mapped rows because the bulk delete does not synchronize
+    those in-memory objects.
     """
     if isinstance(providers, str):
         raise TypeError("providers must be a sequence, not a string")
     provider_keys = tuple(dict.fromkeys(str(provider) for provider in providers))
     if not provider_keys:
         return 0
+    if resource_owner_key is None and "gmail" in provider_keys:
+        protected_watch = (
+            db.query(GmailWatchState.id)
+            .join(UserOAuth, UserOAuth.id == GmailWatchState.oauth_account_id)
+            .filter(
+                UserOAuth.user_id == int(user_id),
+                UserOAuth.provider == "gmail",
+                UserOAuth.resource_owner_key.is_(None),
+            )
+            .first()
+        )
+        if protected_watch is not None:
+            raise RuntimeError(
+                "Gmail watch cleanup must complete before deleting its OAuth account"
+            )
     query = scoped_user_oauth_query(
         db,
         user_id=user_id,

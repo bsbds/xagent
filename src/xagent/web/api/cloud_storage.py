@@ -150,6 +150,28 @@ async def delete_connected_account(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    if str(account.provider) == "gmail":
+        from ..services.gmail_provisioning import (
+            GmailProvisioningError,
+            request_gmail_oauth_account_deletion,
+        )
+
+        try:
+            ready_to_delete = request_gmail_oauth_account_deletion(
+                db,
+                int(account.id),
+            )
+        except GmailProvisioningError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not ready_to_delete:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Gmail watch cleanup was scheduled; retry account deletion "
+                    "after cleanup completes"
+                ),
+            )
+
     db.delete(account)
     db.commit()
 

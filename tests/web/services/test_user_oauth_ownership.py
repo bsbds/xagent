@@ -343,6 +343,36 @@ def test_string_provider_filter_is_rejected(tmp_path) -> None:
         engine.dispose()
 
 
+def test_bulk_deletion_cannot_cascade_an_ordinary_gmail_watch(tmp_path) -> None:
+    engine, db, user, rows = _db(tmp_path)
+    ordinary = rows[0]
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(ordinary.id),
+        email="ordinary@example.com",
+        history_id="1",
+        topic_name="ordinary-topic",
+    )
+    db.add(state)
+    db.commit()
+    state_id = int(state.id)
+
+    try:
+        with pytest.raises(RuntimeError, match="Gmail watch cleanup"):
+            delete_scoped_user_oauth_accounts(
+                db,
+                user_id=int(user.id),
+                resource_owner_key=None,
+                providers=["gmail"],
+            )
+
+        assert db.get(UserOAuth, int(ordinary.id)) is ordinary
+        assert db.get(GmailWatchState, state_id) is state
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_actor_revocation_leaves_ordinary_and_other_actor_rows(tmp_path) -> None:
     engine, db, user, _rows = _db(tmp_path)
     try:

@@ -1414,6 +1414,65 @@ def _reconcile_gmail_trigger_batch(
     return updated
 
 
+def request_gmail_oauth_accounts_deletion(
+    db: Session,
+    oauth_account_ids: Sequence[int],
+) -> bool:
+    """Retain OAuth accounts until all unreferenced watches are cleaned up.
+
+    Returns ``True`` when no watch state remains and the caller may delete the
+    accounts. Otherwise, first verifies that none of the selected watches is
+    referenced, then marks every selected state for the scheduled cleanup sweep
+    in one transaction and returns ``False``.
+    """
+    account_ids = tuple(dict.fromkeys(int(value) for value in oauth_account_ids))
+    if not account_ids:
+        return True
+    states = (
+        db.query(GmailWatchState)
+        .filter(GmailWatchState.oauth_account_id.in_(account_ids))
+        .with_for_update()
+        .all()
+    )
+    if not states:
+        return True
+
+    referenced_ids = _referenced_gmail_oauth_account_ids(
+        db,
+        [
+            (
+                int(state.oauth_account_id),
+                int(state.user_id),
+                str(state.email or "").strip().lower(),
+            )
+            for state in states
+        ],
+    )
+    if referenced_ids:
+        raise GmailProvisioningError(
+            "Remove or disable this account's Gmail triggers before disconnecting it"
+        )
+
+    for state in states:
+        setattr(state, "status", TriggerProvisioningStatus.FAILED.value)
+        setattr(
+            state,
+            "last_error",
+            f"{GMAIL_WATCH_CLEANUP_PENDING_PREFIX} OAuth account deletion requested",
+        )
+        db.add(state)
+    db.commit()
+    return False
+
+
+def request_gmail_oauth_account_deletion(
+    db: Session,
+    oauth_account_id: int,
+) -> bool:
+    """Request durable cleanup for one ordinary Gmail OAuth account."""
+    return request_gmail_oauth_accounts_deletion(db, [oauth_account_id])
+
+
 def release_gmail_mailbox_if_unused(
     db: Session,
     oauth_account_id: int,
