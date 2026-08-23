@@ -2,13 +2,14 @@
 
 import asyncio
 import hashlib
+import hmac
 import html
 import json
 import logging
 import os
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, Literal, Optional, cast
 
 import requests
@@ -35,7 +36,7 @@ from ..auth_dependencies import get_current_user
 from ..models.database import get_db
 from ..models.system_setting import SystemSetting
 from ..models.user import User
-from ..models.user_oauth import UserOAuth
+from ..models.user_oauth import ActorBuiltinOAuthFlowState, UserOAuth
 from ..oauth_provider_quirks import requires_json_accept_header
 from ..services import gmail_provisioning
 from ..services.auth_email import send_password_reset_email
@@ -53,6 +54,91 @@ REGISTRATION_ENABLED_SETTING_KEY = "registration_enabled"
 SETUP_COMPLETED_SETTING_KEY = "setup_completed"
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MAX_USER_ID = 2_147_483_647
+ACTOR_BUILTIN_OAUTH_STATE_COOKIE = "xagent_builtin_oauth_state"
+ACTOR_BUILTIN_OAUTH_STATE_TTL = timedelta(minutes=10)
+_ACTOR_BUILTIN_OAUTH_STATE_RETENTION = timedelta(days=1)
+
+
+def _actor_builtin_oauth_cookie_secure() -> bool:
+    """Require HTTPS cookies when the configured public URL uses HTTPS."""
+    base_url = get_app_base_url()
+    return bool(base_url and base_url.lower().startswith("https://"))
+
+
+def _actor_builtin_oauth_state_cookie_signature(state: str) -> str:
+    """Bind one opaque actor OAuth state value to the initiating browser."""
+    return hmac.new(
+        JWT_SECRET_KEY.encode("utf-8"),
+        state.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _set_actor_builtin_oauth_state_cookie(response: RedirectResponse, state: str) -> None:
+    """Store a short-lived, script-inaccessible proof for the callback."""
+    response.set_cookie(
+        ACTOR_BUILTIN_OAUTH_STATE_COOKIE,
+        f"{state}.{_actor_builtin_oauth_state_cookie_signature(state)}",
+        max_age=int(ACTOR_BUILTIN_OAUTH_STATE_TTL.total_seconds()),
+        httponly=True,
+        secure=_actor_builtin_oauth_cookie_secure(),
+        samesite="lax",
+        path="/api/auth",
+    )
+
+
+def _clear_actor_builtin_oauth_state_cookie(response: HTMLResponse) -> None:
+    """Remove the browser proof after a successful callback."""
+    response.delete_cookie(ACTOR_BUILTIN_OAUTH_STATE_COOKIE, path="/api/auth")
+
+
+def _actor_builtin_oauth_state_cookie_matches(request: Request, state: str) -> bool:
+    """Verify that the callback carries the proof issued with this state."""
+    cookie_value = request.cookies.get(ACTOR_BUILTIN_OAUTH_STATE_COOKIE)
+    if not cookie_value:
+        return False
+    try:
+        cookie_state, signature = cookie_value.rsplit(".", 1)
+    except ValueError:
+        return False
+    return hmac.compare_digest(cookie_state, state) and hmac.compare_digest(
+        signature,
+        _actor_builtin_oauth_state_cookie_signature(cookie_state),
+    )
+
+
+def _claim_actor_builtin_oauth_state(
+    db: Session,
+    *,
+    nonce: str,
+    user_id: int,
+    resource_owner_key: str,
+    provider: str,
+    app_id: str,
+) -> bool:
+    """Atomically consume one actor flow before provider token exchange."""
+    claimed_at = datetime.now(UTC)
+    updated = (
+        db.query(ActorBuiltinOAuthFlowState)
+        .filter(
+            ActorBuiltinOAuthFlowState.nonce == nonce,
+            ActorBuiltinOAuthFlowState.user_id == user_id,
+            ActorBuiltinOAuthFlowState.resource_owner_key == resource_owner_key,
+            ActorBuiltinOAuthFlowState.provider == provider,
+            ActorBuiltinOAuthFlowState.app_id == app_id,
+            ActorBuiltinOAuthFlowState.consumed_at.is_(None),
+            ActorBuiltinOAuthFlowState.expires_at > claimed_at,
+        )
+        .update(
+            {ActorBuiltinOAuthFlowState.consumed_at: claimed_at},
+            synchronize_session=False,
+        )
+    )
+    if updated != 1:
+        db.rollback()
+        return False
+    db.commit()
+    return True
 
 
 def _best_effort_ensure_gmail_watches_for_user(db: Session, *, user_id: int) -> None:
@@ -1602,7 +1688,29 @@ def _generic_oauth_login(
         "resource_owner_key": resource_owner_key,
         "governing_team_id": governing_team_id,
     }
-    state = create_access_token(data=state_payload, expires_delta=timedelta(minutes=10))
+    if resource_owner_key is not None:
+        now = datetime.now(UTC)
+        db.query(ActorBuiltinOAuthFlowState).filter(
+            ActorBuiltinOAuthFlowState.expires_at
+            < now - _ACTOR_BUILTIN_OAUTH_STATE_RETENTION
+        ).delete(synchronize_session=False)
+        nonce = secrets.token_urlsafe(24)
+        state_payload["nonce"] = nonce
+        db.add(
+            ActorBuiltinOAuthFlowState(
+                nonce=nonce,
+                user_id=user_id,
+                resource_owner_key=resource_owner_key,
+                provider=provider,
+                app_id=str(app_id),
+                expires_at=now + ACTOR_BUILTIN_OAUTH_STATE_TTL,
+            )
+        )
+        db.flush()
+    state = create_access_token(
+        data=state_payload,
+        expires_delta=ACTOR_BUILTIN_OAUTH_STATE_TTL,
+    )
 
     app_scopes: list[str] | None = None
     app_optional_scopes: list[str] = []
@@ -1701,7 +1809,10 @@ def _generic_oauth_login(
 
     separator = "&" if "?" in auth_url else "?"
     full_auth_url = f"{auth_url}{separator}{urlencode(params)}"
-    return RedirectResponse(full_auth_url)
+    response = RedirectResponse(full_auth_url)
+    if resource_owner_key is not None:
+        _set_actor_builtin_oauth_state_cookie(response, state)
+    return response
 
 
 class AppNotOAuthError(ValueError):
@@ -1819,15 +1930,24 @@ def generic_oauth_callback(
             content="<h1>Error: Invalid or expired state</h1>", status_code=400
         )
 
-    if resource_owner_key is not None and (
-        not isinstance(app_id, str) or not app_id.strip()
-    ):
-        # The trusted actor entry point always signs a concrete catalog app.
-        # Reject malformed or independently forged actor state before provider
-        # exchange instead of falling through to ordinary provider behavior.
-        return HTMLResponse(
-            content="<h1>Error: Invalid or expired state</h1>", status_code=400
-        )
+    actor_flow_nonce: str | None = None
+    if resource_owner_key is not None:
+        if not isinstance(app_id, str) or not app_id.strip():
+            # The trusted actor entry point always signs a concrete catalog app.
+            # Reject malformed or independently forged actor state before provider
+            # exchange instead of falling through to ordinary provider behavior.
+            return HTMLResponse(
+                content="<h1>Error: Invalid or expired state</h1>", status_code=400
+            )
+        actor_flow_nonce = payload.get("nonce")
+        if not isinstance(actor_flow_nonce, str) or not actor_flow_nonce:
+            return HTMLResponse(
+                content="<h1>Error: Invalid or expired state</h1>", status_code=400
+            )
+        if not _actor_builtin_oauth_state_cookie_matches(request, state):
+            return HTMLResponse(
+                content="<h1>Error: Invalid or expired state</h1>", status_code=400
+            )
 
     if not app_id:
         from ..mcp_apps import requires_app_scoped_oauth_grant
@@ -1928,6 +2048,22 @@ def generic_oauth_callback(
     userinfo_url = db_provider.userinfo_url
 
     redirect_uri = _resolve_oauth_redirect_uri(provider, db_provider)
+
+    if resource_owner_key is not None and (
+        actor_flow_nonce is None
+        or user_id is None
+        or not _claim_actor_builtin_oauth_state(
+            db,
+            nonce=actor_flow_nonce,
+            user_id=user_id,
+            resource_owner_key=resource_owner_key,
+            provider=provider,
+            app_id=str(app_id),
+        )
+    ):
+        return HTMLResponse(
+            content="<h1>Error: Invalid or expired state</h1>", status_code=400
+        )
 
     try:
         data = {
@@ -2355,7 +2491,7 @@ def generic_oauth_callback(
             except Exception:
                 pass
 
-        return HTMLResponse(
+        response = HTMLResponse(
             content=f"""
         <html>
             <head>
@@ -2376,6 +2512,9 @@ def generic_oauth_callback(
         </html>
         """
         )
+        if resource_owner_key is not None:
+            _clear_actor_builtin_oauth_state_cookie(response)
+        return response
     except Exception:
         # str(e) is not rendered to the client: db.add(oauth_account)/db.commit()
         # above persist the just-obtained access/refresh token as bound SQL

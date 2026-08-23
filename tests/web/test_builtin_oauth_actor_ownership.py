@@ -25,7 +25,7 @@ from xagent.web.models.database import Base
 from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.public_mcp import PublicMCPApp
 from xagent.web.models.user import User
-from xagent.web.models.user_oauth import UserOAuth
+from xagent.web.models.user_oauth import ActorBuiltinOAuthFlowState, UserOAuth
 from xagent.web.services.connector_team_scope import set_connector_team_hooks
 
 ACTOR_ALICE = "toby:slack:41:UALICE"
@@ -83,8 +83,28 @@ def _state(response) -> str:
     return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
 
 
-def _callback_request(state: str, code: str = "code"):
-    return SimpleNamespace(query_params={"state": state, "code": code})
+def _browser_cookie(response) -> str:
+    header = response.headers["set-cookie"]
+    name, value = header.split(";", 1)[0].split("=", 1)
+    assert name == "xagent_builtin_oauth_state"
+    return value
+
+
+def _callback_request(
+    state: str,
+    code: str = "code",
+    *,
+    browser_cookie: str | None = None,
+):
+    cookies = (
+        {"xagent_builtin_oauth_state": browser_cookie}
+        if browser_cookie is not None
+        else {}
+    )
+    return SimpleNamespace(
+        query_params={"state": state, "code": code},
+        cookies=cookies,
+    )
 
 
 def _mock_provider_exchange(
@@ -512,6 +532,105 @@ def test_trusted_start_places_actor_only_in_signed_state(oauth_db) -> None:
     assert ACTOR_ALICE not in response.headers["location"].split("state=")[0]
 
 
+def test_trusted_start_binds_state_to_secure_browser_cookie(oauth_db) -> None:
+    db, user = oauth_db
+    _visible_calendar(db, user)
+
+    response = _trusted_start(db, user, ACTOR_ALICE)
+
+    cookie = response.headers.get("set-cookie", "")
+    assert cookie.startswith("xagent_builtin_oauth_state=")
+    assert "HttpOnly" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Path=/api/auth" in cookie
+
+
+def test_actor_callback_rejects_missing_browser_cookie_before_exchange(
+    oauth_db, monkeypatch
+) -> None:
+    db, user = oauth_db
+    _visible_calendar(db, user)
+    start = _trusted_start(db, user, ACTOR_ALICE)
+    exchange = Mock(side_effect=AssertionError("token exchange must not run"))
+    monkeypatch.setattr(auth_api.requests, "post", exchange)
+
+    response = generic_oauth_callback(
+        "custom",
+        _callback_request(_state(start)),
+        db,
+        _provider(),
+    )
+
+    assert response.status_code == 400
+    exchange.assert_not_called()
+
+
+def test_actor_callback_rejects_another_browser_cookie_before_exchange(
+    oauth_db, monkeypatch
+) -> None:
+    db, user = oauth_db
+    _visible_calendar(db, user)
+    alice_start = _trusted_start(db, user, ACTOR_ALICE)
+    bob_start = _trusted_start(db, user, ACTOR_BOB)
+    exchange = Mock(side_effect=AssertionError("token exchange must not run"))
+    monkeypatch.setattr(auth_api.requests, "post", exchange)
+
+    response = generic_oauth_callback(
+        "custom",
+        _callback_request(
+            _state(alice_start),
+            browser_cookie=_browser_cookie(bob_start),
+        ),
+        db,
+        _provider(),
+    )
+
+    assert response.status_code == 400
+    exchange.assert_not_called()
+
+
+def test_actor_callback_consumes_state_once(oauth_db, monkeypatch) -> None:
+    db, user = oauth_db
+    _visible_calendar(db, user)
+    start = _trusted_start(db, user, ACTOR_ALICE)
+    state = _state(start)
+    browser_cookie = _browser_cookie(start)
+    payload = verify_token(state)
+    assert payload is not None
+    flow = db.query(ActorBuiltinOAuthFlowState).one()
+    assert (
+        flow.nonce,
+        flow.user_id,
+        flow.resource_owner_key,
+        flow.provider,
+        flow.app_id,
+    ) == (
+        payload["nonce"],
+        int(user.id),
+        ACTOR_ALICE,
+        "custom",
+        "calendar",
+    )
+    _mock_provider_exchange(monkeypatch)
+
+    first = generic_oauth_callback(
+        "custom",
+        _callback_request(state, "first", browser_cookie=browser_cookie),
+        db,
+        _provider(),
+    )
+    replay = generic_oauth_callback(
+        "custom",
+        _callback_request(state, "replay", browser_cookie=browser_cookie),
+        db,
+        _provider(),
+    )
+
+    assert first.status_code == 200, first.body
+    assert replay.status_code == 400
+    assert db.query(UserOAuth).one().access_token == "access:first"
+
+
 def test_public_start_uses_the_ordinary_null_owner(oauth_db) -> None:
     db, user = oauth_db
 
@@ -546,9 +665,14 @@ def test_callback_persists_separate_actor_rows_for_one_xagent_user(
     _mock_provider_exchange(monkeypatch)
 
     for owner, code in ((ACTOR_ALICE, "alice"), (ACTOR_BOB, "bob")):
+        start = _trusted_start(db, user, owner)
         response = generic_oauth_callback(
             "custom",
-            _callback_request(_state(_trusted_start(db, user, owner)), code),
+            _callback_request(
+                _state(start),
+                code,
+                browser_cookie=_browser_cookie(start),
+            ),
             db,
             _provider(),
         )
@@ -605,7 +729,11 @@ def test_actor_callback_does_not_reactivate_inactive_ordinary_association(
         start = _trusted_start(db, user, ACTOR_ALICE, governing_team_id=41)
         response = generic_oauth_callback(
             "custom",
-            _callback_request(_state(start), "alice"),
+            _callback_request(
+                _state(start),
+                "alice",
+                browser_cookie=_browser_cookie(start),
+            ),
             db,
             _provider(),
         )
@@ -631,7 +759,11 @@ def test_actor_callback_rejects_server_relinked_after_trusted_start(
 
     response = generic_oauth_callback(
         "custom",
-        _callback_request(_state(start), "alice"),
+        _callback_request(
+            _state(start),
+            "alice",
+            browser_cookie=_browser_cookie(start),
+        ),
         db,
         _provider(),
     )
@@ -672,9 +804,14 @@ def test_callback_replaces_only_the_same_actor_namespace(oauth_db, monkeypatch) 
     db.commit()
     _mock_provider_exchange(monkeypatch)
 
+    start = _trusted_start(db, user, ACTOR_ALICE)
     response = generic_oauth_callback(
         "custom",
-        _callback_request(_state(_trusted_start(db, user, ACTOR_ALICE)), "new-alice"),
+        _callback_request(
+            _state(start),
+            "new-alice",
+            browser_cookie=_browser_cookie(start),
+        ),
         db,
         _provider(),
     )
@@ -698,9 +835,14 @@ def test_actor_callback_skips_ordinary_post_commit_side_effects(
     post_commit = Mock(side_effect=AssertionError("ordinary side effects must not run"))
     monkeypatch.setattr(auth_api, "_run_post_commit_oauth_side_effects", post_commit)
 
+    start = _trusted_start(db, user, ACTOR_ALICE)
     response = generic_oauth_callback(
         "custom",
-        _callback_request(_state(_trusted_start(db, user, ACTOR_ALICE)), "alice"),
+        _callback_request(
+            _state(start),
+            "alice",
+            browser_cookie=_browser_cookie(start),
+        ),
         db,
         _provider(),
     )

@@ -9,6 +9,26 @@ _ORDINARY_OWNER_CLAUSE = text("resource_owner_key IS NULL")
 _ACTOR_OWNER_CLAUSE = text("resource_owner_key IS NOT NULL")
 
 
+class ActorBuiltinOAuthFlowState(Base):  # type: ignore[no-any-unimported]
+    """Single-use browser-bound state for trusted actor builtin OAuth."""
+
+    __tablename__ = "actor_builtin_oauth_flow_states"
+
+    id = Column(Integer, primary_key=True)
+    nonce = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    resource_owner_key = Column(
+        String(USER_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH), nullable=False
+    )
+    provider = Column(String(50), nullable=False)
+    app_id = Column(String(100), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class UserOAuth(Base):  # type: ignore[no-any-unimported]
     """OAuth credentials owned by either a user or one trusted actor.
 

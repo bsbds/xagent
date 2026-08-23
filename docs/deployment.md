@@ -75,11 +75,13 @@ Gate new widget and shared-link task creation before rolling back any worker. Ro
 
 Marked tasks do not remain isolated when executed by an older worker. Keep public execution gated during rollback, or complete the forward rollout before those tasks resume.
 
-## 2026-08-18 — Owner-aware builtin OAuth storage
+## 2026-08-23 — Owner-aware and browser-bound builtin OAuth
 
 ### Deployment impact
 
 The `user_oauth` table gets a nullable `resource_owner_key` column, and existing rows keep a null value. The foundation explicitly scopes non-Gmail OAuth consumers to that ordinary namespace. This Gmail lifecycle release completes the Gmail owner boundary before any release can create actor-owned credentials.
+
+The `actor_builtin_oauth_flow_states` table records short-lived actor flow nonces. The callback requires the browser cookie issued with the signed state and atomically consumes the matching row before provider token exchange. Missing, cross-browser, expired, and replayed state fails before credential persistence.
 
 Two partial unique indexes replace `uq_user_provider_account`. One index protects ordinary rows. The other index separates actor-owned namespaces. Standard SQL null semantics permit duplicate identities when `provider_user_id` is null. This behavior applies to ordinary and actor-owned rows.
 
@@ -121,7 +123,7 @@ Native MCP connectors keep their existing account-level behavior. The actor poli
 
 ### Prerequisites and configuration
 
-This change has no new environment variable or dependency.
+This change has no new environment variable or dependency. Apply migrations through `20260823_actor_builtin_oauth_flow_state` before enabling actor OAuth.
 
 Before a trusted downstream caller starts an actor flow, it may call `ensure_builtin_oauth_server_visibility_for_user` to create or repair a canonical non-owning account link. The target server must then be visible through that active `UserMCPServer` link or through the exact team that owns the governing agent. `start_builtin_oauth_for_resource_owner` rejects the flow when neither path exists. The callback checks the signed governing-team scope again before storing the credential.
 
@@ -163,9 +165,10 @@ The xagent merge is dormant. If a trusted downstream product activates the helpe
 2. Call `ensure_builtin_oauth_server_visibility_for_user` for the trusted account and target app, or confirm that the governing agent's exact team already exposes the canonical definition.
 3. Verify that the account link is active and non-owning and that no team link was created by the user-visibility helper.
 4. Enable the downstream caller.
-5. Complete one actor OAuth flow and verify that its `resource_owner_key` is non-null.
-6. Verify that a new actor task contains `__xagent_mcp_runtime_authorization_policy_required: true`.
-7. Verify that the callback did not create or reactivate another personal MCP association and did not run ordinary post-commit OAuth side effects.
+5. Complete one actor OAuth flow in the browser that started it and verify that its `resource_owner_key` is non-null.
+6. Verify that a different browser cannot complete the same flow and that a second callback cannot replay it.
+7. Verify that a new actor task contains `__xagent_mcp_runtime_authorization_policy_required: true`.
+8. Verify that the callback did not create or reactivate another personal MCP association and did not run ordinary post-commit OAuth side effects.
 
 ### Verification and monitoring
 
@@ -178,6 +181,15 @@ WHERE resource_owner_key IS NOT NULL;
 ```
 
 The result must be zero.
+
+Verify that the browser-bound state ledger exists and has no unexpected retained flow before activation:
+
+```sql
+SELECT count(*)
+FROM actor_builtin_oauth_flow_states;
+```
+
+The result must be zero before the first actor flow. Consumed and expired rows can remain until a later start sweeps the retention window.
 
 On PostgreSQL, verify both partial unique index definitions:
 
@@ -251,7 +263,7 @@ The downgrade keeps the `user_id -> users.id ON DELETE CASCADE` FK. The previous
 6. For PostgreSQL, stop all production workers. For SQLite, stop local processes that use the database.
 7. If local SQLite data must be preserved, create a current database backup.
 8. For a non-disposable SQLite database, run `PRAGMA integrity_check;` against the backup. Record `SELECT count(*) FROM gmail_watch_states;`. The integrity result must be `ok`.
-9. Run `alembic downgrade 20260818_seed_stripe_mcp_app`.
+9. Run `alembic downgrade 20260818_seed_stripe_mcp_app`. This drops the actor flow-state ledger before removing owner-aware credential storage.
 10. Run `alembic current`. The command must report only `20260818_seed_stripe_mcp_app`. The Stripe catalog seed remains installed.
 11. For SQLite, run `PRAGMA integrity_check;` and `PRAGMA foreign_key_check;`. Require `ok` and no foreign-key violations.
 12. For a non-disposable SQLite database, run `SELECT count(*) FROM gmail_watch_states;`. Require the count that step 8 recorded.

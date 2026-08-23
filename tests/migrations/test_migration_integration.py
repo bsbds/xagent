@@ -481,13 +481,41 @@ class TestMigrations:
                 text("SELECT provider, access_token FROM user_oauth WHERE id = 9001")
             ).one() == ("gmail", "token")
 
+    def test_sqlite_actor_builtin_oauth_state_upgrade_and_downgrade(
+        self, sqlite_tester
+    ):
+        """The actor flow ledger is additive and disappears on its downgrade."""
+        parent = "20260818_user_oauth_resource_owner"
+        table = "actor_builtin_oauth_flow_states"
+
+        sqlite_tester.create_metadata_owned_users_table()
+        command.upgrade(sqlite_tester.alembic_cfg, "head")
+
+        assert table in sqlite_tester.get_table_names()
+        assert set(sqlite_tester.get_column_names(table)) == {
+            "id",
+            "nonce",
+            "user_id",
+            "resource_owner_key",
+            "provider",
+            "app_id",
+            "expires_at",
+            "consumed_at",
+            "created_at",
+        }
+
+        command.downgrade(sqlite_tester.alembic_cfg, parent)
+
+        assert sqlite_tester.get_alembic_versions() == {parent}
+        assert table not in sqlite_tester.get_table_names()
+
     def test_sqlite_owner_downgrade_preserves_stripe_head(self, sqlite_tester):
         """Rollback removes owner storage without removing the Stripe seed."""
-        owner_revision = "20260818_user_oauth_resource_owner"
+        actor_revision = "20260823_actor_builtin_oauth_flow_state"
         stripe_revision = "20260818_seed_stripe_mcp_app"
         script_dir = ScriptDirectory.from_config(sqlite_tester.alembic_cfg)
 
-        assert script_dir.get_heads() == [owner_revision]
+        assert script_dir.get_heads() == [actor_revision]
 
         sqlite_tester.create_metadata_owned_users_table()
         command.upgrade(sqlite_tester.alembic_cfg, "head")
