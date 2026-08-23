@@ -55,6 +55,7 @@ SETUP_COMPLETED_SETTING_KEY = "setup_completed"
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MAX_USER_ID = 2_147_483_647
 ACTOR_BUILTIN_OAUTH_STATE_COOKIE = "xagent_builtin_oauth_state"
+ACTOR_BUILTIN_OAUTH_STATE_COOKIE_PREFIX = f"{ACTOR_BUILTIN_OAUTH_STATE_COOKIE}_"
 ACTOR_BUILTIN_OAUTH_STATE_TTL = timedelta(minutes=10)
 _ACTOR_BUILTIN_OAUTH_STATE_RETENTION = timedelta(days=1)
 
@@ -74,11 +75,21 @@ def _actor_builtin_oauth_state_cookie_signature(state: str) -> str:
     ).hexdigest()
 
 
-def _set_actor_builtin_oauth_state_cookie(response: RedirectResponse, state: str) -> None:
-    """Store a short-lived, script-inaccessible proof for the callback."""
+def _actor_builtin_oauth_state_cookie_name(nonce: str) -> str:
+    """Derive one bounded cookie name per flow so parallel starts do not collide."""
+    digest = hashlib.sha256(nonce.encode("utf-8")).hexdigest()[:32]
+    return f"{ACTOR_BUILTIN_OAUTH_STATE_COOKIE_PREFIX}{digest}"
+
+
+def _set_actor_builtin_oauth_state_cookie(
+    response: RedirectResponse,
+    state: str,
+    nonce: str,
+) -> None:
+    """Store a short-lived, script-inaccessible proof for one callback."""
     response.set_cookie(
-        ACTOR_BUILTIN_OAUTH_STATE_COOKIE,
-        f"{state}.{_actor_builtin_oauth_state_cookie_signature(state)}",
+        _actor_builtin_oauth_state_cookie_name(nonce),
+        _actor_builtin_oauth_state_cookie_signature(state),
         max_age=int(ACTOR_BUILTIN_OAUTH_STATE_TTL.total_seconds()),
         httponly=True,
         secure=_actor_builtin_oauth_cookie_secure(),
@@ -87,23 +98,30 @@ def _set_actor_builtin_oauth_state_cookie(response: RedirectResponse, state: str
     )
 
 
-def _clear_actor_builtin_oauth_state_cookie(response: HTMLResponse) -> None:
-    """Remove the browser proof after a successful callback."""
-    response.delete_cookie(ACTOR_BUILTIN_OAUTH_STATE_COOKIE, path="/api/auth")
+def _clear_actor_builtin_oauth_state_cookie(
+    response: HTMLResponse,
+    nonce: str,
+) -> None:
+    """Remove only the browser proof consumed by this callback."""
+    response.delete_cookie(
+        _actor_builtin_oauth_state_cookie_name(nonce),
+        path="/api/auth",
+    )
 
 
-def _actor_builtin_oauth_state_cookie_matches(request: Request, state: str) -> bool:
+def _actor_builtin_oauth_state_cookie_matches(
+    request: Request,
+    state: str,
+    nonce: str,
+) -> bool:
     """Verify that the callback carries the proof issued with this state."""
-    cookie_value = request.cookies.get(ACTOR_BUILTIN_OAUTH_STATE_COOKIE)
-    if not cookie_value:
-        return False
-    try:
-        cookie_state, signature = cookie_value.rsplit(".", 1)
-    except ValueError:
-        return False
-    return hmac.compare_digest(cookie_state, state) and hmac.compare_digest(
-        signature,
-        _actor_builtin_oauth_state_cookie_signature(cookie_state),
+    cookie_value = request.cookies.get(_actor_builtin_oauth_state_cookie_name(nonce))
+    return bool(
+        cookie_value
+        and hmac.compare_digest(
+            cookie_value,
+            _actor_builtin_oauth_state_cookie_signature(state),
+        )
     )
 
 
@@ -1688,17 +1706,18 @@ def _generic_oauth_login(
         "resource_owner_key": resource_owner_key,
         "governing_team_id": governing_team_id,
     }
+    actor_flow_nonce: str | None = None
     if resource_owner_key is not None:
         now = datetime.now(UTC)
         db.query(ActorBuiltinOAuthFlowState).filter(
             ActorBuiltinOAuthFlowState.expires_at
             < now - _ACTOR_BUILTIN_OAUTH_STATE_RETENTION
         ).delete(synchronize_session=False)
-        nonce = secrets.token_urlsafe(24)
-        state_payload["nonce"] = nonce
+        actor_flow_nonce = secrets.token_urlsafe(24)
+        state_payload["nonce"] = actor_flow_nonce
         db.add(
             ActorBuiltinOAuthFlowState(
-                nonce=nonce,
+                nonce=actor_flow_nonce,
                 user_id=user_id,
                 resource_owner_key=resource_owner_key,
                 provider=provider,
@@ -1810,8 +1829,8 @@ def _generic_oauth_login(
     separator = "&" if "?" in auth_url else "?"
     full_auth_url = f"{auth_url}{separator}{urlencode(params)}"
     response = RedirectResponse(full_auth_url)
-    if resource_owner_key is not None:
-        _set_actor_builtin_oauth_state_cookie(response, state)
+    if resource_owner_key is not None and actor_flow_nonce is not None:
+        _set_actor_builtin_oauth_state_cookie(response, state, actor_flow_nonce)
     return response
 
 
@@ -1944,7 +1963,11 @@ def generic_oauth_callback(
             return HTMLResponse(
                 content="<h1>Error: Invalid or expired state</h1>", status_code=400
             )
-        if not _actor_builtin_oauth_state_cookie_matches(request, state):
+        if not _actor_builtin_oauth_state_cookie_matches(
+            request,
+            state,
+            actor_flow_nonce,
+        ):
             return HTMLResponse(
                 content="<h1>Error: Invalid or expired state</h1>", status_code=400
             )
@@ -2512,8 +2535,8 @@ def generic_oauth_callback(
         </html>
         """
         )
-        if resource_owner_key is not None:
-            _clear_actor_builtin_oauth_state_cookie(response)
+        if resource_owner_key is not None and actor_flow_nonce is not None:
+            _clear_actor_builtin_oauth_state_cookie(response, actor_flow_nonce)
         return response
     except Exception:
         # str(e) is not rendered to the client: db.add(oauth_account)/db.commit()

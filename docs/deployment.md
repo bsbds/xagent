@@ -81,7 +81,7 @@ Marked tasks do not remain isolated when executed by an older worker. Keep publi
 
 The `user_oauth` table gets a nullable `resource_owner_key` column, and existing rows keep a null value. The foundation explicitly scopes non-Gmail OAuth consumers to that ordinary namespace. This Gmail lifecycle release completes the Gmail owner boundary before any release can create actor-owned credentials.
 
-The `actor_builtin_oauth_flow_states` table records short-lived actor flow nonces. The callback requires the browser cookie issued with the signed state and atomically consumes the matching row before provider token exchange. Missing, cross-browser, expired, and replayed state fails before credential persistence.
+The `actor_builtin_oauth_flow_states` table records short-lived actor flow nonces. Each flow receives a distinct browser cookie, so one browser can keep multiple connector authorizations active without one start invalidating another. The callback requires the cookie issued with the signed state and atomically consumes the matching row before provider token exchange. Missing, cross-browser, expired, and replayed state fails before credential persistence.
 
 Two partial unique indexes replace `uq_user_provider_account`. One index protects ordinary rows. The other index separates actor-owned namespaces. Standard SQL null semantics permit duplicate identities when `provider_user_id` is null. This behavior applies to ordinary and actor-owned rows.
 
@@ -165,8 +165,8 @@ The xagent merge is dormant. If a trusted downstream product activates the helpe
 2. Call `ensure_builtin_oauth_server_visibility_for_user` for the trusted account and target app, or confirm that the governing agent's exact team already exposes the canonical definition.
 3. Verify that the account link is active and non-owning and that no team link was created by the user-visibility helper.
 4. Enable the downstream caller.
-5. Complete one actor OAuth flow in the browser that started it and verify that its `resource_owner_key` is non-null.
-6. Verify that a different browser cannot complete the same flow and that a second callback cannot replay it.
+5. Start two actor OAuth flows in one browser, complete both, and verify that each credential has the expected non-null `resource_owner_key`.
+6. Verify that a different browser cannot complete either flow and that a second callback cannot replay a consumed flow.
 7. Verify that a new actor task contains `__xagent_mcp_runtime_authorization_policy_required: true`.
 8. Verify that the callback did not create or reactivate another personal MCP association and did not run ordinary post-commit OAuth side effects.
 

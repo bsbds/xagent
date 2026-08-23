@@ -83,24 +83,24 @@ def _state(response) -> str:
     return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
 
 
-def _browser_cookie(response) -> str:
+def _browser_cookie(response) -> tuple[str, str]:
     header = response.headers["set-cookie"]
     name, value = header.split(";", 1)[0].split("=", 1)
-    assert name == "xagent_builtin_oauth_state"
-    return value
+    assert name.startswith("xagent_builtin_oauth_state")
+    return name, value
 
 
 def _callback_request(
     state: str,
     code: str = "code",
     *,
-    browser_cookie: str | None = None,
+    browser_cookie: tuple[str, str] | None = None,
+    browser_cookies: dict[str, str] | None = None,
 ):
-    cookies = (
-        {"xagent_builtin_oauth_state": browser_cookie}
-        if browser_cookie is not None
-        else {}
-    )
+    cookies = dict(browser_cookies or {})
+    if browser_cookie is not None:
+        name, value = browser_cookie
+        cookies[name] = value
     return SimpleNamespace(
         query_params={"state": state, "code": code},
         cookies=cookies,
@@ -560,7 +560,7 @@ def test_trusted_start_binds_state_to_secure_browser_cookie(oauth_db) -> None:
     response = _trusted_start(db, user, ACTOR_ALICE)
 
     cookie = response.headers.get("set-cookie", "")
-    assert cookie.startswith("xagent_builtin_oauth_state=")
+    assert cookie.startswith("xagent_builtin_oauth_state_")
     assert "HttpOnly" in cookie
     assert "SameSite=lax" in cookie
     assert "Path=/api/auth" in cookie
@@ -608,6 +608,46 @@ def test_actor_callback_rejects_another_browser_cookie_before_exchange(
 
     assert response.status_code == 400
     exchange.assert_not_called()
+
+
+def test_actor_callback_allows_parallel_flows_from_one_browser(
+    oauth_db, monkeypatch
+) -> None:
+    db, user = oauth_db
+    _visible_calendar(db, user)
+    alice_start = _trusted_start(db, user, ACTOR_ALICE)
+    bob_start = _trusted_start(db, user, ACTOR_BOB)
+    browser_cookies = dict([_browser_cookie(alice_start), _browser_cookie(bob_start)])
+    _mock_provider_exchange(monkeypatch)
+
+    alice = generic_oauth_callback(
+        "custom",
+        _callback_request(
+            _state(alice_start),
+            "alice",
+            browser_cookies=browser_cookies,
+        ),
+        db,
+        _provider(),
+    )
+    bob = generic_oauth_callback(
+        "custom",
+        _callback_request(
+            _state(bob_start),
+            "bob",
+            browser_cookies=browser_cookies,
+        ),
+        db,
+        _provider(),
+    )
+
+    assert alice.status_code == 200
+    assert bob.status_code == 200
+    rows = db.query(UserOAuth).order_by(UserOAuth.resource_owner_key).all()
+    assert [(row.resource_owner_key, row.access_token) for row in rows] == [
+        (ACTOR_ALICE, "access:alice"),
+        (ACTOR_BOB, "access:bob"),
+    ]
 
 
 def test_actor_callback_consumes_state_once(oauth_db, monkeypatch) -> None:
