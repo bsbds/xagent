@@ -124,6 +124,15 @@ class _GmailUsersResource:
             json=body,
         )
 
+    def stop(self, *, userId: str) -> _GmailApiRequest:
+        """Stop push delivery for the selected Gmail mailbox."""
+        user_id = quote(userId, safe="")
+        return _GmailApiRequest(
+            self._session,
+            "POST",
+            f"{GMAIL_API_ROOT}/users/{user_id}/stop",
+        )
+
     def history(self) -> _GmailHistoryResource:
         return _GmailHistoryResource(self._session, self._user_id)
 

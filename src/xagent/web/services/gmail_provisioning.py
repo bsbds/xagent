@@ -304,12 +304,27 @@ def _is_already_exists(exc: Exception) -> bool:
 
 
 def _is_not_found(exc: Exception) -> bool:
+    """Recognize NotFound from both Pub/Sub and Gmail's REST transport."""
     try:
         from google.api_core.exceptions import NotFound
 
-        return isinstance(exc, NotFound)
+        if isinstance(exc, NotFound):
+            return True
     except ImportError:  # pragma: no cover
-        return type(exc).__name__ == "NotFound"
+        if type(exc).__name__ == "NotFound":
+            return True
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "resp", None)
+        status_code = getattr(response, "status", None)
+    if status_code is None:
+        return False
+    try:
+        return int(status_code) == 404
+    except (TypeError, ValueError):
+        return False
 
 
 def _validate_provisioning_config() -> tuple[str, str, str]:

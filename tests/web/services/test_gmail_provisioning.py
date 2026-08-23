@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, NoReturn
 
 import pytest
+from requests import HTTPError
 from sqlalchemy import create_engine, event
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import OperationalError
@@ -29,7 +30,7 @@ from xagent.web.models.trigger import (
 )
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
-from xagent.web.services import gmail_provisioning, ops_signals
+from xagent.web.services import gmail_provisioning, gmail_triggers, ops_signals
 from xagent.web.services.gmail_provisioning import (
     GMAIL_PUSH_PUBLISHER,
     GMAIL_WATCH_DISABLED_ERROR,
@@ -1174,6 +1175,65 @@ def test_release_treats_an_already_stopped_gmail_watch_as_converged(
         publisher_factory=lambda: publisher,
         subscriber_factory=lambda: subscriber,
     )
+    assert subscriber.deleted_subscriptions == [state.subscription_name]
+    assert publisher.deleted_topics == [state.topic_name]
+    assert db_session.get(GmailWatchState, state_id) is None
+
+
+def test_release_converges_when_production_gmail_stop_returns_http_404(
+    db_session: Session,
+) -> None:
+    """Exercise the same REST request and HTTP error surface used in production."""
+
+    class MissingResponse:
+        status_code = 404
+        content = b""
+
+        def raise_for_status(self) -> NoReturn:
+            error = HTTPError("404 Client Error: Not Found")
+            error.response = self  # type: ignore[assignment]
+            raise error
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            timeout: int,
+            **_kwargs: Any,
+        ) -> MissingResponse:
+            assert timeout == 10
+            self.calls.append((method, url))
+            return MissingResponse()
+
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    state_id = int(state.id)
+    session = RecordingSession()
+
+    assert release_gmail_mailbox_if_unused(
+        db_session,
+        int(account.id),
+        service_factory=lambda _db, _account: gmail_triggers._GmailApiService(session),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    assert session.calls == [
+        ("POST", "https://gmail.googleapis.com/gmail/v1/users/me/stop")
+    ]
     assert subscriber.deleted_subscriptions == [state.subscription_name]
     assert publisher.deleted_topics == [state.topic_name]
     assert db_session.get(GmailWatchState, state_id) is None
