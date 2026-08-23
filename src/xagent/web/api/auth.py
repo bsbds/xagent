@@ -39,7 +39,10 @@ from ..models.user_oauth import UserOAuth
 from ..oauth_provider_quirks import requires_json_accept_header
 from ..services import gmail_provisioning
 from ..services.auth_email import send_password_reset_email
-from ..services.user_oauth import delete_scoped_user_oauth_accounts
+from ..services.user_oauth import (
+    delete_scoped_user_oauth_accounts,
+    scoped_user_oauth_query,
+)
 from ..utils.graphql_errors import graphql_errors_message, truncate_error_text
 
 logger = logging.getLogger(__name__)
@@ -2078,20 +2081,46 @@ def generic_oauth_callback(
             email = info_data.get(db_provider.email_path or "email")
 
         if user_id:
-            delete_scoped_user_oauth_accounts(
-                db,
-                user_id=user_id,
-                resource_owner_key=None,
-                providers=[app_id or provider],
-            )
+            credential_provider = app_id or provider
+            provider_user_key = str(provider_user_id) if provider_user_id else None
+            oauth_account = None
+            if credential_provider == "gmail" and provider_user_key is not None:
+                # Gmail triggers and watch cursors bind to this row's primary
+                # key. Refresh the matching mailbox in place so reconnecting
+                # one account cannot invalidate its watch or delete a sibling
+                # Gmail account connected by the same xagent user.
+                oauth_account = (
+                    scoped_user_oauth_query(
+                        db,
+                        user_id=user_id,
+                        resource_owner_key=None,
+                    )
+                    .filter(
+                        UserOAuth.provider == credential_provider,
+                        UserOAuth.provider_user_id == provider_user_key,
+                    )
+                    .one_or_none()
+                )
 
-            oauth_account = UserOAuth(
-                user_id=user_id,
-                provider=(app_id or provider),
-                resource_owner_key=None,
-                provider_user_id=str(provider_user_id) if provider_user_id else None,
-            )
-            db.add(oauth_account)
+            if oauth_account is None:
+                # Other builtin connectors retain their single-row replacement
+                # contract. A Gmail account with a new provider identity is an
+                # additional mailbox rather than a replacement for every
+                # existing Gmail connection.
+                if credential_provider != "gmail" or provider_user_key is None:
+                    delete_scoped_user_oauth_accounts(
+                        db,
+                        user_id=user_id,
+                        resource_owner_key=None,
+                        providers=[credential_provider],
+                    )
+                oauth_account = UserOAuth(
+                    user_id=user_id,
+                    provider=credential_provider,
+                    resource_owner_key=None,
+                    provider_user_id=provider_user_key,
+                )
+                db.add(oauth_account)
 
             setattr(oauth_account, "access_token", access_token)
             setattr(oauth_account, "token_type", token_data.get("token_type", "Bearer"))

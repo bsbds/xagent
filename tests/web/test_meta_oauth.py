@@ -13,10 +13,13 @@ from sqlalchemy.orm import sessionmaker
 from xagent.core.utils.encryption import encrypt_value
 from xagent.web.api import auth as auth_api
 from xagent.web.api.auth import create_access_token, generic_oauth_callback
+from xagent.web.models.agent import Agent
 from xagent.web.models.database import Base
+from xagent.web.models.gmail_watch import GmailWatchState
 from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.oauth_provider import OAuthProvider
 from xagent.web.models.public_mcp import PublicMCPApp
+from xagent.web.models.trigger import AgentTrigger, TriggerType
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
 from xagent.web.services import gmail_provisioning
@@ -162,6 +165,141 @@ def test_gmail_callback_best_effort_registers_watch_after_oauth_commit(
     )
     assert oauth_account.email == "alice@gmail.com"
     assert calls == [int(user.id)]
+
+
+def test_gmail_reconnect_preserves_account_id_watch_and_sibling_accounts(
+    db_session, monkeypatch
+):
+    """Reconnect must refresh one Gmail row without invalidating its bindings."""
+    db, user = db_session
+    account = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        access_token="old-token",
+        provider_user_id="google-user-1",
+        email="old@gmail.com",
+    )
+    sibling = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        access_token="sibling-token",
+        provider_user_id="google-user-2",
+        email="sibling@gmail.com",
+    )
+    unrelated = UserOAuth(
+        user_id=int(user.id),
+        provider="google-drive",
+        access_token="drive-token",
+        provider_user_id="google-user-1",
+        email="old@gmail.com",
+    )
+    db.add_all([account, sibling, unrelated])
+    db.commit()
+    db.refresh(account)
+    db.refresh(sibling)
+    account_id = int(account.id)
+    sibling_id = int(sibling.id)
+
+    agent = Agent(user_id=int(user.id), name="Gmail reconnect agent")
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+    trigger = AgentTrigger(
+        user_id=int(user.id),
+        agent_id=int(agent.id),
+        type=TriggerType.GMAIL.value,
+        name="Gmail inbox",
+        enabled=True,
+        provider=TriggerType.GMAIL.value,
+        resource_id="old@gmail.com",
+        config={"oauth_account_id": account_id, "watch_label": "INBOX"},
+    )
+    watch = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=account_id,
+        email="old@gmail.com",
+        history_id="history-1",
+        topic_name="projects/test/topics/gmail-old",
+        callback_id="callback-old",
+        status="active",
+    )
+    db.add_all([trigger, watch])
+    db.commit()
+    db.refresh(trigger)
+    db.refresh(watch)
+    watch_id = int(watch.id)
+
+    state = create_access_token(
+        data={
+            "type": "oauth_state",
+            "user_id": user.id,
+            "provider": "google",
+            "app_id": "gmail",
+        },
+        expires_delta=timedelta(minutes=10),
+    )
+    request = SimpleNamespace(query_params={"code": "gmail-code", "state": state})
+    monkeypatch.setattr(
+        auth_api.requests,
+        "post",
+        Mock(
+            return_value=MockResponse(
+                {
+                    "access_token": "refreshed-token",
+                    "refresh_token": "refreshed-refresh",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "scope": "https://www.googleapis.com/auth/gmail.modify",
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        auth_api.requests,
+        "get",
+        Mock(
+            return_value=MockResponse(
+                {"sub": "google-user-1", "email": "renamed@gmail.com"}
+            )
+        ),
+    )
+    provisioned_users: list[int] = []
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "best_effort_provision_gmail_watches_for_user",
+        lambda _db, *, user_id, context: provisioned_users.append(int(user_id)),
+    )
+
+    response = generic_oauth_callback("google", request, db, _google_provider())
+
+    assert response.status_code == 200
+    refreshed = (
+        db.query(UserOAuth)
+        .filter(
+            UserOAuth.user_id == int(user.id),
+            UserOAuth.provider == "gmail",
+            UserOAuth.provider_user_id == "google-user-1",
+        )
+        .one()
+    )
+    assert int(refreshed.id) == account_id
+    assert refreshed.email == "renamed@gmail.com"
+    assert refreshed.access_token == "refreshed-token"
+    assert {
+        int(row.id)
+        for row in db.query(UserOAuth).filter(UserOAuth.provider == "gmail").all()
+    } == {account_id, sibling_id}
+    assert (
+        db.query(GmailWatchState)
+        .filter(
+            GmailWatchState.id == watch_id,
+            GmailWatchState.oauth_account_id == account_id,
+        )
+        .one()
+    )
+    db.refresh(trigger)
+    assert trigger.config["oauth_account_id"] == account_id
+    assert provisioned_users == [int(user.id)]
 
 
 def test_gmail_callback_succeeds_when_best_effort_watch_provisioning_raises(
