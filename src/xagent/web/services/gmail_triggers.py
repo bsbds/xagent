@@ -794,6 +794,21 @@ async def collect_gmail_pubsub_events(
         )
         if _trigger_targets_watch(trigger, state)
     ]
+    resource_updated = False
+    for trigger in triggers:
+        if _trigger_oauth_account_id(trigger.config) is None:
+            continue
+        if str(trigger.resource_id or "").strip().lower() == email_address:
+            continue
+        # The exact account binding selected this trigger, and the callback's
+        # mailbox came from the verified watch state rather than the Pub/Sub
+        # payload. Keep the redundant resource field synchronized before the
+        # generic pipeline checks persisted resource identity.
+        setattr(trigger, "resource_id", email_address)
+        db.add(trigger)
+        resource_updated = True
+    if resource_updated:
+        db.commit()
 
     events: list[GmailCollectedEvent] = []
     skipped = 0
