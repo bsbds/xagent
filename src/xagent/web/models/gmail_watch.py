@@ -46,6 +46,7 @@ class GmailWatchState(Base):  # type: ignore
         primaryjoin=(
             "and_(GmailWatchState.oauth_account_id == UserOAuth.id, "
             "foreign(GmailWatchState.user_id) == UserOAuth.user_id, "
+            "UserOAuth.provider == 'gmail', "
             "UserOAuth.resource_owner_key.is_(None))"
         ),
         foreign_keys="[GmailWatchState.oauth_account_id, GmailWatchState.user_id]",

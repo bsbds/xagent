@@ -523,6 +523,7 @@ class GmailProvider:
                 user_id=int(state.user_id),
                 account_id=int(state.oauth_account_id),
                 resource_owner_key=None,
+                provider="gmail",
             )
             is None
         ):

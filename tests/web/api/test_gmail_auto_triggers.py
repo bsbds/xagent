@@ -269,6 +269,7 @@ def _create_gmail_trigger(
     *,
     enabled: bool = True,
     config: dict[str, object] | None = None,
+    oauth_account: UserOAuth | None = None,
 ) -> AgentTrigger:
     agent = Agent(
         user_id=int(user.id),
@@ -281,14 +282,22 @@ def _create_gmail_trigger(
     db.commit()
     db.refresh(agent)
 
+    resolved_config = dict(config or {"watch_label": "INBOX"})
+    if oauth_account is not None:
+        resolved_config.setdefault("oauth_account_id", int(oauth_account.id))
     trigger = AgentTrigger(
         user_id=int(user.id),
         agent_id=int(agent.id),
         type=TriggerType.GMAIL.value,
         name="Gmail inbox",
         enabled=enabled,
-        config=config or {"watch_label": "INBOX"},
+        config=resolved_config,
         prompt_template="Handle {{payload}}",
+        resource_id=(
+            str(oauth_account.email).strip().lower()
+            if oauth_account is not None
+            else None
+        ),
     )
     db.add(trigger)
     db.commit()
@@ -1031,7 +1040,7 @@ def test_gmail_oidc_verifier_allows_clock_skew() -> None:
     assert mock_verify.call_args.kwargs["clock_skew_in_seconds"] > 0
 
 
-def test_gmail_unified_callback_rejects_resource_mismatch_without_trusting_payload_email(
+def test_gmail_unified_callback_does_not_route_a_legacy_mailbox_mismatch(
     mock_bg_scheduler,
 ) -> None:
     db = _direct_db_session()
@@ -1068,16 +1077,13 @@ def test_gmail_unified_callback_rejects_resource_mismatch_without_trusting_paylo
         )
 
         assert response.status_code == 200, response.text
-        assert response.json()["outcome"] == "rejected_resource"
+        assert response.json()["outcome"] == "accepted"
         assert db.query(TriggerRun).count() == 0
-        audit = (
-            db.query(TriggerAudit)
-            .filter(TriggerAudit.outcome == "rejected_resource")
-            .one()
-        )
-        assert audit.trigger_id == trigger.id
-        assert audit.detail["attested_resource_id"] == "codeacme17@gmail.com"
-        assert audit.detail["trigger_resource_id"] == "other@example.com"
+        audit = db.query(TriggerAudit).one()
+        assert audit.outcome == "accepted"
+        assert audit.trigger_id == int(trigger.id)
+        assert audit.detail["run_ids"] == []
+        assert trigger.resource_id == "other@example.com"
         assert mock_bg_scheduler.call_count == 0
     finally:
         register_trigger_provider(GmailProvider(), replace=True)
@@ -1149,6 +1155,24 @@ def test_gmail_oauth_config_falls_back_to_env_when_db_provider_is_blank(
         db.commit()
 
         assert _get_google_oauth_config(db) == ("env-client-id", "env-client-secret")
+    finally:
+        db.close()
+
+
+def test_build_gmail_service_rejects_a_non_gmail_account() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "non-gmail-service-user")
+        oauth = _create_gmail_oauth(db, user)
+        setattr(oauth, "provider", "google-drive")
+        db.add(oauth)
+        db.commit()
+
+        with pytest.raises(
+            GmailWatchConfigurationError,
+            match="requires an ordinary Gmail OAuth account",
+        ):
+            build_gmail_service(db, oauth)
     finally:
         db.close()
 
@@ -1453,7 +1477,7 @@ def test_collect_gmail_pubsub_events_collects_matching_trigger_events() -> None:
     try:
         user = _create_user(db, "gmail-history-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user)
+        trigger = _create_gmail_trigger(db, user, oauth_account=oauth)
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -1605,7 +1629,12 @@ def test_collect_gmail_pubsub_events_skips_label_mismatch() -> None:
     try:
         user = _create_user(db, "gmail-label-mismatch-user")
         oauth = _create_gmail_oauth(db, user)
-        _create_gmail_trigger(db, user, config={"watch_label": "INBOX"})
+        _create_gmail_trigger(
+            db,
+            user,
+            config={"watch_label": "INBOX"},
+            oauth_account=oauth,
+        )
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -1653,7 +1682,12 @@ def test_collect_gmail_pubsub_events_accepts_case_insensitive_all_label() -> Non
     try:
         user = _create_user(db, "gmail-all-label-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user, config={"watch_label": "All"})
+        trigger = _create_gmail_trigger(
+            db,
+            user,
+            config={"watch_label": "All"},
+            oauth_account=oauth,
+        )
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -1701,7 +1735,12 @@ def test_collect_gmail_pubsub_events_accepts_wildcard_star_label() -> None:
     try:
         user = _create_user(db, "gmail-star-label-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user, config={"watch_label": "*"})
+        trigger = _create_gmail_trigger(
+            db,
+            user,
+            config={"watch_label": "*"},
+            oauth_account=oauth,
+        )
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -1756,7 +1795,12 @@ def test_collect_gmail_pubsub_events_wildcard_label_excludes_non_incoming_mail()
     try:
         user = _create_user(db, "gmail-star-excludes-sent-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user, config={"watch_label": "*"})
+        trigger = _create_gmail_trigger(
+            db,
+            user,
+            config={"watch_label": "*"},
+            oauth_account=oauth,
+        )
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -1815,7 +1859,12 @@ def test_collect_gmail_pubsub_events_specific_label_also_excludes_non_incoming_m
     try:
         user = _create_user(db, "gmail-specific-label-excludes-sent-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user, config={"watch_label": "Support"})
+        trigger = _create_gmail_trigger(
+            db,
+            user,
+            config={"watch_label": "Support"},
+            oauth_account=oauth,
+        )
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -1880,7 +1929,12 @@ def test_collect_gmail_pubsub_events_whitespace_only_label_falls_back_to_inbox()
     try:
         user = _create_user(db, "gmail-whitespace-label-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user, config={"watch_label": "   "})
+        trigger = _create_gmail_trigger(
+            db,
+            user,
+            config={"watch_label": "   "},
+            oauth_account=oauth,
+        )
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -2424,7 +2478,7 @@ def test_collect_gmail_pubsub_events_skips_deleted_message_without_failing_batch
     try:
         user = _create_user(db, "gmail-message-error-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user)
+        trigger = _create_gmail_trigger(db, user, oauth_account=oauth)
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -2493,7 +2547,7 @@ def test_collect_gmail_pubsub_events_skips_forbidden_message_without_failing_bat
     try:
         user = _create_user(db, "gmail-forbidden-message-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _create_gmail_trigger(db, user)
+        trigger = _create_gmail_trigger(db, user, oauth_account=oauth)
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -2551,7 +2605,7 @@ def test_collect_gmail_pubsub_events_fails_batch_on_transient_message_error_and_
     try:
         user = _create_user(db, "gmail-transient-message-error-user")
         oauth = _create_gmail_oauth(db, user)
-        _create_gmail_trigger(db, user)
+        _create_gmail_trigger(db, user, oauth_account=oauth)
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -2606,7 +2660,7 @@ def test_collect_gmail_pubsub_events_holds_cursor_on_rate_limited_message() -> N
     try:
         user = _create_user(db, "gmail-rate-limited-message-user")
         oauth = _create_gmail_oauth(db, user)
-        _create_gmail_trigger(db, user)
+        _create_gmail_trigger(db, user, oauth_account=oauth)
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),
@@ -2662,7 +2716,7 @@ def test_scan_due_gmail_watch_renewals_respects_enabled_flag_and_expiration(
     try:
         user = _create_user(db, "gmail-renewal-user")
         oauth = _create_gmail_oauth(db, user)
-        _create_gmail_trigger(db, user)
+        _create_gmail_trigger(db, user, oauth_account=oauth)
         fake_service = _FakeGmailService(
             {"historyId": "789", "expiration": "1782864000000"}
         )
@@ -2724,8 +2778,8 @@ def test_scan_due_gmail_watch_renewals_applies_batch_limit(
     try:
         users = [_create_user(db, f"gmail-renewal-limit-{idx}") for idx in range(3)]
         oauth_accounts = [_create_gmail_oauth(db, user) for user in users]
-        for user in users:
-            _create_gmail_trigger(db, user)
+        for user, oauth_account in zip(users, oauth_accounts, strict=True):
+            _create_gmail_trigger(db, user, oauth_account=oauth_account)
         fake_service = _FakeGmailService(
             {"historyId": "789", "expiration": "1782864000000"}
         )
@@ -2759,7 +2813,7 @@ def test_scan_due_gmail_watch_renewals_prioritizes_missing_and_earliest_expirati
         later_user = _create_user(db, "gmail-renewal-later-user")
         later_oauth = _create_gmail_oauth(db, later_user)
         later_oauth.email = "later@example.com"
-        _create_gmail_trigger(db, later_user)
+        _create_gmail_trigger(db, later_user, oauth_account=later_oauth)
         later_state = GmailWatchState(
             user_id=int(later_user.id),
             oauth_account_id=int(later_oauth.id),
@@ -2772,7 +2826,11 @@ def test_scan_due_gmail_watch_renewals_prioritizes_missing_and_earliest_expirati
         missing_expiration_user = _create_user(db, "gmail-renewal-missing-user")
         missing_expiration_oauth = _create_gmail_oauth(db, missing_expiration_user)
         missing_expiration_oauth.email = "missing@example.com"
-        _create_gmail_trigger(db, missing_expiration_user)
+        _create_gmail_trigger(
+            db,
+            missing_expiration_user,
+            oauth_account=missing_expiration_oauth,
+        )
         missing_expiration_state = GmailWatchState(
             user_id=int(missing_expiration_user.id),
             oauth_account_id=int(missing_expiration_oauth.id),
@@ -2819,7 +2877,7 @@ def test_scan_due_gmail_watch_renewals_records_failure_and_continues(
         first_user = _create_user(db, "gmail-renewal-fails-user")
         first_oauth = _create_gmail_oauth(db, first_user)
         first_oauth.email = "first@example.com"
-        _create_gmail_trigger(db, first_user)
+        _create_gmail_trigger(db, first_user, oauth_account=first_oauth)
         first_state = GmailWatchState(
             user_id=int(first_user.id),
             oauth_account_id=int(first_oauth.id),
@@ -2832,7 +2890,7 @@ def test_scan_due_gmail_watch_renewals_records_failure_and_continues(
         second_user = _create_user(db, "gmail-renewal-continues-user")
         second_oauth = _create_gmail_oauth(db, second_user)
         second_oauth.email = "second@example.com"
-        _create_gmail_trigger(db, second_user)
+        _create_gmail_trigger(db, second_user, oauth_account=second_oauth)
         second_state = GmailWatchState(
             user_id=int(second_user.id),
             oauth_account_id=int(second_oauth.id),
@@ -3061,4 +3119,153 @@ def test_collect_uses_the_callback_watch_state_not_email_lookup() -> None:
         db.refresh(state_a)
         assert state_a.history_id == "100"
     finally:
+        db.close()
+
+
+def test_collect_legacy_trigger_matches_the_watch_mailbox_by_email() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-legacy-mailbox-routing")
+        watched_account = _create_gmail_oauth(db, user)
+        setattr(watched_account, "email", "watched@gmail.example")
+        other_account = UserOAuth(
+            user_id=int(user.id),
+            provider="gmail",
+            access_token="other-access-token",
+            provider_user_id="other-provider-user",
+            email="other@gmail.example",
+        )
+        db.add_all([watched_account, other_account])
+        db.commit()
+        db.refresh(watched_account)
+        db.refresh(other_account)
+        watched_trigger = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(db, user),
+            resource_id=str(watched_account.email),
+            callback_id="legacy-watched-trigger",
+        )
+        other_trigger = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(db, user),
+            resource_id=str(other_account.email),
+            callback_id="legacy-other-trigger",
+        )
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            watched_account,
+            email=str(watched_account.email),
+        )
+        service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "legacy-message"}}]}]
+            },
+            messages={"legacy-message": _gmail_message("legacy-message")},
+        )
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address=str(watched_account.email),
+                    history_id="222",
+                    pubsub_message_id="legacy-push",
+                ),
+                state=state,
+                service_factory=lambda *_args: service,
+            )
+        )
+
+        assert [event.trigger_id for event in result.events] == [
+            int(watched_trigger.id)
+        ]
+        assert int(other_trigger.id) not in {
+            event.trigger_id for event in result.events
+        }
+    finally:
+        db.close()
+
+
+def test_collect_does_not_route_an_unbound_legacy_trigger() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-unbound-legacy-routing")
+        oauth = _create_gmail_oauth(db, user)
+        _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(db, user),
+            resource_id="",
+        )
+        state = _create_gmail_watch_state(db, user, oauth)
+        service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "unbound-message"}}]}]
+            },
+            messages={"unbound-message": _gmail_message("unbound-message")},
+        )
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address=str(oauth.email),
+                    history_id="222",
+                    pubsub_message_id="unbound-push",
+                ),
+                state=state,
+                service_factory=lambda *_args: service,
+            )
+        )
+
+        assert result.events == []
+    finally:
+        db.close()
+
+
+def test_gmail_callback_preserves_cursor_for_a_non_gmail_watch_account() -> None:
+    signal_name = "gmail_oauth_ownership_mismatch"
+    ops_signals.clear_degradation(signal_name)
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-non-gmail-route-user")
+        oauth = _create_gmail_oauth(db, user)
+        _mark_unified_gmail_trigger(db, _create_gmail_trigger(db, user))
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-non-gmail-route",
+        )
+        setattr(oauth, "provider", "google-drive")
+        db.add(oauth)
+        db.commit()
+
+        def fake_verify(_token: str, audience: str) -> dict[str, object]:
+            return {"iss": "https://accounts.google.com", "aud": audience}
+
+        register_trigger_provider(
+            GmailProvider(
+                service_factory=lambda *_args: pytest.fail("Gmail API was called"),
+                oidc_verifier=fake_verify,
+            ),
+            replace=True,
+        )
+
+        response = client.post(
+            "/api/triggers/callback/gmail/cb-non-gmail-route",
+            headers={"Authorization": "Bearer oidc-token"},
+            content=_gmail_pubsub_push_body(
+                claimed_email=str(oauth.email),
+                message_id="pubsub-non-gmail-route",
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        db.refresh(state)
+        assert state.history_id == "100"
+        assert signal_name in ops_signals.active_degradations()
+    finally:
+        register_trigger_provider(GmailProvider(), replace=True)
+        ops_signals.clear_degradation(signal_name)
         db.close()

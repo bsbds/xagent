@@ -200,6 +200,10 @@ def build_gmail_service(db: Session, oauth_account: UserOAuth) -> Any:
         raise GmailWatchConfigurationError(
             "actor-owned OAuth credentials cannot back Gmail triggers"
         )
+    if str(oauth_account.provider) != "gmail":
+        raise GmailWatchConfigurationError(
+            "Gmail watch access requires an ordinary Gmail OAuth account"
+        )
     client_id, client_secret = _get_google_oauth_config(db)
     if not client_id or not client_secret:
         raise GmailWatchConfigurationError("Google OAuth configuration missing")
@@ -326,6 +330,20 @@ def _trigger_oauth_account_id(config: Any) -> int | None:
         return None
 
 
+def _trigger_targets_watch(
+    trigger: AgentTrigger,
+    state: GmailWatchState,
+) -> bool:
+    """Match a trigger to one watch by account ID or its legacy mailbox."""
+    bound_account_id = _trigger_oauth_account_id(trigger.config)
+    if bound_account_id is not None:
+        return bound_account_id == int(state.oauth_account_id)
+    watched_email = str(state.email or "").strip().lower()
+    return bool(watched_email) and (
+        str(trigger.resource_id or "").strip().lower() == watched_email
+    )
+
+
 def _enabled_gmail_account_references(db: Session) -> tuple[set[int], set[int]]:
     """Return valid and invalid account IDs referenced by enabled triggers."""
     trigger_rows = (
@@ -338,7 +356,6 @@ def _enabled_gmail_account_references(db: Session) -> tuple[set[int], set[int]]:
     )
     explicit_users: dict[int, set[int]] = {}
     legacy_keys: set[tuple[int, str]] = set()
-    unscoped_legacy_users: set[int] = set()
     for user_id, config, resource_id in trigger_rows:
         account_id = _trigger_oauth_account_id(config)
         if account_id is not None:
@@ -347,17 +364,11 @@ def _enabled_gmail_account_references(db: Session) -> tuple[set[int], set[int]]:
         email = str(resource_id or "").strip().lower()
         if email:
             legacy_keys.add((int(user_id), email))
-        else:
-            # Pre-binding triggers had neither an account id nor a mailbox
-            # resource. Preserve their user-wide renewal behavior.
-            unscoped_legacy_users.add(int(user_id))
 
     candidate_filter = []
     if explicit_users:
         candidate_filter.append(UserOAuth.id.in_(explicit_users))
-    legacy_user_ids = {
-        user_id for user_id, _email in legacy_keys
-    } | unscoped_legacy_users
+    legacy_user_ids = {user_id for user_id, _email in legacy_keys}
     if legacy_user_ids:
         candidate_filter.append(UserOAuth.user_id.in_(legacy_user_ids))
     accounts = (
@@ -376,13 +387,9 @@ def _enabled_gmail_account_references(db: Session) -> tuple[set[int], set[int]]:
         )
         explicitly_referenced = account_user_id in explicit_users.get(account_id, ())
         legacy_referenced = (
-            account_user_id in unscoped_legacy_users
-            or (
-                account_user_id,
-                str(account.email or "").strip().lower(),
-            )
-            in legacy_keys
-        )
+            account_user_id,
+            str(account.email or "").strip().lower(),
+        ) in legacy_keys
         if (explicitly_referenced or legacy_referenced) and ordinary_gmail:
             valid.add(account_id)
         elif account_id in explicit_users or legacy_referenced:
@@ -422,9 +429,11 @@ def scan_due_gmail_watch_renewals(
         .filter(
             GmailWatchState.oauth_account_id.in_(referenced_account_ids),
             due_watch,
-            ~and_(
-                GmailWatchState.status == TriggerProvisioningStatus.FAILED.value,
-                GmailWatchState.last_error.like(
+            or_(
+                GmailWatchState.status.is_(None),
+                GmailWatchState.status != TriggerProvisioningStatus.FAILED.value,
+                GmailWatchState.last_error.is_(None),
+                ~GmailWatchState.last_error.like(
                     "Gmail watch OAuth ownership mismatch:%"
                 ),
             ),
@@ -679,6 +688,7 @@ async def collect_gmail_pubsub_events(
         user_id=int(state.user_id),
         account_id=int(state.oauth_account_id),
         resource_owner_key=None,
+        provider="gmail",
     )
     if oauth_account is None:
         logger.warning(
@@ -782,8 +792,7 @@ async def collect_gmail_pubsub_events(
             )
             .all()
         )
-        if (bound_account_id := _trigger_oauth_account_id(trigger.config)) is None
-        or bound_account_id == int(state.oauth_account_id)
+        if _trigger_targets_watch(trigger, state)
     ]
 
     events: list[GmailCollectedEvent] = []

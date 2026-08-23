@@ -83,18 +83,17 @@ def get_scoped_user_oauth_account(
     user_id: int,
     account_id: int,
     resource_owner_key: str | None,
+    provider: str | None = None,
 ) -> UserOAuth | None:
-    """Get a credential by ID only when the expected owner also matches."""
-    return (
-        scoped_user_oauth_query(
-            db,
-            user_id=user_id,
-            resource_owner_key=resource_owner_key,
-        )
-        .filter(UserOAuth.id == int(account_id))
-        .populate_existing()
-        .first()
-    )
+    """Get a credential that matches its user, owner, and optional provider."""
+    query = scoped_user_oauth_query(
+        db,
+        user_id=user_id,
+        resource_owner_key=resource_owner_key,
+    ).filter(UserOAuth.id == int(account_id))
+    if provider is not None:
+        query = query.filter(UserOAuth.provider == provider)
+    return query.populate_existing().first()
 
 
 def get_user_oauth_account_by_id(
@@ -102,23 +101,22 @@ def get_user_oauth_account_by_id(
     *,
     account_id: int,
     resource_owner_key: str | None,
+    provider: str | None = None,
 ) -> UserOAuth | None:
     """Get a foreign-key-addressed credential in one owner namespace.
 
-    Internal Gmail watch rows already bind a globally unique OAuth primary key
-    and may not have an independently trusted account id at every reload site.
-    This shape preserves that existing lookup while centralizing its owner
-    namespace predicate.
+    Internal watch rows bind a globally unique OAuth primary key but do not
+    always have an independently trusted user ID at reload sites. The optional
+    provider predicate keeps provider-specific consumers on their own account
+    type while this helper centralizes the owner namespace predicate.
     """
-    return (
-        db.query(UserOAuth)
-        .filter(
-            UserOAuth.id == int(account_id),
-            user_oauth_owner_clause(resource_owner_key),
-        )
-        .populate_existing()
-        .first()
+    query = db.query(UserOAuth).filter(
+        UserOAuth.id == int(account_id),
+        user_oauth_owner_clause(resource_owner_key),
     )
+    if provider is not None:
+        query = query.filter(UserOAuth.provider == provider)
+    return query.populate_existing().first()
 
 
 def delete_scoped_user_oauth_accounts(

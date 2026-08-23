@@ -115,7 +115,9 @@ If SQLite reports that an owner-aware schema name exists before migration, query
 
 ### Prerequisites and configuration
 
-This change has no new environment variable or dependency. Keep every future actor-OAuth caller disabled; this release does not expose a production path that creates actor-owned rows.
+This change has no new environment variable or dependency. Keep every future actor-OAuth caller disabled. This release does not expose a production path that creates actor-owned rows.
+
+An enabled Gmail trigger must identify its mailbox. A current trigger uses `config.oauth_account_id`. A legacy trigger can use a nonempty mailbox `resource_id`. The lifecycle marks an unbound trigger as failed and dispatches no callback event.
 
 ### Deployment and migration steps
 
@@ -129,16 +131,18 @@ Use the PostgreSQL procedure for production. Use the SQLite procedure only for l
 4. Record `PRAGMA foreign_key_check;` and `SELECT count(*) FROM gmail_watch_states;`.
 5. Run `alembic upgrade head` one time.
 6. Run both queries again. Make sure that the foreign-key result has no new row. Make sure that the watch-state count is unchanged.
-7. Verify the schema.
-8. Resume the local processes.
+7. Run the Gmail watch integrity query in the verification section. Require a zero result before you continue.
+8. Verify the schema.
+9. Resume the local processes.
 
 #### PostgreSQL production
 
 1. Pause OAuth reads and writes that access `user_oauth`, and make sure no long transaction holds a lock on the table.
-2. Run `alembic upgrade head` one time. Already-running old workers can continue non-OAuth work while the transactional DDL runs, but an old worker that starts or restarts after the schema revision advances will fail startup because it does not recognize the new revision. Prevent old-version restarts and autoscaling during this window, or ensure every replacement starts from the owner-aware image.
-3. Resume ordinary OAuth writes after the migration commits.
-4. Roll every API and task worker to the owner-aware version.
-5. Verify the schema and make sure no old worker remains before a later release enables actor-owned rows.
+2. Run `alembic upgrade head` one time. Already-running old workers can continue non-OAuth work while the transactional DDL runs. An old worker that starts after the revision advances will fail because it does not recognize the revision. Prevent old-version restarts and autoscaling during this window. Each replacement must use the owner-aware image.
+3. Run the Gmail watch integrity query in the verification section. Require a zero result before you continue.
+4. Resume ordinary OAuth writes after the migration commits.
+5. Roll every API and task worker to the owner-aware version.
+6. Verify the schema. Make sure that no old worker remains before a later release enables actor-owned rows.
 
 Do not backfill `resource_owner_key`. A null owner identifies an ordinary credential.
 
@@ -180,7 +184,9 @@ For local SQLite, run `PRAGMA index_list('user_oauth');` and `PRAGMA index_info(
 
 Run `PRAGMA foreign_key_list('user_oauth');`. Require exactly one FK on `user_id`. This FK must target `users.id` with a `CASCADE` delete action. On PostgreSQL, inspect the `user_oauth` constraints. Require the same single cascade before you enable actor-owned rows.
 
-Before restarting Gmail watch processing, run this query on either supported database:
+#### Gmail watch integrity gate
+
+The numbered deployment procedures require this query before Gmail watch processing starts. Run the query on either supported database:
 
 ```sql
 SELECT count(*)

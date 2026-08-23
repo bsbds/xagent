@@ -132,6 +132,7 @@ def test_provisioning_captures_account_identity_before_transition_commit(
 
     class Account:
         id = 7
+        provider = "gmail"
         resource_owner_key = None
         expired = False
 
@@ -168,10 +169,11 @@ def test_provisioning_captures_account_identity_before_transition_commit(
         lambda _db, _account_id: TransitionLock(),
     )
 
-    def get_account(_db, *, user_id, account_id, resource_owner_key):
+    def get_account(_db, *, user_id, account_id, resource_owner_key, provider):
         assert _db is transition_db
         assert account_id == 7
         assert resource_owner_key is None
+        assert provider == "gmail"
         captured_user_ids.append(user_id)
         return transition_account
 
@@ -402,6 +404,49 @@ def _create_gmail_trigger(
     db.commit()
     db.refresh(trigger)
     return trigger
+
+
+def test_provisioning_rejects_an_ordinary_non_gmail_account(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    setattr(account, "provider", "google-drive")
+    db_session.add(account)
+    db_session.commit()
+
+    with pytest.raises(
+        gmail_provisioning.GmailProvisioningError,
+        match="requires an ordinary Gmail OAuth account",
+    ):
+        ensure_gmail_mailbox_provisioned(
+            db_session,
+            account,
+            service_factory=lambda *_args: pytest.fail("Gmail API was called"),
+            publisher_factory=lambda: pytest.fail("Pub/Sub API was called"),
+            subscriber_factory=lambda: pytest.fail("Pub/Sub API was called"),
+        )
+
+
+def test_watch_relationship_excludes_an_ordinary_non_gmail_account(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    setattr(account, "provider", "google-drive")
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="history",
+        topic_name="topic",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+    )
+    db_session.add_all([account, state])
+    db_session.commit()
+    db_session.expire(state, ["oauth_account"])
+
+    assert state.oauth_account is None
 
 
 def test_provisioning_creates_deterministic_resources_and_active_state(
@@ -642,6 +687,60 @@ def test_sweep_warns_when_watch_account_is_not_ordinary(
     assert str(state.id) in caplog.text
     assert str(account.id) in caplog.text
     assert gmail_ownership_mismatch_signal in ops_signals.active_degradations()
+
+
+def test_sweep_mismatch_does_not_starve_a_valid_candidate(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    invalid_account = _create_oauth(
+        db_session,
+        user,
+        email="invalid@gmail.example",
+    )
+    valid_account = _create_oauth(
+        db_session,
+        user,
+        email="valid@gmail.example",
+    )
+    _create_gmail_trigger(db_session, user, agent, invalid_account)
+    _create_gmail_trigger(db_session, user, agent, valid_account)
+    now = datetime.now(timezone.utc)
+    invalid_state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(invalid_account.id),
+        email=str(invalid_account.email),
+        history_id="old-invalid",
+        topic_name="invalid-topic",
+        status=TriggerProvisioningStatus.FAILED.value,
+        updated_at=now - timedelta(hours=2),
+    )
+    valid_state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(valid_account.id),
+        email=str(valid_account.email),
+        history_id="old-valid",
+        topic_name="valid-topic",
+        status=TriggerProvisioningStatus.FAILED.value,
+        updated_at=now - timedelta(hours=1),
+    )
+    setattr(invalid_account, "resource_owner_key", "actor:alice")
+    db_session.add_all([invalid_account, invalid_state, valid_state])
+    db_session.commit()
+
+    attempts = sweep_gmail_provisioning(
+        db_session,
+        limit=1,
+        service_factory=lambda *_args: FakeGmailService(history_id="renewed"),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: FakeSubscriber(),
+    )
+
+    assert attempts == 1
+    db_session.refresh(valid_state)
+    assert valid_state.history_id == "renewed"
+    assert valid_state.status == TriggerProvisioningStatus.ACTIVE.value
 
 
 def test_sweep_matches_duplicate_mailboxes_by_oauth_account_id(
@@ -1265,6 +1364,27 @@ def test_reconcile_matches_gmail_trigger_by_account_id_when_email_diverges(
     assert trigger.provisioning_error is None
 
 
+def test_reconcile_unbound_legacy_trigger_marks_configuration_failed(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account)
+    setattr(trigger, "config", {"watch_label": "INBOX"})
+    setattr(trigger, "resource_id", "")
+    setattr(trigger, "provisioning_status", TriggerProvisioningStatus.ACTIVE.value)
+    db_session.add(trigger)
+    db_session.commit()
+
+    updated = reconcile_gmail_trigger_provisioning(db_session, [trigger])
+
+    assert updated == 1
+    db_session.refresh(trigger)
+    assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
+    assert "no OAuth account or mailbox binding" in str(trigger.provisioning_error)
+
+
 def test_reconcile_legacy_trigger_without_account_binding_matches_by_email(
     db_session: Session,
 ) -> None:
@@ -1519,6 +1639,37 @@ def test_release_warns_when_watch_account_is_not_ordinary(
     assert "Cannot stop Gmail watch" in caplog.text
     assert str(state.id) in caplog.text
     assert str(account.id) in caplog.text
+    assert gmail_ownership_mismatch_signal in ops_signals.active_degradations()
+
+
+def test_release_preserves_handles_for_a_non_gmail_watch_account(
+    db_session: Session,
+    gmail_ownership_mismatch_signal: str,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="history",
+        topic_name="topic",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+    )
+    setattr(account, "provider", "google-drive")
+    db_session.add_all([account, state])
+    db_session.commit()
+
+    released = release_gmail_mailbox_if_unused(
+        db_session,
+        int(account.id),
+        service_factory=lambda *_args: pytest.fail("Gmail API was called"),
+        publisher_factory=lambda: pytest.fail("Pub/Sub API was called"),
+        subscriber_factory=lambda: pytest.fail("Pub/Sub API was called"),
+    )
+
+    assert released is False
+    assert db_session.get(GmailWatchState, int(state.id)) is state
     assert gmail_ownership_mismatch_signal in ops_signals.active_degradations()
 
 
@@ -2103,6 +2254,45 @@ def test_existing_subscription_resyncs_a_stale_oidc_audience(
     assert second.status == TriggerProvisioningStatus.ACTIVE.value
     assert len(subscriber.modify_calls) == 1
     assert subscription["push_config"]["oidc_token"]["audience"] == second.push_audience
+
+
+@pytest.mark.parametrize(
+    ("provider", "resource_owner_key"),
+    [("gmail", "actor:alice"), ("google-drive", None)],
+)
+def test_endpoint_reconciliation_skips_nonordinary_watch_accounts(
+    db_session: Session,
+    provider: str,
+    resource_owner_key: str | None,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="old",
+        topic_name="projects/demo-project/topics/xagent-gmail-owner",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+        callback_id="owner-callback",
+        subscription_name=("projects/demo-project/subscriptions/xagent-gmail-owner"),
+        push_audience="https://old.example/callback",
+    )
+    setattr(account, "provider", provider)
+    setattr(account, "resource_owner_key", resource_owner_key)
+    db_session.add_all([account, state])
+    db_session.commit()
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=False,
+        subscriber_factory=lambda: pytest.fail("Pub/Sub API was called"),
+    )
+
+    assert result.scanned == 0
+    assert result.failed == 0
 
 
 def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
@@ -3129,6 +3319,34 @@ def test_reconciliation_rejects_watch_state_owned_by_another_user(
     assert gmail_ownership_mismatch_signal in ops_signals.active_degradations()
 
 
+def test_reconciliation_rejects_a_non_gmail_watch_account(
+    db_session: Session,
+    gmail_ownership_mismatch_signal: str,
+) -> None:
+    owner = _create_user(db_session)
+    agent = _create_agent(db_session, owner)
+    account = _create_oauth(db_session, owner)
+    trigger = _create_gmail_trigger(db_session, owner, agent, account)
+    state = GmailWatchState(
+        user_id=int(owner.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="old",
+        topic_name="old-topic",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+    )
+    setattr(account, "provider", "google-drive")
+    db_session.add_all([account, state])
+    db_session.commit()
+
+    assert reconcile_gmail_trigger_provisioning(db_session, [trigger]) == 1
+
+    db_session.refresh(trigger)
+    assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
+    assert "ownership mismatch" in str(trigger.provisioning_error).lower()
+    assert gmail_ownership_mismatch_signal in ops_signals.active_degradations()
+
+
 def test_renewal_scan_marks_nonordinary_watch_account_failed(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -3162,6 +3380,43 @@ def test_renewal_scan_marks_nonordinary_watch_account_failed(
     assert renewed == 0
     db_session.refresh(state)
     assert state.status == TriggerProvisioningStatus.FAILED.value
+    assert "ownership mismatch" in str(state.last_error).lower()
+    assert gmail_ownership_mismatch_signal in ops_signals.active_degradations()
+
+
+def test_renewal_scan_classifies_a_failed_mismatch_with_no_error(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    gmail_ownership_mismatch_signal: str,
+) -> None:
+    from xagent.web.services.gmail_triggers import scan_due_gmail_watch_renewals
+
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")
+    owner = _create_user(db_session)
+    agent = _create_agent(db_session, owner)
+    account = _create_oauth(db_session, owner)
+    _create_gmail_trigger(db_session, owner, agent, account)
+    state = GmailWatchState(
+        user_id=int(owner.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="old",
+        topic_name="old-topic",
+        watch_expiration=datetime.now(timezone.utc) - timedelta(hours=1),
+        status=TriggerProvisioningStatus.FAILED.value,
+        last_error=None,
+    )
+    setattr(account, "resource_owner_key", "actor:alice")
+    db_session.add_all([account, state])
+    db_session.commit()
+
+    renewed = scan_due_gmail_watch_renewals(
+        db_session,
+        service_factory=lambda *_args: pytest.fail("Gmail API was called"),
+    )
+
+    assert renewed == 0
+    db_session.refresh(state)
     assert "ownership mismatch" in str(state.last_error).lower()
     assert gmail_ownership_mismatch_signal in ops_signals.active_degradations()
 
