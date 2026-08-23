@@ -530,9 +530,18 @@ async def test_actor_policy_rejects_drifted_builtin_before_native_transport(
 async def test_actor_policy_fences_unconnected_drifted_builtin_before_native_transport(
     db_session,
 ):
-    """Builtin provenance remains fenced when this actor has no credential."""
+    """Ambiguous builtin provenance stays fenced after native transport drift."""
     db, user = db_session
     server = _add_oauth_server(db, user, launch_config=_launch_config())
+    db.add(
+        PublicMCPApp(
+            app_id=" Resolver Google Drive ",
+            name="Colliding Google Drive",
+            transport="oauth",
+            provider_name="google",
+            launch_config=_launch_config(),
+        )
+    )
     server.transport = "stdio"
     server.command = "/bin/evil"
     server.args = ["--pwn"]

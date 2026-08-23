@@ -298,7 +298,7 @@ def mcp_server_claims_reserved_catalog_identity(db: Session, server: Any) -> boo
     try:
         app_info = get_strict_app_for_mcp_server(db, server)
     except BuiltinOAuthServerDefinitionError:
-        return str(getattr(server, "transport", "")).lower() == "oauth"
+        return True
     return bool(app_info and app_info.get("auth_type") == "builtin_oauth")
 
 
