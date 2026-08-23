@@ -86,6 +86,10 @@ from .external_task_cancel import (
 )
 from .file_turn import bind_turn_files_no_commit
 from .hot_path_cache import invalidate_task_cache
+from .mcp_runtime import (
+    MCPBuiltinOAuthActorPolicy,
+    MCPBuiltinOAuthActorPolicyRequiredError,
+)
 from .task_execution_controller import (
     TaskControlState,
     apply_task_control_transition,
@@ -107,6 +111,7 @@ from .task_lease_service import (
     stop_task_lease_heartbeat,
     validate_preacquired_task_lease_isolated,
 )
+from .task_runtime import mcp_runtime_authorization_policy_required
 from .task_setup_snapshot import load_task_setup_snapshot_sync
 
 logger = logging.getLogger(__name__)
@@ -508,6 +513,7 @@ class TaskTurnOrchestrator:
                 task_owner_user_id=task_owner_user_id,
                 payload=payload,
                 claimed=claimed,
+                kind=kind,
                 force_fresh=force_fresh,
                 context=context,
             )
@@ -583,7 +589,33 @@ class TaskTurnOrchestrator:
         force_fresh: bool = False,
         context: Optional[Dict[str, Any]] = None,
     ) -> TurnStarted:
-        """Schedule a turn already committed by its transaction owner."""
+        """Schedule an ordinary turn already committed by its domain owner."""
+
+        return await TaskTurnOrchestrator._schedule_claimed_turn(
+            task_id=task_id,
+            task_owner_user_id=task_owner_user_id,
+            actor_user_id=actor_user_id,
+            payload=payload,
+            claimed=claimed,
+            kind=kind,
+            force_fresh=force_fresh,
+            context=context,
+        )
+
+    @staticmethod
+    async def _schedule_claimed_turn(
+        *,
+        task_id: int,
+        task_owner_user_id: int,
+        actor_user_id: int | None,
+        payload: TaskTurnPayload,
+        claimed: "_ClaimedTurn",
+        kind: TurnKind,
+        force_fresh: bool = False,
+        context: Optional[Dict[str, Any]] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
+    ) -> TurnStarted:
+        """Shared scheduler with actor context reserved for trusted CREATE."""
 
         async def _schedule() -> TurnStarted:
             # The no-commit claim delegates commit to its domain owner, so
@@ -598,8 +630,10 @@ class TaskTurnOrchestrator:
                     task_owner_user_id=task_owner_user_id,
                     payload=payload,
                     claimed=claimed,
+                    kind=kind,
                     force_fresh=force_fresh,
                     context=context,
+                    mcp_runtime_authorization_policy=(mcp_runtime_authorization_policy),
                 )
                 return _turn_started_snapshot(
                     task_id=task_id,
@@ -625,10 +659,11 @@ class TaskTurnOrchestrator:
         payload: TaskTurnPayload,
         claimed: "_ClaimedTurn",
         context: Optional[Dict[str, Any]] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
     ) -> TurnStarted:
         """Compatibility wrapper for an already committed CREATE claim."""
 
-        return await TaskTurnOrchestrator.schedule_claimed_turn(
+        return await TaskTurnOrchestrator._schedule_claimed_turn(
             task_id=task_id,
             task_owner_user_id=task_owner_user_id,
             actor_user_id=actor_user_id,
@@ -636,6 +671,7 @@ class TaskTurnOrchestrator:
             claimed=claimed,
             kind=TurnKind.CREATE,
             context=context,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
         )
 
 
@@ -665,12 +701,26 @@ async def _schedule_committed_turn(
     task_owner_user_id: int,
     payload: TaskTurnPayload,
     claimed: _ClaimedTurn,
+    kind: TurnKind,
     force_fresh: bool,
     context: Optional[Dict[str, Any]],
+    mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
 ) -> "asyncio.Task[None]":
     """Own scheduling and compensation after a turn claim has committed."""
 
     try:
+        actor_marked = mcp_runtime_authorization_policy_required(claimed.agent_config)
+        if actor_marked and (
+            kind is not TurnKind.CREATE or mcp_runtime_authorization_policy is None
+        ):
+            raise MCPBuiltinOAuthActorPolicyRequiredError(
+                f"Task {task_id} is actor-marked; only trusted fresh direct "
+                "execution is supported"
+            )
+        if mcp_runtime_authorization_policy is not None and not actor_marked:
+            raise MCPBuiltinOAuthActorPolicyRequiredError(
+                f"Task {task_id} was not persisted as actor-marked"
+            )
         _refuse_if_bg_inflight(task_id)
         handle = _schedule_bg(
             task_id=task_id,
@@ -682,6 +732,7 @@ async def _schedule_committed_turn(
             force_fresh=force_fresh,
             context=context,
             before_message_id=claimed.before_message_id,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
         )
     except BaseException as schedule_error:
         # Schedule failed after the claim committed -> force FAILED so the row
@@ -1654,6 +1705,7 @@ def _schedule_bg(
     force_fresh: bool,
     context: Optional[Dict[str, Any]],
     before_message_id: Optional[int] = None,
+    mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
 ) -> "asyncio.Task[None]":
     """Lease-aware bg scheduler.
 
@@ -1804,6 +1856,9 @@ def _schedule_bg(
                         expected_run_id=lease.run_id,
                         task_lease=lease,
                         resolved_execution_scope=scope,
+                        mcp_runtime_authorization_policy=(
+                            mcp_runtime_authorization_policy
+                        ),
                     )
 
                 await run_while_task_lease_owned(

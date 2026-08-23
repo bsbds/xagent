@@ -149,6 +149,10 @@ from ..services.managed_file_ref import (
     DurableStorageOperationError,
     log_durable_storage_fault,
 )
+from ..services.mcp_runtime import (
+    MCPBuiltinOAuthActorPolicy,
+    MCPBuiltinOAuthActorPolicyRequiredError,
+)
 from ..services.task_command_transport import (
     COMMAND_FAILED,
     COMMAND_ID_PATTERN,
@@ -195,6 +199,7 @@ from ..services.task_lease_service import (
 )
 from ..services.task_runtime import (
     SELECTED_FILE_IDS_AGENT_CONFIG_KEY,
+    mcp_runtime_authorization_policy_required,
     task_extension_bindings_from_agent_config,
 )
 from ..services.uploaded_file_store import (
@@ -2615,6 +2620,7 @@ async def execute_task_background(
     resolved_execution_scope: Union[
         ExecutionScope, None, ExecutionScopeNotProvided
     ] = EXECUTION_SCOPE_NOT_PROVIDED,
+    mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
 ) -> None:
     """Execute one task without checking out a DB connection on the event loop.
 
@@ -2686,6 +2692,7 @@ async def execute_task_background(
                 connector_runtime_turn_id=context_dict.get("turn_id")
                 if isinstance(context_dict.get("turn_id"), str)
                 else None,
+                mcp_runtime_authorization_policy=(mcp_runtime_authorization_policy),
                 resolved_execution_scope=execution_scope,
             )
             if hasattr(agent_service, "set_outbound_message_handler"):
@@ -5514,6 +5521,10 @@ def _enqueue_websocket_task_command_sync(
         if not actor_is_admin and int(task.user_id) != actor_user_id:
             raise ClientVisiblePermissionError(
                 f"Access denied: Task {task_id} does not belong to you"
+            )
+        if mcp_runtime_authorization_policy_required(task.agent_config):
+            raise MCPBuiltinOAuthActorPolicyRequiredError(
+                f"Task {task_id} is actor-marked; generic task commands are unsupported"
             )
         if kind == TaskCommandKind.MESSAGE:
             from ..services.chat_history_service import (
