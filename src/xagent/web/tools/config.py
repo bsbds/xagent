@@ -57,6 +57,7 @@ from ...core.tools.adapters.vibe.connector_runtime import (
     runtime_bindings_from_config,
 )
 from ...core.tools.adapters.vibe.db_session import tool_session_scope
+from ..services.mcp_runtime import MCPBuiltinOAuthActorPolicy
 from ..services.tool_credentials import (
     TOOL_CREDENTIAL_SPECS,
     get_sql_connection_map,
@@ -1371,6 +1372,7 @@ class WebToolConfig(BaseToolConfig):
         sandbox: Optional[Any] = None,
         tool_selection_spec: Optional[Any] = None,
         mcp_auth_context: Optional[Dict[str, Any]] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
         execution_scope: Optional[Any] = None,
         connector_runtime_turn_id: Optional[str] = None,
         mcp_failure_policy: MCPFailurePolicy = MCPFailurePolicy.BEST_EFFORT,
@@ -1454,6 +1456,7 @@ class WebToolConfig(BaseToolConfig):
         self._mcp_auth_context = (
             mcp_auth_context if isinstance(mcp_auth_context, dict) else {}
         )
+        self._mcp_runtime_authorization_policy = mcp_runtime_authorization_policy
         if connector_runtime_turn_id is None:
             raw_turn_id = workspace_config.get("turn_id")
             connector_runtime_turn_id = (
@@ -3402,8 +3405,9 @@ class WebToolConfig(BaseToolConfig):
         *,
         provider_name: object,
         app_id: object,
+        resource_owner_key: str | None = None,
     ) -> _LegacyOAuthTokenResolution:
-        """Resolve and persist one legacy OAuth account in an isolated transaction."""
+        """Resolve and persist one exact OAuth owner in an isolated transaction."""
         from ...web.mcp_apps import restrict_to_app_scoped_oauth_grant
         from ...web.models.user_oauth import UserOAuth
 
@@ -3412,7 +3416,25 @@ class WebToolConfig(BaseToolConfig):
         user_id = int(self._user_id)
         oauth_db = self._new_legacy_oauth_session()
         try:
-            if app_id:
+            if resource_owner_key is not None:
+                # Actor callbacks persist the canonical app id as the provider
+                # namespace. Do not widen this lookup to the provider-level
+                # ordinary credential or another actor namespace.
+                oauth_account = (
+                    scoped_user_oauth_query(
+                        oauth_db,
+                        user_id=user_id,
+                        resource_owner_key=resource_owner_key,
+                    )
+                    .filter(UserOAuth.provider == app_id)
+                    .first()
+                )
+                logger.info(
+                    "OAUTH CONFIG: Checked actor app credential for user %s. Found: %s",
+                    self._user_id,
+                    oauth_account is not None,
+                )
+            elif app_id:
                 # A bare provider-level grant (e.g. UserOAuth.provider ==
                 # "meta") never requested this app's own oauth_scopes, so it
                 # can't be trusted to carry a permission added after that flow
@@ -3480,7 +3502,7 @@ class WebToolConfig(BaseToolConfig):
                     oauth_db,
                     user_id=user_id,
                     account_id=account_id,
-                    resource_owner_key=None,
+                    resource_owner_key=resource_owner_key,
                 )
                 if oauth_account is not None:
                     oauth_db.delete(oauth_account)
@@ -3515,23 +3537,71 @@ class WebToolConfig(BaseToolConfig):
         user_env_by_id: Mapping[int, Any],
         shared_env_by_id: Mapping[int, Any],
         env_source_by_id: Mapping[int, Any],
+        actor_builtin_app_info: Mapping[str, Any] | None = None,
+        actor_builtin_invalid: bool = False,
     ) -> Dict[str, Any]:
         """Build one MCP server config, preserving explicit unavailable outcomes."""
-        # Build config dict from server model
-        runtime_bindings = getattr(server, "runtime_bindings", None)
-        allow_delegated_authorization = bool(
-            getattr(server, "allow_delegated_authorization", False)
+        actor_builtin = actor_builtin_app_info is not None
+        if actor_builtin_invalid:
+            policy_diagnostic = {
+                "code": "config_load_failed",
+                "message": "MCP server configuration is unavailable",
+                "server_id": int(server.id),
+                "server_name": server.name,
+            }
+            self._mcp_oauth_diagnostics.append(policy_diagnostic)
+            return self._build_unavailable_mcp_config(
+                server=server,
+                reason="config_load_failed",
+                diagnostic=policy_diagnostic,
+            )
+
+        if actor_builtin and (self._mcp_auth_context or {}).get(str(server.id)):
+            policy_diagnostic = {
+                "code": "config_load_failed",
+                "message": "Task-supplied MCP authorization is not accepted",
+                "server_id": int(server.id),
+                "server_name": server.name,
+            }
+            self._mcp_oauth_diagnostics.append(policy_diagnostic)
+            return self._build_unavailable_mcp_config(
+                server=server,
+                reason="config_load_failed",
+                diagnostic=policy_diagnostic,
+            )
+
+        # Actor builtins are constructed only from canonical catalog metadata
+        # and the exact actor credential. Task connector runtime values are not
+        # loaded, retained, or exposed in the serialized config.
+        runtime_bindings = (
+            None if actor_builtin else getattr(server, "runtime_bindings", None)
         )
-        runtime_values = self._get_connector_runtime_for("mcp", int(server.id))
+        allow_delegated_authorization = (
+            False
+            if actor_builtin
+            else bool(getattr(server, "allow_delegated_authorization", False))
+        )
+        runtime_values = (
+            None
+            if actor_builtin
+            else self._get_connector_runtime_for("mcp", int(server.id))
+        )
         config: Dict[str, Any] = {
             "id": int(server.id),
             "name": server.name,
             "transport": server.transport,
-            "description": server.description,
-            "runtime_input_schema": getattr(server, "runtime_input_schema", None),
-            "runtime_bindings": runtime_bindings,
-            "allow_delegated_authorization": allow_delegated_authorization,
+            "description": (
+                actor_builtin_app_info.get("description")
+                if actor_builtin_app_info is not None
+                else server.description
+            ),
         }
+        if not actor_builtin:
+            config.update(
+                runtime_input_schema=getattr(server, "runtime_input_schema", None),
+                runtime_bindings=runtime_bindings,
+                allow_delegated_authorization=allow_delegated_authorization,
+            )
         if runtime_values:
             context_values = runtime_values.get("context")
             config["connector_runtime"] = {
@@ -3549,7 +3619,11 @@ class WebToolConfig(BaseToolConfig):
             # The provider might be linkedin, google, etc. based on the app config
             from ...web.mcp_apps import get_app_for_mcp_server
 
-            app_info = get_app_for_mcp_server(self.db, server)
+            app_info = (
+                dict(actor_builtin_app_info)
+                if actor_builtin_app_info is not None
+                else get_app_for_mcp_server(self.db, server)
+            )
             if app_info is None:
                 logger.warning(
                     "OAuth MCP server '%s' has no matching catalog app",
@@ -3568,7 +3642,7 @@ class WebToolConfig(BaseToolConfig):
             app_id = app_info.get("id") if app_info else None
 
             hook_token: _ResolvedHookToken | None = None
-            if app_info:
+            if app_info and not actor_builtin:
                 configured_resource = _oauth_token_configured_resource(app_info)
                 providers_to_resolve = _oauth_token_provider_candidates(app_info)
                 try:
@@ -3623,6 +3697,12 @@ class WebToolConfig(BaseToolConfig):
                 legacy_token = await self._resolve_legacy_oauth_access_token(
                     provider_name=provider_name,
                     app_id=app_id,
+                    resource_owner_key=(
+                        self._mcp_runtime_authorization_policy.resource_owner_key
+                        if actor_builtin
+                        and self._mcp_runtime_authorization_policy is not None
+                        else None
+                    ),
                 )
                 if legacy_token.refresh_failed:
                     return self._build_unavailable_mcp_config(
@@ -3859,6 +3939,8 @@ class WebToolConfig(BaseToolConfig):
         user_env_by_id: Mapping[int, Any],
         shared_env_by_id: Mapping[int, Any],
         env_source_by_id: Mapping[int, Any],
+        actor_builtin_app_info: Mapping[str, Any] | None = None,
+        actor_builtin_invalid: bool = False,
     ) -> Dict[str, Any]:
         """Isolate unexpected failures while loading one MCP server config."""
         try:
@@ -3867,6 +3949,8 @@ class WebToolConfig(BaseToolConfig):
                 user_env_by_id=user_env_by_id,
                 shared_env_by_id=shared_env_by_id,
                 env_source_by_id=env_source_by_id,
+                actor_builtin_app_info=actor_builtin_app_info,
+                actor_builtin_invalid=actor_builtin_invalid,
             )
         except ConnectorRuntimeError:
             raise
@@ -3940,6 +4024,29 @@ class WebToolConfig(BaseToolConfig):
                 self._user_id,
                 self._connector_team_id,
             )
+
+            # Classify the complete personal ∪ governing-team visible set
+            # before constructing any runtime config. Canonical builtins use
+            # actor OAuth; native rows preserve their existing transport path;
+            # reserved/catalog drift is retained as a per-row unavailable
+            # result and can never dispatch through that native path.
+            actor_classifications: dict[int, tuple[Mapping[str, Any] | None, bool]] = {}
+            if self._mcp_runtime_authorization_policy is not None:
+                from ...web.mcp_apps import (
+                    BuiltinOAuthServerDefinitionError,
+                    classify_actor_builtin_oauth_server,
+                )
+
+                for visible_server in servers:
+                    try:
+                        actor_classifications[int(visible_server.id)] = (
+                            classify_actor_builtin_oauth_server(
+                                self.db, visible_server
+                            ),
+                            False,
+                        )
+                    except BuiltinOAuthServerDefinitionError:
+                        actor_classifications[int(visible_server.id)] = (None, True)
 
             # Prefetch shared runtime state once before entering the isolated
             # per-server formatter.
@@ -4015,6 +4122,12 @@ class WebToolConfig(BaseToolConfig):
                 user_env_by_id=user_env_by_id,
                 shared_env_by_id=shared_env_by_id,
                 env_source_by_id=env_source_by_id,
+                actor_builtin_app_info=actor_classifications.get(
+                    int(server.id), (None, False)
+                )[0],
+                actor_builtin_invalid=actor_classifications.get(
+                    int(server.id), (None, False)
+                )[1],
             )
             for server in servers
         ]

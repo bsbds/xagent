@@ -448,6 +448,93 @@ def _builtin_server_candidates(db: Session, app_info: Mapping[str, Any]) -> list
     return candidates
 
 
+def classify_actor_builtin_oauth_server(
+    db: Session, server: Any
+) -> Dict[str, Any] | None:
+    """Classify one actor-visible row as canonical builtin OAuth or native.
+
+    Stable ``auth.app_id`` wins when present. Legacy exact app-id/display-name
+    rows remain supported, while normalized aliases stay reserved and fail
+    closed instead of falling through to a native MCP transport.
+    """
+    catalog_apps = [
+        app_info
+        for app in db.query(PublicMCPApp).all()
+        if (app_info := _app_to_dict(app)).get("auth_type") == "builtin_oauth"
+    ]
+    auth = getattr(server, "auth", None)
+    has_app_id = isinstance(auth, Mapping) and "app_id" in auth
+    server_app_id = auth.get("app_id") if isinstance(auth, Mapping) else None
+    server_name = str(getattr(server, "name", ""))
+    normalized_name = _normalized_catalog_key(server_name)
+
+    exact_app = next(
+        (
+            app_info
+            for app_info in catalog_apps
+            if has_app_id and server_app_id == app_info.get("id")
+        ),
+        None,
+    )
+    exact_legacy_apps = [
+        app_info
+        for app_info in catalog_apps
+        if not has_app_id
+        and server_name in {str(app_info.get("id")), str(app_info.get("name"))}
+    ]
+    reserved_apps = [
+        app_info
+        for app_info in catalog_apps
+        if normalized_name
+        in {
+            _normalized_catalog_key(app_info.get("id")),
+            _normalized_catalog_key(app_info.get("name")),
+        }
+    ]
+
+    if has_app_id:
+        if exact_app is None:
+            if reserved_apps:
+                raise BuiltinOAuthServerDefinitionError(
+                    "reserved builtin OAuth server identity conflicts with auth.app_id"
+                )
+            return None
+        if any(app_info.get("id") != exact_app.get("id") for app_info in reserved_apps):
+            raise BuiltinOAuthServerDefinitionError(
+                "builtin OAuth server has ambiguous reserved catalog identity"
+            )
+        app_info = exact_app
+    else:
+        if len(exact_legacy_apps) != 1:
+            if exact_legacy_apps or reserved_apps:
+                raise BuiltinOAuthServerDefinitionError(
+                    "builtin OAuth server has ambiguous legacy catalog identity"
+                )
+            return None
+        app_info = exact_legacy_apps[0]
+        if any(app.get("id") != app_info.get("id") for app in reserved_apps):
+            raise BuiltinOAuthServerDefinitionError(
+                "builtin OAuth server has ambiguous reserved catalog identity"
+            )
+
+    strict_app_info = _strict_catalog_app_by_id(
+        db,
+        str(app_info["id"]),
+        require_builtin_oauth=True,
+        require_visible=True,
+    )
+    candidates = _builtin_server_candidates(db, strict_app_info)
+    if len(candidates) != 1 or getattr(candidates[0], "id", None) != getattr(
+        server, "id", None
+    ):
+        raise BuiltinOAuthServerDefinitionError(
+            f"builtin OAuth app {strict_app_info['id']!r} must have exactly one "
+            "MCP server definition"
+        )
+    _validate_canonical_builtin_oauth_server(server, strict_app_info)
+    return strict_app_info
+
+
 def require_builtin_oauth_server_definition(
     db: Session, *, app_id: str, provider: str
 ) -> Any:
