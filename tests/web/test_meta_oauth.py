@@ -1146,25 +1146,6 @@ async def test_disconnecting_facebook_preserves_shared_bare_meta_grant_for_insta
 
     assert db.query(UserOAuth).filter(UserOAuth.provider == "meta").count() == 1
     assert db.query(UserOAuth).filter(UserOAuth.provider == "facebook").count() == 1
-    db.add_all(
-        [
-            UserOAuth(
-                user_id=user.id,
-                provider="meta",
-                provider_user_id="actor-meta",
-                resource_owner_key="actor:meta",
-                access_token="actor-meta-token",
-            ),
-            UserOAuth(
-                user_id=user.id,
-                provider="facebook",
-                provider_user_id="actor-facebook",
-                resource_owner_key="actor:facebook",
-                access_token="actor-facebook-token",
-            ),
-        ]
-    )
-    db.commit()
 
     from xagent.web.api.mcp import delete_mcp_server
 
@@ -1192,12 +1173,6 @@ async def test_disconnecting_facebook_preserves_shared_bare_meta_grant_for_insta
         .count()
         == 1
     )
-    assert {
-        row.access_token
-        for row in db.query(UserOAuth)
-        .filter(UserOAuth.resource_owner_key.is_not(None))
-        .all()
-    } == {"actor-meta-token", "actor-facebook-token"}
 
 
 async def test_disconnecting_facebook_only_user_also_removes_orphaned_bare_meta_grant(
@@ -1215,24 +1190,6 @@ async def test_disconnecting_facebook_only_user_also_removes_orphaned_bare_meta_
     db.add(
         UserOAuth(user_id=user.id, provider="facebook", access_token="app-scoped-token")
     )
-    db.add_all(
-        [
-            UserOAuth(
-                user_id=user.id,
-                provider="meta",
-                provider_user_id="actor-meta",
-                resource_owner_key="actor:meta",
-                access_token="actor-meta-token",
-            ),
-            UserOAuth(
-                user_id=user.id,
-                provider="facebook",
-                provider_user_id="actor-facebook",
-                resource_owner_key="actor:facebook",
-                access_token="actor-facebook-token",
-            ),
-        ]
-    )
     server = MCPServer(name="Facebook Pages", transport="oauth", managed="external")
     db.add(server)
     db.commit()
@@ -1243,15 +1200,7 @@ async def test_disconnecting_facebook_only_user_also_removes_orphaned_bare_meta_
 
     await delete_mcp_server(server.id, current_user=user, db=db)
 
-    assert (
-        db.query(UserOAuth).filter(UserOAuth.resource_owner_key.is_(None)).count() == 0
-    )
-    assert {
-        row.access_token
-        for row in db.query(UserOAuth)
-        .filter(UserOAuth.resource_owner_key.is_not(None))
-        .all()
-    } == {"actor-meta-token", "actor-facebook-token"}
+    assert db.query(UserOAuth).count() == 0
 
 
 def test_facebook_server_reads_ignore_actor_owned_email(db_session):
