@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from xagent.core.utils.encryption import encrypt_value
+from xagent.web import mcp_apps
 from xagent.web.models.database import Base
 from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.mcp_oauth import MCPOAuthClient, MCPOAuthGrant
@@ -23,10 +24,32 @@ from xagent.web.tools.config import WebToolConfig
 OWNER_A = "toby:slack:team:actor-a"
 OWNER_B = "toby:slack:team:actor-b"
 APP_ID = "actor-drive"
+APP_EXECUTION = {
+    "name": "Actor Drive",
+    "transport": "oauth",
+    "provider_name": "google",
+    "oauth_scopes": [],
+    "launch_config": {
+        "command": "python",
+        "args": ["-m", "actor_drive"],
+        "env_mapping": {"ACTOR_ACCESS_TOKEN": "access_token"},
+    },
+}
 
 
 @pytest.fixture()
-def db_session(tmp_path):
+def db_session(tmp_path, monkeypatch):
+    registry_lookup = mcp_apps.get_builtin_execution_fields_and_optional_scopes
+
+    def test_registry(app_id: str):
+        if app_id == APP_ID:
+            return APP_EXECUTION, []
+        return registry_lookup(app_id)
+
+    monkeypatch.setattr(
+        mcp_apps, "get_builtin_execution_fields_and_optional_scopes", test_registry
+    )
+
     engine = create_engine(
         f"sqlite:///{tmp_path / 'actor-mcp.db'}",
         connect_args={"check_same_thread": False},

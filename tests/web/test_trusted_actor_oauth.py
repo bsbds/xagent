@@ -430,6 +430,39 @@ def test_actor_callback_keeps_canonical_nonowning_link(oauth_db, monkeypatch) ->
     assert link.is_owner is False
 
 
+def test_actor_callback_locks_personal_link_before_persist(
+    oauth_db, monkeypatch
+) -> None:
+    db, user = oauth_db
+    _catalog_link(db, user)
+    start = _start(db, user)
+    _mock_exchange(monkeypatch)
+    require_link = auth_api._require_actor_oauth_personal_link
+    lock_link = auth_api._lock_actor_link
+    checks: list[str] = []
+
+    def record_require(*args, **kwargs) -> None:
+        checks.append("require")
+        require_link(*args, **kwargs)
+
+    def record_lock(*args, **kwargs) -> None:
+        checks.append("lock")
+        lock_link(*args, **kwargs)
+
+    monkeypatch.setattr(auth_api, "_require_actor_oauth_personal_link", record_require)
+    monkeypatch.setattr(auth_api, "_lock_actor_link", record_lock)
+
+    response = generic_oauth_callback(
+        "custom",
+        _request(_state(start), cookie=_flow_cookie(start)[:2]),
+        db,
+        _provider(),
+    )
+
+    assert response.status_code == 200
+    assert checks == ["require", "lock"]
+
+
 @pytest.mark.parametrize("cookie_mode", ["missing", "wrong"])
 def test_actor_callback_rejects_missing_or_wrong_cookie_before_exchange(
     oauth_db, monkeypatch, cookie_mode
