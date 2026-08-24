@@ -2948,7 +2948,7 @@ def test_scan_due_gmail_watch_renewals_excludes_actor_owned_accounts(
     db = _direct_db_session()
     try:
         user = _create_user(db, "gmail-actor-renewal-user")
-        oauth = _create_gmail_oauth(
+        _create_gmail_oauth(
             db,
             user,
             resource_owner_key="toby:slack:41:UALICE",
@@ -2973,12 +2973,11 @@ def test_scan_due_gmail_watch_renewals_excludes_actor_owned_accounts(
 
         assert renewed == 0
         assert renewed_ids == []
-        assert int(oauth.id) not in renewed_ids
     finally:
         db.close()
 
 
-def test_scan_due_gmail_watch_renewals_skips_mismatch_before_limit(
+def test_scan_due_gmail_watch_renewals_filters_mismatch_before_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")

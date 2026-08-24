@@ -193,7 +193,7 @@ def _credentials_expiry(value: datetime | None) -> datetime | None:
 def build_gmail_service(db: Session, oauth_account: UserOAuth) -> Any:
     """Build Gmail trigger access for one ordinary connected account."""
     if (
-        str(oauth_account.provider) != "gmail"
+        oauth_account.provider != "gmail"
         or oauth_account.resource_owner_key is not None
     ):
         raise GmailWatchConfigurationError(
@@ -375,15 +375,6 @@ def scan_due_gmail_watch_renewals(
     renewed = 0
     for oauth_account, state in rows:
         user_id = int(oauth_account.user_id)
-        if state is not None and int(state.user_id) != user_id:
-            logger.warning(
-                "Skipping Gmail renewal for account %s because watch %s "
-                "belongs to another user",
-                oauth_account.id,
-                state.id,
-            )
-            continue
-
         try:
             _renew_watch_for_account(
                 db,
@@ -592,7 +583,7 @@ async def collect_gmail_pubsub_events(
         account_id=int(state.oauth_account_id),
         resource_owner_key=None,
     )
-    if oauth_account is None or str(oauth_account.provider) != "gmail":
+    if oauth_account is None or oauth_account.provider != "gmail":
         logger.warning(
             "Skipping Gmail callback for watch %s because account %s is not "
             "an ordinary Gmail account for user %s",

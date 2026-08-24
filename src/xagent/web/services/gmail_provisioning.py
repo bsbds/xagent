@@ -351,6 +351,7 @@ def _referenced_gmail_oauth_account_ids(
         AgentTrigger.config["oauth_account_id"].as_string(),
         String,
     )
+    # Do not add DISTINCT. PostgreSQL cannot compare the projected JSON config.
     candidate_rows = (
         db.query(
             AgentTrigger.user_id,
@@ -936,7 +937,7 @@ def ensure_gmail_mailbox_provisioned(
     behavior.
     """
     if (
-        str(oauth_account.provider) != "gmail"
+        oauth_account.provider != "gmail"
         or oauth_account.resource_owner_key is not None
     ):
         raise GmailProvisioningError(
@@ -956,7 +957,7 @@ def ensure_gmail_mailbox_provisioned(
                 resource_owner_key=None,
             )
         )
-        if transition_account is None or str(transition_account.provider) != "gmail":
+        if transition_account is None or transition_account.provider != "gmail":
             raise GmailProvisioningError("ordinary Gmail account not found")
         state = _ensure_gmail_mailbox_provisioned_locked(
             transition_db,
@@ -1066,7 +1067,7 @@ def _provision_in_fresh_session(oauth_account_id: int) -> None:
             account_id=oauth_account_id,
             resource_owner_key=None,
         )
-        if oauth_account is None or str(oauth_account.provider) != "gmail":
+        if oauth_account is None or oauth_account.provider != "gmail":
             logger.warning(
                 "Cannot provision Gmail watch without ordinary account %s",
                 oauth_account_id,
@@ -1120,7 +1121,7 @@ def provision_gmail_trigger(
         account_id=int(oauth_account_id),
         resource_owner_key=None,
     )
-    if oauth_account is None or str(oauth_account.provider) != "gmail":
+    if oauth_account is None or oauth_account.provider != "gmail":
         status = TriggerProvisioningStatus.FAILED.value
         setattr(trigger, "provisioning_status", status)
         setattr(trigger, "provisioning_error", "ordinary Gmail account not found")
@@ -1392,7 +1393,7 @@ def release_gmail_mailbox_if_unused(
         account_id=int(oauth_account_id),
         resource_owner_key=None,
     )
-    if oauth_account is None or str(oauth_account.provider) != "gmail":
+    if oauth_account is None or oauth_account.provider != "gmail":
         logger.warning(
             "Skipping Gmail watch release for state %s because account %s is "
             "not an ordinary Gmail account for user %s",
@@ -1505,7 +1506,7 @@ def sweep_gmail_provisioning(
             account_id=int(state.oauth_account_id),
             resource_owner_key=None,
         )
-        if oauth_account is None or str(oauth_account.provider) != "gmail":
+        if oauth_account is None or oauth_account.provider != "gmail":
             continue
         state_id = int(state.id)
         try:

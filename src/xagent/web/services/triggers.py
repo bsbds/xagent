@@ -608,7 +608,7 @@ def _resolve_gmail_resource(
     )
     if account is None:
         raise TriggerServiceError("Gmail account not found")
-    if str(account.provider) != "gmail":
+    if account.provider != "gmail":
         raise TriggerServiceError("Selected account is not a Gmail account")
     email = str(account.email or "").strip().lower()
     if not email:

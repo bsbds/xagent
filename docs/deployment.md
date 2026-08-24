@@ -218,7 +218,7 @@ Keep every actor-owned credential writer disabled during this rollout. The owner
 1. Deploy this release to every Gmail API, callback, trigger, dispatcher, and worker process.
 2. Make sure that no older process remains.
 3. Run the ownership query below.
-4. If the result is not zero, keep actor credential writers disabled and repair the invalid watch bindings.
+4. If the result is not zero, keep actor credential writers disabled. The fence does not clean invalid watches. Track the approved cleanup path in [issue #1652](https://github.com/xorbitsai/xagent/issues/1652).
 5. Enable actor credential writers only after the result is zero.
 
 ### Verification and monitoring
@@ -252,4 +252,4 @@ WHERE provider = 'gmail'
   AND resource_owner_key IS NOT NULL;
 ```
 
-Both query results must be zero. The second query proves that no actor-owned Gmail credential remains, including credentials without watch state. A normal actor-feature rollback does not revert this release.
+Both query results must be zero only when you revert this fence. The second query proves that no actor-owned Gmail credential remains. This includes credentials without watch state. Actor-owned credentials can exist while the fence remains. A normal actor-feature rollback does not revert this release.
