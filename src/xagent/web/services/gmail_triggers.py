@@ -488,6 +488,42 @@ def _trigger_matches_message(trigger: AgentTrigger, payload: dict[str, Any]) -> 
     return True
 
 
+def _ordinary_gmail_triggers(
+    db: Session,
+    *,
+    user_id: int,
+    triggers: list[AgentTrigger],
+) -> list[AgentTrigger]:
+    account_ids = {
+        int(account_id)
+        for (account_id,) in (
+            db.query(UserOAuth.id)
+            .filter(
+                UserOAuth.user_id == int(user_id),
+                UserOAuth.provider == "gmail",
+                UserOAuth.resource_owner_key.is_(None),
+            )
+            .all()
+        )
+    }
+
+    ordinary_triggers: list[AgentTrigger] = []
+    for trigger in triggers:
+        config: dict[str, Any] = (
+            trigger.config if isinstance(trigger.config, dict) else {}
+        )
+        raw_account_id = config.get("oauth_account_id")
+        try:
+            account_id = int(raw_account_id) if raw_account_id is not None else None
+        except (TypeError, ValueError):
+            account_id = None
+
+        if account_id is None or account_id in account_ids:
+            ordinary_triggers.append(trigger)
+
+    return ordinary_triggers
+
+
 def _added_message_ids_from_history(history_response: dict[str, Any]) -> list[str]:
     message_ids: list[str] = []
     for history_item in history_response.get("history", []) or []:
@@ -658,6 +694,11 @@ async def collect_gmail_pubsub_events(
             AgentTrigger.enabled.is_(True),
         )
         .all()
+    )
+    triggers = _ordinary_gmail_triggers(
+        db,
+        user_id=int(state.user_id),
+        triggers=triggers,
     )
 
     events: list[GmailCollectedEvent] = []

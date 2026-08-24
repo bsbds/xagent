@@ -1617,6 +1617,54 @@ def test_collect_gmail_pubsub_events_collects_matching_trigger_events() -> None:
         db.close()
 
 
+def test_collect_gmail_pubsub_events_skips_actor_owned_trigger_binding() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-actor-trigger-user")
+        ordinary = _create_gmail_oauth(db, user)
+        actor = _create_gmail_oauth(
+            db,
+            user,
+            resource_owner_key="toby:slack:41:UALICE",
+        )
+        _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(actor.id),
+                },
+            ),
+        )
+        state = _create_gmail_watch_state(db, user, ordinary)
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-actor"}}]}]
+            },
+            messages={"msg-actor": _gmail_message("msg-actor")},
+        )
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address="codeacme17@gmail.com",
+                    history_id="222",
+                    pubsub_message_id="pubsub-actor-trigger",
+                ),
+                state=state,
+                service_factory=lambda _db, _oauth: fake_service,
+            )
+        )
+
+        assert result.events == []
+        assert result.skipped == 1
+    finally:
+        db.close()
+
+
 def test_collect_gmail_pubsub_events_skips_actor_owned_watch_account() -> None:
     db = _direct_db_session()
     try:
