@@ -285,7 +285,9 @@ def test_builtin_snapshot_avoids_repeat_queries(oauth_db, monkeypatch) -> None:
     monkeypatch.setattr(
         db,
         "query",
-        lambda *_args, **_kwargs: pytest.fail("snapshot validation queried the database"),
+        lambda *_args, **_kwargs: pytest.fail(
+            "snapshot validation queried the database"
+        ),
     )
 
     resolved = mcp_apps.require_builtin_oauth_server_definition(
@@ -474,7 +476,9 @@ def test_actor_callback_rejects_tampered_state_before_exchange(
     _catalog_link(db, user)
     start = _start(db, user)
     state = _state(start)
-    tampered = state[:-1] + ("a" if state[-1] != "a" else "b")
+    header, payload, signature = state.split(".")
+    tampered_signature = ("A" if signature[0] != "A" else "B") + signature[1:]
+    tampered = f"{header}.{payload}.{tampered_signature}"
     post = Mock()
     monkeypatch.setattr(auth_api.requests, "post", post)
 
