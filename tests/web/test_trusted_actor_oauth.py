@@ -152,10 +152,12 @@ def _start(
     db: Session,
     user: User,
     owner: str = ACTOR_ALICE,
+    *,
     db_provider: SimpleNamespace | None = None,
+    commit: bool = True,
 ):
     start = getattr(auth_api, "start_builtin_oauth_for_resource_owner")
-    return start(
+    response = start(
         provider="custom",
         app_id="calendar",
         user=user,
@@ -164,6 +166,9 @@ def _start(
         db=db,
         db_provider=db_provider or _provider(),
     )
+    if commit:
+        db.commit()
+    return response
 
 
 def _mock_exchange(monkeypatch) -> Mock:
@@ -246,6 +251,45 @@ def test_actor_cookie_uses_callback_path(oauth_db) -> None:
 
     cookie_name, _cookie_value, parsed = _flow_cookie(response)
     assert parsed[cookie_name]["path"] == "/proxy/api/auth/custom/callback"
+
+
+def test_actor_start_leaves_commit_to_caller(oauth_db) -> None:
+    db, user = oauth_db
+    _catalog_link(db, user)
+    pending = User(username="unrelated", password_hash="hash")
+    db.add(pending)
+
+    response = _start(db, user, commit=False)
+
+    assert response.status_code == 307
+    assert pending.id is None
+
+    db.commit()
+
+    assert pending.id is not None
+
+
+def test_actor_start_leaves_failed_flow_to_caller(oauth_db) -> None:
+    db, user = oauth_db
+    _catalog_link(db, user)
+    pending = User(username="unrelated", password_hash="hash")
+    db.add(pending)
+
+    response = auth_api.start_builtin_oauth_for_resource_owner(
+        provider="custom",
+        app_id="calendar",
+        user=user,
+        resource_owner_key=ACTOR_ALICE,
+        db=db,
+        db_provider=None,
+    )
+
+    assert response.status_code == 500
+    assert pending in db
+
+    db.commit()
+
+    assert pending.id is not None
 
 
 @pytest.mark.parametrize("active", [False, None])
