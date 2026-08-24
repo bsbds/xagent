@@ -349,9 +349,8 @@ class GmailProvider:
         from ..gmail_triggers import _ordinary_gmail_triggers
 
         ordinary = _ordinary_gmail_triggers(
-            db,
-            user_id=int(state.user_id),
             triggers=candidates,
+            oauth_account_id=int(state.oauth_account_id),
         )
         # An invalid binding is acknowledged as unknown before parsing. The
         # cursor stays unchanged until an ordinary trigger can consume it.

@@ -1782,6 +1782,61 @@ def test_collect_gmail_pubsub_events_skips_actor_owned_trigger_binding() -> None
         db.close()
 
 
+def test_collect_gmail_pubsub_events_requires_bound_watch_account() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-bound-watch-user")
+        watched = _create_gmail_oauth(db, user)
+        other = UserOAuth(
+            user_id=int(user.id),
+            provider="gmail",
+            access_token="other-access-token",
+            refresh_token="other-refresh-token",
+            provider_user_id="other-provider-user",
+            email="other@gmail.com",
+        )
+        db.add(other)
+        db.commit()
+        db.refresh(other)
+        _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(other.id),
+                },
+            ),
+        )
+        state = _create_gmail_watch_state(db, user, watched)
+        assert GmailProvider().locate_trigger(db, str(state.callback_id)) is None
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-other"}}]}]
+            },
+            messages={"msg-other": _gmail_message("msg-other")},
+        )
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address="codeacme17@gmail.com",
+                    history_id="222",
+                    pubsub_message_id="pubsub-other-account",
+                ),
+                state=state,
+                service_factory=lambda _db, _oauth: fake_service,
+            )
+        )
+
+        assert result.events == []
+        assert result.skipped == 1
+    finally:
+        db.close()
+
+
 def test_collect_gmail_pubsub_events_skips_actor_owned_watch_account() -> None:
     db = _direct_db_session()
     try:

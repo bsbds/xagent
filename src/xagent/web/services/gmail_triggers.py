@@ -27,7 +27,7 @@ from ..models.oauth_provider import OAuthProvider
 from ..models.trigger import AgentTrigger, TriggerProvisioningStatus, TriggerType
 from ..models.user_oauth import UserOAuth
 from .time_utils import coerce_utc as _coerce_utc
-from .user_oauth import get_scoped_user_oauth_account, scoped_user_oauth_query
+from .user_oauth import get_scoped_user_oauth_account
 
 logger = logging.getLogger(__name__)
 
@@ -495,25 +495,10 @@ def _trigger_matches_message(trigger: AgentTrigger, payload: dict[str, Any]) -> 
 
 
 def _ordinary_gmail_triggers(
-    db: Session,
     *,
-    user_id: int,
     triggers: list[AgentTrigger],
+    oauth_account_id: int,
 ) -> list[AgentTrigger]:
-    account_ids = {
-        int(account_id)
-        for (account_id,) in (
-            scoped_user_oauth_query(
-                db,
-                user_id=int(user_id),
-                resource_owner_key=None,
-            )
-            .with_entities(UserOAuth.id)
-            .filter(UserOAuth.provider == "gmail")
-            .all()
-        )
-    }
-
     ordinary_triggers: list[AgentTrigger] = []
     for trigger in triggers:
         config: dict[str, Any] = (
@@ -525,7 +510,7 @@ def _ordinary_gmail_triggers(
         except (TypeError, ValueError):
             account_id = None
 
-        if account_id is None or account_id in account_ids:
+        if account_id is None or account_id == oauth_account_id:
             ordinary_triggers.append(trigger)
 
     return ordinary_triggers
@@ -703,9 +688,8 @@ async def collect_gmail_pubsub_events(
         .all()
     )
     triggers = _ordinary_gmail_triggers(
-        db,
-        user_id=int(state.user_id),
         triggers=triggers,
+        oauth_account_id=int(oauth_account.id),
     )
 
     events: list[GmailCollectedEvent] = []
