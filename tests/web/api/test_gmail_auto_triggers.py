@@ -1837,6 +1837,50 @@ def test_collect_gmail_pubsub_events_requires_bound_watch_account() -> None:
         db.close()
 
 
+def test_collect_gmail_pubsub_events_rejects_malformed_account_binding() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-malformed-binding-user")
+        watched = _create_gmail_oauth(db, user)
+        _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": "not-an-account-id",
+                },
+            ),
+        )
+        state = _create_gmail_watch_state(db, user, watched)
+        assert GmailProvider().locate_trigger(db, str(state.callback_id)) is None
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-bad"}}]}]
+            },
+            messages={"msg-bad": _gmail_message("msg-bad")},
+        )
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address="codeacme17@gmail.com",
+                    history_id="222",
+                    pubsub_message_id="pubsub-malformed-binding",
+                ),
+                state=state,
+                service_factory=lambda _db, _oauth: fake_service,
+            )
+        )
+
+        assert result.events == []
+        assert result.skipped == 1
+    finally:
+        db.close()
+
+
 def test_collect_gmail_pubsub_events_skips_actor_owned_watch_account() -> None:
     db = _direct_db_session()
     try:

@@ -496,12 +496,16 @@ def _ordinary_gmail_triggers(
             trigger.config if isinstance(trigger.config, dict) else {}
         )
         raw_account_id = config.get("oauth_account_id")
-        try:
-            account_id = int(raw_account_id) if raw_account_id is not None else None
-        except (TypeError, ValueError):
-            account_id = None
+        if raw_account_id is None:
+            ordinary_triggers.append(trigger)
+            continue
 
-        if account_id is None or account_id == oauth_account_id:
+        try:
+            account_id = int(raw_account_id)
+        except (TypeError, ValueError):
+            continue
+
+        if account_id == oauth_account_id:
             ordinary_triggers.append(trigger)
 
     return ordinary_triggers
