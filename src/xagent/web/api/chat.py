@@ -1295,6 +1295,8 @@ class AgentServiceManager:
         # task_id-keyed cache must not silently hand back an instance built
         # under a different user (e.g. once built with the wrong identity).
         self._agent_owner_ids: Dict[int, Optional[int]] = {}
+        # Keep only the owner needed to retry a failed workspace cleanup.
+        self._agent_cleanup_owner_ids: Dict[int, int] = {}
         self._agent_sandbox_keys: Dict[int, str] = {}
         # Lease provider each cached AgentService's sandbox tools were built
         # against, keyed the same as ``_agent_sandbox_keys`` (same lifetime,
@@ -3186,11 +3188,16 @@ class AgentServiceManager:
     def remove_agent(self, task_id: int, user_id: Optional[int] = None) -> None:
         """Clean a task workspace and unconditionally evict its live runtime.
 
-        ``user_id`` is the caller-supplied task owner used for cold directory
-        cleanup. If cleanup fails, all process-local entries are still removed
-        so the caller can retry with the same owner and no tombstone state.
+        A failed cleanup retains only the owner needed for a later cold retry.
         """
         agent = self._agents.get(task_id)
+        cleanup_user_id = user_id
+        if cleanup_user_id is None:
+            cleanup_user_id = self._agent_owner_ids.get(task_id)
+        if cleanup_user_id is None:
+            cleanup_user_id = self._agent_cleanup_owner_ids.get(task_id)
+
+        cleanup_succeeded = False
         try:
             if agent is not None:
                 workspace = agent.workspace
@@ -3206,8 +3213,14 @@ class AgentServiceManager:
                 agent.cleanup_workspace()
                 logger.info("Cleaned up workspace for task %s", task_id)
             else:
-                self._cleanup_workspace_directory(task_id, user_id)
+                self._cleanup_workspace_directory(task_id, cleanup_user_id)
+            cleanup_succeeded = True
         finally:
+            if cleanup_succeeded:
+                self._agent_cleanup_owner_ids.pop(task_id, None)
+            elif cleanup_user_id is not None:
+                self._agent_cleanup_owner_ids[task_id] = cleanup_user_id
+
             self._agents.pop(task_id, None)
             self._agent_owner_ids.pop(task_id, None)
             self._agent_sandbox_keys.pop(task_id, None)
