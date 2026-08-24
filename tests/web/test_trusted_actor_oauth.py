@@ -321,7 +321,9 @@ def test_builtin_snapshot_avoids_repeat_queries(oauth_db, monkeypatch) -> None:
     monkeypatch.setattr(
         db,
         "query",
-        lambda *_args, **_kwargs: pytest.fail("snapshot validation queried the database"),
+        lambda *_args, **_kwargs: pytest.fail(
+            "snapshot validation queried the database"
+        ),
     )
 
     resolved = mcp_apps.require_builtin_oauth_server_definition(
