@@ -241,4 +241,13 @@ The result must be zero. Existing ordinary Gmail watch and trigger tests must al
 
 Keep this fence during an actor-feature rollback. Disable actor credential writers before you roll back another actor layer.
 
-Revert this fence only after the ownership query proves that no actor-owned Gmail credential remains. A normal actor-feature rollback does not revert this release.
+The watch-ownership query above detects invalid watch bindings. Before you revert this fence, also run:
+
+```sql
+SELECT count(*)
+FROM user_oauth
+WHERE provider = 'gmail'
+  AND resource_owner_key IS NOT NULL;
+```
+
+Both query results must be zero. The second query proves that no actor-owned Gmail credential remains, including credentials without watch state. A normal actor-feature rollback does not revert this release.
