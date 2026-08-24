@@ -28,9 +28,11 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import QueuePool, StaticPool
 
+from xagent.core.tools.adapters.vibe.config import MCPConfigLoadError
 from xagent.core.tools.adapters.vibe.connector_runtime import ConnectorRuntimeError
 from xagent.core.tools.adapters.vibe.mcp_tools import create_mcp_tools
 from xagent.web.models import Base, MCPServer, User, UserMCPServer
@@ -515,3 +517,98 @@ async def test_direct_private_loader_call_resolves_nothing_without_identity(db_s
         assert configs == []
     finally:
         connector_team_scope.set_connector_team_hooks()
+
+
+@pytest.mark.asyncio
+async def test_mcp_team_snapshot_maps_pool_timeout_to_config_error(tmp_path):
+    """A saturated worker checkout must keep MCP failure handling typed."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'mcp-team-timeout.db'}",
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.05,
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine)
+    db = factory()
+    try:
+        db.add(User(username="pending-user", password_hash="hash"))
+        db.flush()
+        cfg = WebToolConfig(
+            db=db,
+            request=None,
+            user_id=1,
+            connector_team_id=None,
+            include_mcp_tools=True,
+        )
+
+        with pytest.raises(MCPConfigLoadError) as exc_info:
+            await cfg._load_mcp_server_configs()
+
+        assert isinstance(exc_info.value.__cause__, SQLAlchemyTimeoutError)
+    finally:
+        db.rollback()
+        db.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_team_snapshot_releases_clean_caller_session(tmp_path):
+    """The worker checks out its own connection after the caller releases one."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'mcp-team-handoff.db'}",
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.05,
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine)
+    db = factory()
+    main_thread_id = threading.get_ident()
+    hook_session_ids: list[int] = []
+    hook_thread_ids: list[int] = []
+    try:
+        user = _create_user(db, "handoff-user")
+        server = _create_mcp(db, "handoff-server", owner=user)
+        user_id = int(user.id)
+        server_id = int(server.id)
+        db.commit()
+
+        def team_visibility(hook_db, *, team_id):
+            hook_session_ids.append(id(hook_db))
+            hook_thread_ids.append(threading.get_ident())
+            return {
+                "mcp": {server_id} if team_id == T1 else set(),
+                "custom_api": set(),
+            }
+
+        connector_team_scope.set_connector_team_hooks(team_visibility=team_visibility)
+        cfg = WebToolConfig(
+            db=db,
+            request=None,
+            user_id=user_id,
+            connector_team_id=T1,
+            include_mcp_tools=True,
+        )
+
+        assert db.query(MCPServer).all() == [server]
+        assert engine.pool.checkedout() == 1
+
+        configs = await cfg._load_mcp_server_configs()
+
+        assert {config["id"] for config in configs} == {server_id}
+        assert hook_session_ids and hook_session_ids[0] != id(db)
+        assert hook_thread_ids and hook_thread_ids[0] != main_thread_id
+        assert engine.pool.checkedout() == 1
+
+        db.rollback()
+        assert engine.pool.checkedout() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
