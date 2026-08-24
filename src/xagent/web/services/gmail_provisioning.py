@@ -626,10 +626,19 @@ def _reconcile_gmail_push_endpoint(
                     GmailWatchState.push_audience,
                     GmailWatchState.previous_push_audience,
                 )
+                .join(
+                    UserOAuth,
+                    and_(
+                        UserOAuth.id == GmailWatchState.oauth_account_id,
+                        UserOAuth.user_id == GmailWatchState.user_id,
+                    ),
+                )
                 .filter(
                     GmailWatchState.id == int(state_id),
                     GmailWatchState.oauth_account_id == int(oauth_account_id),
                     GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
+                    UserOAuth.provider == "gmail",
+                    UserOAuth.resource_owner_key.is_(None),
                 )
                 .with_for_update()
                 .one_or_none()

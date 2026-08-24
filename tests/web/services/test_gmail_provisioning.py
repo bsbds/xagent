@@ -1930,6 +1930,44 @@ def test_existing_subscription_resyncs_a_stale_oidc_audience(
     assert subscription["push_config"]["oidc_token"]["audience"] == second.push_audience
 
 
+def test_locked_push_reconcile_revalidates_ordinary_owner(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    subscriber = ResyncFakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    state_row = (
+        int(state.id),
+        int(state.oauth_account_id),
+        str(state.email),
+        str(state.callback_id),
+        str(state.subscription_name),
+        str(state.push_audience),
+    )
+    setattr(account, "resource_owner_key", "toby:slack:41:UALICE")
+    db_session.add(account)
+    db_session.commit()
+
+    outcome = gmail_provisioning._reconcile_gmail_push_endpoint(
+        db_session,
+        state_row=state_row,
+        base_url="https://new-api.example.com",
+        push_service_account="push@example.com",
+        subscriber=subscriber,
+        execute=True,
+    )
+
+    assert outcome == "skipped"
+    assert subscriber.modify_calls == []
+
+
 def test_reconcile_push_endpoint_uses_s2s_base_without_reregistering_watch(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
