@@ -3119,7 +3119,7 @@ def generic_oauth_callback(
             from ..mcp_apps import get_all_mcp_apps
             from .mcp import _reject_hidden_catalog_app
 
-            if app_id:
+            if app_id and not is_actor_flow:
                 # Reuse target_app_info from the earlier hidden-app-gate
                 # check above rather than re-fetching by app_id: nothing
                 # mutates public_mcp_apps between there and here, so a second
@@ -3143,7 +3143,7 @@ def generic_oauth_callback(
                             ),
                             status_code=400,
                         )
-            else:
+            elif not app_id:
                 from ..mcp_apps import requires_app_scoped_oauth_grant
 
                 apps = [
