@@ -27,7 +27,7 @@ from ..models.oauth_provider import OAuthProvider
 from ..models.trigger import AgentTrigger, TriggerProvisioningStatus, TriggerType
 from ..models.user_oauth import UserOAuth
 from .time_utils import coerce_utc as _coerce_utc
-from .user_oauth import get_scoped_user_oauth_account
+from .user_oauth import get_scoped_user_oauth_account, scoped_user_oauth_query
 
 logger = logging.getLogger(__name__)
 
@@ -503,12 +503,13 @@ def _ordinary_gmail_triggers(
     account_ids = {
         int(account_id)
         for (account_id,) in (
-            db.query(UserOAuth.id)
-            .filter(
-                UserOAuth.user_id == int(user_id),
-                UserOAuth.provider == "gmail",
-                UserOAuth.resource_owner_key.is_(None),
+            scoped_user_oauth_query(
+                db,
+                user_id=int(user_id),
+                resource_owner_key=None,
             )
+            .with_entities(UserOAuth.id)
+            .filter(UserOAuth.provider == "gmail")
             .all()
         )
     }

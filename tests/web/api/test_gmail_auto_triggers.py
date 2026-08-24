@@ -585,6 +585,67 @@ def test_gmail_actor_owned_callback_is_acked_without_execution(
         db.close()
 
 
+def test_gmail_callback_rejects_actor_owned_trigger_binding(
+    mock_bg_scheduler,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-actor-trigger-pipeline-user")
+        ordinary = _create_gmail_oauth(db, user)
+        actor = _create_gmail_oauth(
+            db,
+            user,
+            resource_owner_key="toby:slack:41:UALICE",
+        )
+        _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(actor.id),
+                },
+            ),
+        )
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            ordinary,
+            callback_id="cb-actor-trigger-pipeline",
+        )
+        verifier_calls: list[str] = []
+
+        def unexpected_verify(_token: str, audience: str) -> dict[str, object]:
+            verifier_calls.append(audience)
+            return {"iss": "https://accounts.google.com", "aud": audience}
+
+        register_trigger_provider(
+            GmailProvider(oidc_verifier=unexpected_verify),
+            replace=True,
+        )
+
+        response = client.post(
+            "/api/triggers/callback/gmail/cb-actor-trigger-pipeline",
+            headers={"Authorization": "Bearer oidc-token"},
+            content=_gmail_pubsub_push_body(
+                claimed_email="codeacme17@gmail.com",
+                message_id="pubsub-actor-trigger-pipeline",
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["outcome"] == "unknown_callback"
+        assert verifier_calls == []
+        assert db.query(TriggerRun).count() == 0
+        db.refresh(state)
+        assert state.history_id == "100"
+        assert mock_bg_scheduler.call_count == 0
+    finally:
+        register_trigger_provider(GmailProvider(), replace=True)
+        db.close()
+
+
 def test_gmail_provider_accepts_configured_audience_during_reconciliation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

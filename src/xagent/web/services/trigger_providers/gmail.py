@@ -332,7 +332,7 @@ class GmailProvider:
             ),
             else_=1,
         )
-        return (
+        candidates = (
             db.query(AgentTrigger)
             .filter(
                 AgentTrigger.user_id == int(state.user_id),
@@ -344,8 +344,16 @@ class GmailProvider:
                 AgentTrigger.enabled.desc(),
                 AgentTrigger.id.asc(),
             )
-            .first()
+            .all()
         )
+        from ..gmail_triggers import _ordinary_gmail_triggers
+
+        ordinary = _ordinary_gmail_triggers(
+            db,
+            user_id=int(state.user_id),
+            triggers=candidates,
+        )
+        return ordinary[0] if ordinary else None
 
     def handle_challenge(
         self, context: CallbackRequestContext, raw_body: bytes
