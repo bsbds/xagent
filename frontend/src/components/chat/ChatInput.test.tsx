@@ -1529,6 +1529,122 @@ describe("ChatInput", () => {
     expect(container.querySelector('button[type="submit"]')).toBeDisabled()
   })
 
+  it("cancels the selected duplicate file upload", async () => {
+    let firstSignal: AbortSignal | undefined
+    const first = new File(["one"], "duplicate.txt", {
+      type: "text/plain",
+      lastModified: 1,
+    })
+    const second = new File(["two"], "duplicate.txt", {
+      type: "text/plain",
+      lastModified: 1,
+    })
+
+    apiRequestMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "http://upload.local/api/files/upload") {
+        firstSignal ??= init?.signal ?? undefined
+        return new Promise<Response>(() => {})
+      }
+      return Promise.resolve(emptyJsonResponse())
+    })
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+
+      return (
+        <ChatInput
+          hideConfig
+          inputValue=""
+          files={files}
+          onFilesChange={setFiles}
+          onInputChange={vi.fn()}
+          onSend={vi.fn()}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector("input[type=\"file\"]") as HTMLInputElement
+
+    fireEvent.change(fileInput, { target: { files: [first] } })
+    await waitFor(() => {
+      expect(firstSignal).toBeDefined()
+    })
+
+    fireEvent.change(fileInput, { target: { files: [second] } })
+    fireEvent.click(screen.getAllByTitle("common.cancel")[0])
+
+    expect(firstSignal?.aborted).toBe(true)
+  })
+
+  it("serializes files within and across selections", async () => {
+    let resolveFirst!: (value: { file_id: string }) => void
+    let resolveSecond!: (value: { file_id: string }) => void
+    const firstUpload = new Promise<{ file_id: string }>((resolve) => {
+      resolveFirst = resolve
+    })
+    const secondUpload = new Promise<{ file_id: string }>((resolve) => {
+      resolveSecond = resolve
+    })
+    const uploadFile = vi.fn()
+      .mockReturnValueOnce(firstUpload)
+      .mockReturnValueOnce(secondUpload)
+      .mockResolvedValueOnce({ file_id: "file-3" })
+    const first = new File(["one"], "one.txt", { type: "text/plain" })
+    const second = new File(["two"], "two.txt", { type: "text/plain" })
+    const third = new File(["three"], "three.txt", { type: "text/plain" })
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+
+      return (
+        <ChatInput
+          hideConfig
+          inputValue=""
+          files={files}
+          onFilesChange={setFiles}
+          onInputChange={vi.fn()}
+          onSend={vi.fn()}
+          uploadFile={uploadFile}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector("input[type=\"file\"]") as HTMLInputElement
+
+    fireEvent.change(fileInput, { target: { files: [first, second] } })
+    await waitFor(() => {
+      expect(uploadFile).toHaveBeenCalledWith(
+        first,
+        expect.objectContaining({ taskType: "task" }),
+      )
+    })
+
+    fireEvent.change(fileInput, { target: { files: [third] } })
+
+    expect(uploadFile).toHaveBeenCalledOnce()
+
+    resolveFirst({ file_id: "file-1" })
+
+    await waitFor(() => {
+      expect(uploadFile).toHaveBeenCalledWith(
+        second,
+        expect.objectContaining({ taskType: "task" }),
+      )
+    })
+    expect(uploadFile).toHaveBeenCalledTimes(2)
+
+    resolveSecond({ file_id: "file-2" })
+
+    await waitFor(() => {
+      expect(uploadFile).toHaveBeenCalledWith(
+        third,
+        expect.objectContaining({ taskType: "task" }),
+      )
+    })
+  })
+
   it("keeps pause hidden while running draft files are still uploading", async () => {
     const onPause = vi.fn()
     const uploadFile = vi.fn(() => new Promise<{ file_id: string }>(() => {}))

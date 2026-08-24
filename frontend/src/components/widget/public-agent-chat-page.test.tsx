@@ -713,6 +713,39 @@ describe("PublicAgentChatPage", () => {
     expect(app.setTaskId).not.toHaveBeenCalledWith(99, { navigate: false })
   })
 
+  it("serializes public transport uploads", async () => {
+    let resolveFirst!: (response: Response) => void
+    const firstResponse = new Promise<Response>((resolve) => {
+      resolveFirst = resolve
+    })
+    const first = new File(["one"], "one.txt", { type: "text/plain" })
+    const second = new File(["two"], "two.txt", { type: "text/plain" })
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(successfulAgentAuth))
+      .mockReturnValueOnce(firstResponse)
+      .mockResolvedValueOnce(jsonResponse({ success: true, file_id: "file-2" }))
+
+    renderWidgetPage({ widgetKey: "widget-secret" })
+
+    await screen.findByRole("button", { name: "start:Support Agent" })
+    const uploaded = app.provider?.transport?.uploadFiles?.(
+      [first, second],
+      { taskId: 42, taskType: "task" },
+    )
+
+    expect(uploaded).toBeDefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    resolveFirst(jsonResponse({ success: true, file_id: "file-1" }))
+
+    await expect(uploaded).resolves.toEqual([
+      expect.objectContaining({ file_id: "file-1" }),
+      expect.objectContaining({ file_id: "file-2" }),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it("clears a stale task when the server denies access for this guest", async () => {
     localStorage.clear()
     const token = makeShareJwt({ guest_id: "guest-A", exp: futureExp() })
