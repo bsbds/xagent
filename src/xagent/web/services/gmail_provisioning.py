@@ -1483,13 +1483,38 @@ def sweep_gmail_provisioning(
         )
         if oauth_account is None or str(oauth_account.provider) != "gmail":
             continue
-        ensure_gmail_mailbox_provisioned(
-            db,
-            oauth_account,
-            service_factory=service_factory,
-            publisher_factory=publisher_factory,
-            subscriber_factory=subscriber_factory,
-        )
+        state_id = int(state.id)
+        try:
+            ensure_gmail_mailbox_provisioned(
+                db,
+                oauth_account,
+                service_factory=service_factory,
+                publisher_factory=publisher_factory,
+                subscriber_factory=subscriber_factory,
+            )
+        except Exception as exc:
+            db.rollback()
+            failed_state = (
+                db.query(GmailWatchState)
+                .filter(GmailWatchState.id == state_id)
+                .one_or_none()
+            )
+            if failed_state is not None:
+                setattr(
+                    failed_state,
+                    "status",
+                    TriggerProvisioningStatus.FAILED.value,
+                )
+                setattr(failed_state, "last_error", str(exc))
+                db.add(failed_state)
+                db.commit()
+            logger.error(
+                "Gmail provisioning sweep failed for watch %s: %s",
+                state_id,
+                exc,
+                exc_info=True,
+            )
+            continue
         attempts += 1
     # Watch states that converged in a background thread (pending -> active)
     # are not sweep candidates, so the trigger-facing status is reconciled

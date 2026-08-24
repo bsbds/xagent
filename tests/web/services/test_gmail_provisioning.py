@@ -460,6 +460,45 @@ def test_sweep_retries_stale_failed_referenced_mailbox(db_session: Session) -> N
     assert refreshed.last_error is None
 
 
+def test_sweep_isolates_invalid_mailbox_failures(db_session: Session) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    invalid = _create_oauth(db_session, user, email="")
+    valid = _create_oauth(db_session, user, email="valid@gmail.example")
+    _create_gmail_trigger(db_session, user, agent, invalid)
+    _create_gmail_trigger(db_session, user, agent, valid)
+    for index, account in enumerate((invalid, valid), start=1):
+        db_session.add(
+            GmailWatchState(
+                user_id=int(user.id),
+                oauth_account_id=int(account.id),
+                email=str(account.email or ""),
+                history_id="",
+                topic_name="",
+                status=TriggerProvisioningStatus.FAILED.value,
+                last_error="old failure",
+                updated_at=datetime.now(timezone.utc) - timedelta(minutes=10 - index),
+            )
+        )
+    db_session.commit()
+
+    attempts = sweep_gmail_provisioning(
+        db_session,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: FakeSubscriber(),
+    )
+
+    states = {
+        int(state.oauth_account_id): state
+        for state in db_session.query(GmailWatchState).all()
+    }
+    assert attempts == 1
+    assert states[int(invalid.id)].status == TriggerProvisioningStatus.FAILED.value
+    assert states[int(invalid.id)].last_error == "Gmail account email is required"
+    assert states[int(valid.id)].status == TriggerProvisioningStatus.ACTIVE.value
+
+
 def test_sweep_matches_duplicate_mailboxes_by_oauth_account_id(
     db_session: Session,
 ) -> None:
