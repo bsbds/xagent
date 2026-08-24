@@ -20,6 +20,8 @@ Fixture seed (five MCP rows, run owner ``C`` throughout unless noted):
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Iterator
 from types import SimpleNamespace
 
@@ -111,6 +113,7 @@ def seed(db_session: Session):
     stranger = _create_mcp(db_session, "stranger", owner=z)
     team_s = _create_mcp(db_session, "team-s")
     team_x = _create_mcp(db_session, "team-x")
+    db_session.commit()
     return SimpleNamespace(
         c=c,
         z=z,
@@ -207,6 +210,52 @@ async def test_no_hooks_matches_legacy_result_set(db_session, seed, connector_te
 # A team agent resolves its team's connector for a run owner with no
 # personal row on that server.
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
+    release = threading.Event()
+    ticks_during_hook: list[int] = []
+    ticks = 0
+    stop = False
+    team_server_id = int(seed.team_s.id)
+
+    def blocking_visibility(db, *, team_id):
+        ticks_before_wait = ticks
+        timer = threading.Timer(0.1, release.set)
+        timer.daemon = True
+        timer.start()
+        assert release.wait(timeout=1)
+        ticks_during_hook.append(ticks - ticks_before_wait)
+        return {
+            "mcp": {team_server_id} if team_id == T1 else set(),
+            "custom_api": set(),
+        }
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    install_team_hooks(
+        team_visibility=blocking_visibility,
+        agent_owner_id=int(seed.c.id),
+    )
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        configs = await _cfg(
+            db_session, seed, connector_team_id=T1
+        )._load_mcp_server_configs()
+    finally:
+        stop = True
+        await ticker_task
+
+    assert ticks_during_hook[0] >= 3
+    assert {config["name"] for config in configs} == {
+        seed.active_own.name,
+        seed.team_s.name,
+    }
 
 
 @pytest.mark.asyncio

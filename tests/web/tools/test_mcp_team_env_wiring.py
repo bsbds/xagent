@@ -27,7 +27,9 @@ throughout):
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from collections.abc import Iterator
 from types import SimpleNamespace
 
@@ -155,6 +157,7 @@ def seed(db_session: Session):
     personal_server = _create_stdio_mcp(
         db_session, "personal-server", owner=c, env={"GLOBAL": "global-value"}
     )
+    db_session.commit()
     return SimpleNamespace(
         c=c, team_server=team_server, personal_server=personal_server
     )
@@ -180,6 +183,7 @@ def _cfg(db_session: Session, seed, *, connector_team_id: int | None) -> WebTool
 
 
 async def _env_for(db_session, seed, server, *, connector_team_id) -> dict:
+    db_session.commit()
     cfg = _cfg(db_session, seed, connector_team_id=connector_team_id)
     configs = await cfg._load_mcp_server_configs()
     (config,) = [c for c in configs if c["id"] == int(server.id)]
@@ -204,6 +208,7 @@ def _create_http_mcp(db: Session, name: str) -> MCPServer:
 
 
 async def _config_for(db_session, seed, server, *, connector_team_id) -> dict:
+    db_session.commit()
     cfg = _cfg(db_session, seed, connector_team_id=connector_team_id)
     configs = await cfg._load_mcp_server_configs()
     (config,) = [c for c in configs if c["id"] == int(server.id)]
@@ -241,6 +246,47 @@ async def test_team_env_layer_keyed_on_governing_team(
 
     env = await _env_for(db_session, seed, seed.team_server, connector_team_id=T1)
     assert env.get("TEAM_KEY") == "team-value"
+
+
+@pytest.mark.asyncio
+async def test_team_env_hook_wait_does_not_block_event_loop(db_session, seed):
+    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    release = threading.Event()
+    ticks_during_hook: list[int] = []
+    ticks = 0
+    stop = False
+    team_server_id = int(seed.team_server.id)
+
+    def blocking_team_env(db, *, team_id):
+        ticks_before_wait = ticks
+        timer = threading.Timer(0.1, release.set)
+        timer.daemon = True
+        timer.start()
+        assert release.wait(timeout=1)
+        ticks_during_hook.append(ticks - ticks_before_wait)
+        return {team_server_id: {"TEAM_KEY": "team-value"}}
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    mcp_runtime.set_mcp_team_env_hook(blocking_team_env)
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        config = await _config_for(
+            db_session,
+            seed,
+            seed.team_server,
+            connector_team_id=T1,
+        )
+    finally:
+        stop = True
+        await ticker_task
+
+    assert ticks_during_hook[0] >= 3
+    assert config["config"]["env"]["TEAM_KEY"] == "team-value"
 
 
 # ---------------------------------------------------------------------------
