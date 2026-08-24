@@ -3190,6 +3190,83 @@ def test_gmail_trigger_lookup_resolves_bindings_on_postgresql(
     assert referenced == {int(account.id)}
 
 
+@pytest.mark.postgresql
+def test_reconciliation_filters_invalid_bindings_on_postgresql(
+    pg_session: Session,
+) -> None:
+    db = pg_session
+    user = _create_user(db)
+    other_user = User(
+        username="other-owner",
+        email="other-owner@example.com",
+        password_hash="hash",
+    )
+    db.add(other_user)
+    db.commit()
+    db.refresh(other_user)
+    agent = _create_agent(db, user)
+    ordinary = _create_oauth(db, user)
+    actor = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        resource_owner_key="toby:slack:41:UALICE",
+        access_token="actor-token",
+        email=ordinary.email,
+    )
+    non_gmail = UserOAuth(
+        user_id=int(user.id),
+        provider="google-drive",
+        access_token="drive-token",
+        email=ordinary.email,
+    )
+    other_account = UserOAuth(
+        user_id=int(other_user.id),
+        provider="gmail",
+        access_token="other-token",
+        email=ordinary.email,
+    )
+    trigger = AgentTrigger(
+        user_id=int(user.id),
+        agent_id=int(agent.id),
+        type=TriggerType.GMAIL.value,
+        name="Legacy Gmail inbox",
+        enabled=True,
+        provider=TriggerType.GMAIL.value,
+        resource_id=str(ordinary.email).lower(),
+        config={"watch_label": "INBOX"},
+        provisioning_status=TriggerProvisioningStatus.PENDING.value,
+    )
+    db.add_all([actor, non_gmail, other_account, trigger])
+    db.commit()
+    for row in (actor, non_gmail, other_account, trigger):
+        db.refresh(row)
+
+    def state(account: UserOAuth, owner: User, status: str) -> GmailWatchState:
+        return GmailWatchState(
+            user_id=int(owner.id),
+            oauth_account_id=int(account.id),
+            email=str(account.email),
+            history_id=f"history-{account.id}",
+            topic_name=f"projects/demo/topics/account-{account.id}",
+            status=status,
+        )
+
+    db.add_all(
+        [
+            state(ordinary, user, TriggerProvisioningStatus.ACTIVE.value),
+            state(actor, user, TriggerProvisioningStatus.FAILED.value),
+            state(non_gmail, user, TriggerProvisioningStatus.FAILED.value),
+            state(other_account, other_user, TriggerProvisioningStatus.FAILED.value),
+        ]
+    )
+    db.commit()
+
+    assert reconcile_gmail_trigger_provisioning(db, [trigger]) == 1
+    db.refresh(trigger)
+    assert trigger.provisioning_status == TriggerProvisioningStatus.ACTIVE.value
+    assert trigger.provisioning_error is None
+
+
 def test_provisioning_requires_account_email(db_session: Session) -> None:
     from xagent.web.services.gmail_provisioning import GmailProvisioningError
 
