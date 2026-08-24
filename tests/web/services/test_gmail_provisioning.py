@@ -303,6 +303,105 @@ def _create_gmail_trigger(
     return trigger
 
 
+def test_watch_state_rejects_mismatched_user(db_session: Session) -> None:
+    account_user = _create_user(db_session)
+    state_user = User(
+        username="watch-owner",
+        email="watch-owner@example.com",
+        password_hash="hash",
+        is_admin=False,
+    )
+    db_session.add(state_user)
+    db_session.commit()
+    db_session.refresh(state_user)
+    account = _create_oauth(db_session, account_user)
+    db_session.add(
+        GmailWatchState(
+            user_id=int(state_user.id),
+            oauth_account_id=int(account.id),
+            email=str(account.email),
+            history_id="",
+            topic_name="",
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(
+        gmail_provisioning.GmailProvisioningError,
+        match="watch and OAuth account users do not match",
+    ):
+        gmail_provisioning._get_or_create_watch_state(
+            db_session,
+            account,
+            str(account.email),
+        )
+
+
+def test_fresh_session_provisioning_rejects_actor_account(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    account.resource_owner_key = "toby:slack:41:UALICE"
+    db_session.commit()
+
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "ensure_gmail_mailbox_provisioned",
+        lambda *_args, **_kwargs: pytest.fail("actor account reached provisioning"),
+    )
+
+    gmail_provisioning._provision_in_fresh_session(int(account.id))
+
+
+def test_trigger_provisioning_rejects_actor_account(db_session: Session) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account)
+    account.resource_owner_key = "toby:slack:41:UALICE"
+    db_session.commit()
+
+    status = gmail_provisioning.provision_gmail_trigger(db_session, trigger)
+
+    assert status == TriggerProvisioningStatus.FAILED.value
+    assert trigger.provisioning_error == "ordinary Gmail account not found"
+
+
+def test_release_rejects_actor_owned_account(db_session: Session) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    account.resource_owner_key = "toby:slack:41:UALICE"
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="history",
+        topic_name="projects/demo/topics/gmail",
+        subscription_name="projects/demo/subscriptions/gmail",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+    )
+    db_session.add_all([account, state])
+    db_session.commit()
+    gmail = FakeGmailService()
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+
+    released = release_gmail_mailbox_if_unused(
+        db_session,
+        int(account.id),
+        service_factory=lambda _db, _account: gmail,
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert released is False
+    assert gmail.stop_calls == []
+    assert publisher.deleted_topics == []
+    assert subscriber.deleted_subscriptions == []
+    assert db_session.get(GmailWatchState, int(state.id)) is not None
+
+
 def test_provisioning_creates_deterministic_resources_and_active_state(
     db_session: Session,
 ) -> None:
