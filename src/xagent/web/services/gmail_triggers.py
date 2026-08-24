@@ -27,7 +27,11 @@ from ..models.oauth_provider import OAuthProvider
 from ..models.trigger import AgentTrigger, TriggerProvisioningStatus, TriggerType
 from ..models.user_oauth import UserOAuth
 from .time_utils import coerce_utc as _coerce_utc
-from .user_oauth import get_scoped_user_oauth_account
+from .user_oauth import (
+    get_scoped_user_oauth_account,
+    is_ordinary_gmail,
+    ordinary_gmail_clause,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,10 +196,7 @@ def _credentials_expiry(value: datetime | None) -> datetime | None:
 
 def build_gmail_service(db: Session, oauth_account: UserOAuth) -> Any:
     """Build Gmail trigger access for one ordinary connected account."""
-    if (
-        oauth_account.provider != "gmail"
-        or oauth_account.resource_owner_key is not None
-    ):
+    if not is_ordinary_gmail(oauth_account):
         raise GmailWatchConfigurationError(
             "Gmail watch access requires an ordinary Gmail account"
         )
@@ -346,10 +347,7 @@ def scan_due_gmail_watch_renewals(
             GmailWatchState,
             GmailWatchState.oauth_account_id == UserOAuth.id,
         )
-        .filter(
-            UserOAuth.provider == "gmail",
-            UserOAuth.resource_owner_key.is_(None),
-        )
+        .filter(ordinary_gmail_clause())
         .filter(
             or_(
                 GmailWatchState.id.is_(None),
@@ -485,7 +483,7 @@ def _trigger_matches_message(trigger: AgentTrigger, payload: dict[str, Any]) -> 
     return True
 
 
-def _ordinary_gmail_triggers(
+def ordinary_gmail_triggers(
     *,
     triggers: list[AgentTrigger],
     oauth_account_id: int,
@@ -587,7 +585,7 @@ async def collect_gmail_pubsub_events(
         account_id=int(state.oauth_account_id),
         resource_owner_key=None,
     )
-    if oauth_account is None or oauth_account.provider != "gmail":
+    if oauth_account is None or not is_ordinary_gmail(oauth_account):
         logger.warning(
             "Skipping Gmail callback for watch %s because account %s is not "
             "an ordinary Gmail account for user %s",
@@ -682,7 +680,7 @@ async def collect_gmail_pubsub_events(
         )
         .all()
     )
-    triggers = _ordinary_gmail_triggers(
+    triggers = ordinary_gmail_triggers(
         triggers=triggers,
         oauth_account_id=int(oauth_account.id),
     )

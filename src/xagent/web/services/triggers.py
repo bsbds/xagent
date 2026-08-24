@@ -60,7 +60,7 @@ from .trigger_providers.schemas import (
     normalize_weekdays,
     parse_trigger_config,
 )
-from .user_oauth import get_scoped_user_oauth_account
+from .user_oauth import get_scoped_user_oauth_account, is_ordinary_gmail
 
 logger = logging.getLogger(__name__)
 
@@ -608,7 +608,7 @@ def _resolve_gmail_resource(
     )
     if account is None:
         raise TriggerServiceError("Gmail account not found")
-    if account.provider != "gmail":
+    if not is_ordinary_gmail(account):
         raise TriggerServiceError("Selected account is not a Gmail account")
     email = str(account.email or "").strip().lower()
     if not email:

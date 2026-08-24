@@ -47,8 +47,11 @@ from ..models.trigger import (
 from ..models.user_oauth import UserOAuth
 from .time_utils import coerce_utc as _coerce_utc
 from .user_oauth import (
+    GMAIL_OAUTH_PROVIDER,
     get_scoped_user_oauth_account,
     get_user_oauth_account_by_id,
+    is_ordinary_gmail,
+    ordinary_gmail_clause,
     scoped_user_oauth_query,
 )
 
@@ -638,8 +641,7 @@ def _reconcile_gmail_push_endpoint(
                     GmailWatchState.id == int(state_id),
                     GmailWatchState.oauth_account_id == int(oauth_account_id),
                     GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
-                    UserOAuth.provider == "gmail",
-                    UserOAuth.resource_owner_key.is_(None),
+                    ordinary_gmail_clause(),
                 )
                 .with_for_update()
                 .one_or_none()
@@ -739,8 +741,7 @@ def _reconcile_gmail_push_endpoint(
                 .filter(
                     UserOAuth.id == GmailWatchState.oauth_account_id,
                     UserOAuth.user_id == GmailWatchState.user_id,
-                    UserOAuth.provider == "gmail",
-                    UserOAuth.resource_owner_key.is_(None),
+                    ordinary_gmail_clause(),
                 )
                 .exists()
             )
@@ -822,8 +823,7 @@ def reconcile_gmail_push_endpoints(
             .filter(
                 GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
                 GmailWatchState.id > last_state_id,
-                UserOAuth.provider == "gmail",
-                UserOAuth.resource_owner_key.is_(None),
+                ordinary_gmail_clause(),
             )
             .order_by(GmailWatchState.id.asc())
             .limit(page_size)
@@ -936,10 +936,7 @@ def ensure_gmail_mailbox_provisioned(
     created. Other provisioning failures retain the existing failed-state retry
     behavior.
     """
-    if (
-        oauth_account.provider != "gmail"
-        or oauth_account.resource_owner_key is not None
-    ):
+    if not is_ordinary_gmail(oauth_account):
         raise GmailProvisioningError(
             "Gmail watch provisioning requires an ordinary Gmail account"
         )
@@ -957,7 +954,7 @@ def ensure_gmail_mailbox_provisioned(
                 resource_owner_key=None,
             )
         )
-        if transition_account is None or transition_account.provider != "gmail":
+        if transition_account is None or not is_ordinary_gmail(transition_account):
             raise GmailProvisioningError("ordinary Gmail account not found")
         state = _ensure_gmail_mailbox_provisioned_locked(
             transition_db,
@@ -1067,7 +1064,7 @@ def _provision_in_fresh_session(oauth_account_id: int) -> None:
             account_id=oauth_account_id,
             resource_owner_key=None,
         )
-        if oauth_account is None or oauth_account.provider != "gmail":
+        if oauth_account is None or not is_ordinary_gmail(oauth_account):
             logger.warning(
                 "Cannot provision Gmail watch without ordinary account %s",
                 oauth_account_id,
@@ -1121,7 +1118,7 @@ def provision_gmail_trigger(
         account_id=int(oauth_account_id),
         resource_owner_key=None,
     )
-    if oauth_account is None or oauth_account.provider != "gmail":
+    if oauth_account is None or not is_ordinary_gmail(oauth_account):
         status = TriggerProvisioningStatus.FAILED.value
         setattr(trigger, "provisioning_status", status)
         setattr(trigger, "provisioning_error", "ordinary Gmail account not found")
@@ -1303,8 +1300,7 @@ def _reconcile_gmail_trigger_batch(
             ),
         )
         .filter(
-            UserOAuth.provider == "gmail",
-            UserOAuth.resource_owner_key.is_(None),
+            ordinary_gmail_clause(),
             or_(*filters),
         )
         .all()
@@ -1393,7 +1389,7 @@ def release_gmail_mailbox_if_unused(
         account_id=int(oauth_account_id),
         resource_owner_key=None,
     )
-    if oauth_account is None or oauth_account.provider != "gmail":
+    if oauth_account is None or not is_ordinary_gmail(oauth_account):
         logger.warning(
             "Skipping Gmail watch release for state %s because account %s is "
             "not an ordinary Gmail account for user %s",
@@ -1472,8 +1468,7 @@ def sweep_gmail_provisioning(
             ),
         )
         .filter(
-            UserOAuth.provider == "gmail",
-            UserOAuth.resource_owner_key.is_(None),
+            ordinary_gmail_clause(),
             (GmailWatchState.status == TriggerProvisioningStatus.FAILED.value)
             | (
                 (GmailWatchState.status == TriggerProvisioningStatus.PENDING.value)
@@ -1506,7 +1501,7 @@ def sweep_gmail_provisioning(
             account_id=int(state.oauth_account_id),
             resource_owner_key=None,
         )
-        if oauth_account is None or oauth_account.provider != "gmail":
+        if oauth_account is None or not is_ordinary_gmail(oauth_account):
             continue
         state_id = int(state.id)
         try:
@@ -1593,7 +1588,7 @@ def best_effort_provision_gmail_watches_for_user(
                 user_id=int(user_id),
                 resource_owner_key=None,
             )
-            .filter(UserOAuth.provider == "gmail")
+            .filter(UserOAuth.provider == GMAIL_OAUTH_PROVIDER)
             .all()
         )
         referenced_account_ids = _referenced_gmail_oauth_account_ids(

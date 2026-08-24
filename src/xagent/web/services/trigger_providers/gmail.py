@@ -32,12 +32,14 @@ from ..gmail_provisioning import (
     provision_gmail_trigger,
     release_gmail_mailbox_if_unused,
 )
+from ..gmail_triggers import ordinary_gmail_triggers
 from ..ops_signals import (
     GMAIL_OIDC_SERVICE_ACCOUNT_UNVERIFIED,
     GMAIL_WATCH_REGISTRATION_DISABLED,
     clear_degradation,
     register_degradation,
 )
+from ..user_oauth import ordinary_gmail_clause
 from .base import (
     CallbackRequestContext,
     TriggerConfigError,
@@ -170,8 +172,7 @@ def _watch_state_for_callback(db: Session, callback_id: str) -> GmailWatchState 
         .filter(
             GmailWatchState.callback_id == callback_id,
             UserOAuth.user_id == GmailWatchState.user_id,
-            UserOAuth.provider == "gmail",
-            UserOAuth.resource_owner_key.is_(None),
+            ordinary_gmail_clause(),
         )
         .first()
     )
@@ -346,9 +347,7 @@ class GmailProvider:
             )
             .all()
         )
-        from ..gmail_triggers import _ordinary_gmail_triggers
-
-        ordinary = _ordinary_gmail_triggers(
+        ordinary = ordinary_gmail_triggers(
             triggers=candidates,
             oauth_account_id=int(state.oauth_account_id),
         )
