@@ -49,7 +49,10 @@ from ...core.tools.adapters.vibe.config import (
     RequiredMCPUnavailableError,
 )
 from ...core.tools.adapters.vibe.connector_runtime import ConnectorRuntimeError
-from ...core.tools.adapters.vibe.selection_spec import should_load_mcp_server_configs
+from ...core.tools.adapters.vibe.selection_spec import (
+    should_load_mcp_server_configs,
+    with_mcp_tools,
+)
 from ...core.tools.core.knowledge_base_scope import KnowledgeBaseScopeError
 from ...sandbox import SandboxMountIntent
 from ..auth_dependencies import get_current_user
@@ -467,6 +470,7 @@ def _build_tool_selection_spec_for_task(
     *,
     task_id: int,
     omit_published_agent_tools: bool = False,
+    include_mcp_tools: bool = False,
 ) -> Any:
     """Single SSOT normalizer for chat reconstruct + snapshot paths.
 
@@ -499,6 +503,8 @@ def _build_tool_selection_spec_for_task(
         ),
         extras_only_when_unconfigured=workforce_runtime is not None,
     )
+    if include_mcp_tools:
+        spec = with_mcp_tools(spec)
     if omit_published_agent_tools:
         spec = without_published_agent_tools(spec)
     if spec.is_all():
@@ -610,6 +616,7 @@ async def create_default_tools(
     task_runtime_context: TaskRuntimeContext | None = None,
     connector_runtime_turn_id: Optional[str] = None,
     mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
+    force_mcp_tools: bool = False,
     mcp_failure_policy: MCPFailurePolicy = MCPFailurePolicy.BEST_EFFORT,
     mcp_load_summary_tracer: Optional[Any] = None,
     mcp_load_summary_trace_task_id: Optional[str] = None,
@@ -696,13 +703,9 @@ async def create_default_tools(
             "durable_storage_segments": durable_storage_segments,
         },
         execution_scope=scope,
-        # Only load MCP servers (a DB query + per-server session init)
-        # when the caller actually picked MCP. Spec=None / _SpecAll
-        # default agents shouldn't pay that cost; only explicit
-        # ``mcp`` / ``mcp:<server>`` selection triggers MCP loading.
-        # Derived from the spec rather than re-deriving from a raw
-        # name list so the source of truth is in one place.
-        include_mcp_tools=_spec_wants_mcp(tool_selection_spec),
+        # Actor-marked tasks must load their exact owner-scoped builtin
+        # servers. Ordinary agents retain the explicit-category cost gate.
+        include_mcp_tools=force_mcp_tools or _spec_wants_mcp(tool_selection_spec),
         task_id=task_id,  # Pass task_id for browser session tracking
         browser_tools_enabled=True,  # Enable browser automation tools
         allowed_collections=allowed_collections,  # Agent Builder knowledge bases
@@ -2778,6 +2781,7 @@ class AgentServiceManager:
                     workforce_runtime,
                     task_id=task_id,
                     omit_published_agent_tools=actor_marked,
+                    include_mcp_tools=actor_marked,
                 )
 
                 tools = await create_default_tools(
@@ -2836,6 +2840,7 @@ class AgentServiceManager:
                     else None,
                     connector_runtime_turn_id=connector_runtime_turn_id,
                     mcp_runtime_authorization_policy=(mcp_runtime_authorization_policy),
+                    force_mcp_tools=actor_marked,
                     mcp_failure_policy=_mcp_failure_policy_for_task_source(
                         task.source if task is not None else None
                     ),

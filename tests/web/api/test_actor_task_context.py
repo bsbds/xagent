@@ -10,7 +10,7 @@ from xagent.core.tools.adapters.vibe.selection_spec import (
     ToolSelectionSpec,
     without_published_agent_tools,
 )
-from xagent.web.api.chat import AgentServiceManager
+from xagent.web.api.chat import AgentServiceManager, _spec_wants_mcp
 from xagent.web.models.task import TaskStatus
 from xagent.web.services.mcp_runtime import (
     MCPBuiltinOAuthActorPolicy,
@@ -32,6 +32,7 @@ def _snapshot(
     marker: Any = True,
     status: TaskStatus = TaskStatus.PENDING,
     has_reconstructable_history: bool = False,
+    agent_config: dict[str, Any] | None = None,
 ) -> TaskSetupSnapshot:
     return TaskSetupSnapshot(
         task=_TaskFields(
@@ -54,7 +55,7 @@ def _snapshot(
         task_vision_llm=None,
         task_compact_llm=None,
         agent=None,
-        agent_config=None,
+        agent_config=agent_config,
         excluded_agent_id=None,
     )
 
@@ -120,7 +121,13 @@ async def test_marked_task_binds_policy_and_omits_published_agent_tools(
     ):
         built = await manager.get_agent_for_task(
             42,
-            task_setup_snapshot=_snapshot(),
+            task_setup_snapshot=_snapshot(
+                agent_config={
+                    "knowledge_bases": [],
+                    "skills": [],
+                    "tool_categories": ["web_search", "file"],
+                }
+            ),
             task_owner_user_id=1,
             mcp_runtime_authorization_policy=actor_policy,
             resolved_execution_scope=None,
@@ -129,6 +136,7 @@ async def test_marked_task_binds_policy_and_omits_published_agent_tools(
     assert built is agent
     kwargs = create_tools.await_args.kwargs
     assert kwargs["mcp_runtime_authorization_policy"] is actor_policy
+    assert _spec_wants_mcp(kwargs["tool_selection_spec"])
     assert not kwargs["tool_selection_spec"].includes_published_agent()
     assert manager._mcp_actor_policies[42] is actor_policy
 
