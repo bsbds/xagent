@@ -1358,16 +1358,11 @@ def release_gmail_mailbox_if_unused(
         return False
 
     email = str(state.email or "").strip().lower()
-    remaining = (
-        db.query(AgentTrigger.id)
-        .filter(
-            AgentTrigger.type == TriggerType.GMAIL.value,
-            AgentTrigger.enabled.is_(True),
-            func.lower(AgentTrigger.resource_id) == email,
-        )
-        .count()
+    referenced_account_ids = _referenced_gmail_oauth_account_ids(
+        db,
+        [(int(oauth_account_id), int(state.user_id), email)],
     )
-    if remaining > 0:
+    if int(oauth_account_id) in referenced_account_ids:
         db.commit()
         return False
 

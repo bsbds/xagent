@@ -1323,6 +1323,75 @@ def test_unbind_releases_old_mailbox_while_flag_is_off(
     assert "disabled" in str(trigger.provisioning_error)
 
 
+def test_release_ignores_other_users_and_actor_trigger_references(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user, email="shared@gmail.example")
+    ordinary_trigger = _create_gmail_trigger(db_session, user, agent, account)
+    gmail = FakeGmailService()
+    ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: gmail,
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: FakeSubscriber(),
+    )
+    setattr(ordinary_trigger, "enabled", False)
+
+    actor_account = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        access_token="actor-token",
+        email="shared@gmail.example",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    other_user = User(
+        username="other-owner",
+        email="other-owner@example.com",
+        password_hash="hash",
+    )
+    db_session.add_all([actor_account, other_user])
+    db_session.commit()
+    db_session.refresh(actor_account)
+    db_session.refresh(other_user)
+    other_agent = _create_agent(db_session, other_user)
+    other_account = _create_oauth(
+        db_session,
+        other_user,
+        email="shared@gmail.example",
+    )
+    _create_gmail_trigger(db_session, other_user, other_agent, other_account)
+    db_session.add(
+        AgentTrigger(
+            user_id=int(user.id),
+            agent_id=int(agent.id),
+            type=TriggerType.GMAIL.value,
+            name="Actor Gmail inbox",
+            enabled=True,
+            provider=TriggerType.GMAIL.value,
+            resource_id="shared@gmail.example",
+            config={
+                "watch_label": "INBOX",
+                "oauth_account_id": int(actor_account.id),
+            },
+        )
+    )
+    db_session.commit()
+
+    released = release_gmail_mailbox_if_unused(
+        db_session,
+        int(account.id),
+        service_factory=lambda _db, _account: gmail,
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: FakeSubscriber(),
+    )
+
+    assert released is True
+    assert gmail.stop_calls == [{"userId": "me"}]
+
+
 def test_provision_gmail_trigger_disabled_reports_failed_without_registering(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
