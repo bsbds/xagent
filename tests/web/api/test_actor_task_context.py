@@ -262,7 +262,7 @@ def _seed_manager_maps(manager: AgentServiceManager, agent: Any) -> None:
 
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
-def test_remove_agent_always_evicts_runtime_maps_and_owner_retry(
+def test_remove_agent_evicts_runtime_and_retains_failed_cleanup_owner(
     cleanup_fails: bool,
 ) -> None:
     manager = AgentServiceManager()
@@ -274,9 +274,9 @@ def test_remove_agent_always_evicts_runtime_maps_and_owner_retry(
 
     if cleanup_fails:
         with pytest.raises(OSError, match="directory busy"):
-            manager.remove_agent(42, user_id=7)
+            manager.remove_agent(42)
     else:
-        manager.remove_agent(42, user_id=7)
+        manager.remove_agent(42)
 
     for runtime_map in (
         manager._agents,
@@ -288,7 +288,11 @@ def test_remove_agent_always_evicts_runtime_maps_and_owner_retry(
         manager._mcp_actor_policies,
     ):
         assert 42 not in runtime_map
-    assert not hasattr(manager, "_agent_cleanup_owner_ids")
 
-    manager.remove_agent(42, user_id=7)
-    manager._cleanup_workspace_directory.assert_called_once_with(42, 7)
+    assert manager._agent_cleanup_owner_ids == ({42: 7} if cleanup_fails else {})
+
+    manager.remove_agent(42)
+    manager._cleanup_workspace_directory.assert_called_once_with(
+        42, 7 if cleanup_fails else None
+    )
+    assert 42 not in manager._agent_cleanup_owner_ids
