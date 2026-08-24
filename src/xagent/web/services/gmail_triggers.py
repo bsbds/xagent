@@ -353,6 +353,12 @@ def scan_due_gmail_watch_renewals(
         .filter(
             or_(
                 GmailWatchState.id.is_(None),
+                GmailWatchState.user_id == UserOAuth.user_id,
+            )
+        )
+        .filter(
+            or_(
+                GmailWatchState.id.is_(None),
                 GmailWatchState.watch_expiration.is_(None),
                 GmailWatchState.watch_expiration <= renew_before,
             )

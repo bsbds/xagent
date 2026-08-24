@@ -2806,6 +2806,53 @@ def test_scan_due_gmail_watch_renewals_excludes_actor_owned_accounts(
         db.close()
 
 
+def test_scan_due_gmail_watch_renewals_skips_mismatch_before_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")
+    db = _direct_db_session()
+    try:
+        mismatched_user = _create_user(db, "gmail-renewal-mismatched-user")
+        valid_user = _create_user(db, "gmail-renewal-valid-user")
+        mismatched_oauth = _create_gmail_oauth(db, mismatched_user)
+        valid_oauth = _create_gmail_oauth(db, valid_user)
+        _create_gmail_trigger(db, mismatched_user)
+        _create_gmail_trigger(db, valid_user)
+        db.add(
+            GmailWatchState(
+                user_id=int(valid_user.id),
+                oauth_account_id=int(mismatched_oauth.id),
+                email="codeacme17@gmail.com",
+                history_id="mismatched-history",
+                watch_expiration=None,
+                topic_name="projects/demo/topics/xagent-gmail",
+            )
+        )
+        db.commit()
+        renewed_ids: list[int] = []
+
+        def record_renewal(_db, account, *, service_factory):
+            renewed_ids.append(int(account.id))
+            return object()
+
+        monkeypatch.setattr(
+            gmail_triggers,
+            "_renew_watch_for_account",
+            record_renewal,
+        )
+
+        renewed = scan_due_gmail_watch_renewals(
+            db,
+            now=datetime(2026, 6, 29, tzinfo=timezone.utc),
+            limit=1,
+        )
+
+        assert renewed == 1
+        assert renewed_ids == [int(valid_oauth.id)]
+    finally:
+        db.close()
+
+
 def test_scan_due_gmail_watch_renewals_applies_batch_limit(
     monkeypatch: pytest.MonkeyPatch, per_mailbox_pubsub_env
 ) -> None:
