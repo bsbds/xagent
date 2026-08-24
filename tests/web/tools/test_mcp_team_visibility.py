@@ -213,6 +213,26 @@ async def test_no_hooks_matches_legacy_result_set(db_session, seed, connector_te
 
 
 @pytest.mark.asyncio
+async def test_mcp_team_snapshot_resolves_factory_before_worker(
+    db_session, seed, monkeypatch
+):
+    cfg = _cfg(db_session, seed, connector_team_id=None)
+    main_thread_id = threading.get_ident()
+    factory_thread_ids: list[int] = []
+    original_get_session_factory = cfg.get_session_factory
+
+    def record_session_factory():
+        factory_thread_ids.append(threading.get_ident())
+        return original_get_session_factory()
+
+    monkeypatch.setattr(cfg, "get_session_factory", record_session_factory)
+
+    await cfg._load_mcp_server_configs()
+
+    assert factory_thread_ids == [main_thread_id]
+
+
+@pytest.mark.asyncio
 async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
     release = threading.Event()
     ticks_during_hook: list[int] = []

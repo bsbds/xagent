@@ -3645,12 +3645,16 @@ class WebToolConfig(BaseToolConfig):
                 connector_team_id=self._connector_team_id,
             )
         else:
+            # Detach factory resolution from the request Session before offload.
+            session_factory = self.get_session_factory()
+            user_id = self._user_id
+            connector_team_id = self._connector_team_id
             self.release_db_connection()
             team_snapshot = await run_db_io_cancellation_safe(
                 lambda: _load_mcp_team_hook_snapshot(
-                    self.get_session_factory(),
-                    user_id=self._user_id,
-                    connector_team_id=self._connector_team_id,
+                    session_factory,
+                    user_id=user_id,
+                    connector_team_id=connector_team_id,
                 )
             )
         team_mcp_ids = team_snapshot.mcp_ids
