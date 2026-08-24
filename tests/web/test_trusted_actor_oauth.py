@@ -217,6 +217,13 @@ def test_actor_start_uses_browser_bound_cookie_and_minimal_nonce(oauth_db) -> No
     assert db.query(flow_model).count() == 1
 
 
+def test_actor_cookie_header_check() -> None:
+    actor_cookie = f"xagent_actor_oauth_{'a' * 24}=proof; HttpOnly; Secure"
+
+    assert auth_api.is_actor_oauth_cookie_header(actor_cookie)
+    assert not auth_api.is_actor_oauth_cookie_header("session=proof; HttpOnly; Secure")
+
+
 def test_actor_start_leaves_commit_to_caller(oauth_db) -> None:
     db, user = oauth_db
     _catalog_link(db, user)
@@ -268,6 +275,27 @@ def test_actor_start_requires_exact_active_personal_link(oauth_db, active) -> No
 
     with pytest.raises(ValueError, match="active personal"):
         _start(db, user)
+
+
+def test_builtin_snapshot_avoids_repeat_queries(oauth_db, monkeypatch) -> None:
+    db, user = oauth_db
+    server, _link = _catalog_link(db, user)
+
+    snapshot = mcp_apps.load_mcp_app_snapshot(db)
+    monkeypatch.setattr(
+        db,
+        "query",
+        lambda *_args, **_kwargs: pytest.fail("snapshot validation queried the database"),
+    )
+
+    resolved = mcp_apps.require_builtin_oauth_server_definition(
+        db,
+        app_id="calendar",
+        provider="custom",
+        snapshot=snapshot,
+    )
+
+    assert resolved is server
 
 
 def test_actor_start_rejects_provider_catalog_mismatch(oauth_db) -> None:

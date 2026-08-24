@@ -1860,6 +1860,12 @@ def _actor_oauth_cookie_name(nonce: str) -> str:
     return f"{_ACTOR_OAUTH_COOKIE_PREFIX}{nonce[:24]}"
 
 
+def is_actor_oauth_cookie_header(value: str) -> bool:
+    """Accept only a Set-Cookie header for an actor OAuth flow."""
+    name, separator, _rest = value.partition("=")
+    return separator == "=" and name.strip().startswith(_ACTOR_OAUTH_COOKIE_PREFIX)
+
+
 def _require_actor_oauth_personal_link(
     db: Session, *, user_id: int, provider: str, app_id: str
 ) -> None:
