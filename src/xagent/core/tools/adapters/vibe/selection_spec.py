@@ -65,6 +65,21 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 
+def with_mcp_tools(spec: "ToolSelectionSpec") -> "ToolSelectionSpec":
+    """Return the same selection with MCP tools enabled.
+
+    Actor-marked tasks must load their owner-scoped builtin tools even when a
+    long-lived agent was created before it had an ordinary ``mcp`` category.
+    The caller still supplies the actor policy that authorizes each server.
+    """
+    if isinstance(spec, _SpecAll):
+        return spec
+    if isinstance(spec, _SpecNone):
+        return _SpecByCategories(categories=frozenset({"mcp"}))
+    assert isinstance(spec, _SpecByCategories)
+    return replace(spec, categories=spec.categories | frozenset({"mcp"}))
+
+
 def without_published_agent_tools(spec: "ToolSelectionSpec") -> "ToolSelectionSpec":
     """Return the same selection with published-agent delegation disabled.
 
