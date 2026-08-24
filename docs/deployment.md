@@ -237,6 +237,8 @@ WHERE account.id IS NULL
 
 The result must be zero. Existing ordinary Gmail watch and trigger tests must also pass before deployment.
 
+A callback with only invalid or actor-owned trigger bindings is acknowledged as unknown and does not advance the Gmail history cursor. Restore a valid ordinary trigger binding before callback processing can continue.
+
 ### Rollback
 
 Keep this fence during an actor-feature rollback. Disable actor credential writers before you roll back another actor layer.

@@ -353,6 +353,8 @@ class GmailProvider:
             user_id=int(state.user_id),
             triggers=candidates,
         )
+        # An invalid binding is acknowledged as unknown before parsing. The
+        # cursor stays unchanged until an ordinary trigger can consume it.
         return ordinary[0] if ordinary else None
 
     def handle_challenge(
