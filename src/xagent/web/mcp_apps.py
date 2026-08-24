@@ -4,8 +4,9 @@ This module provides a scalable structure for defining supported MCP application
 their OAuth configurations, and server launch configurations.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from sqlalchemy.exc import IntegrityError
@@ -179,9 +180,33 @@ def _app_to_dict(app: PublicMCPApp) -> Dict[str, Any]:
     }
 
 
-def get_all_mcp_apps(db: Session) -> List[Dict[str, Any]]:
-    """Retrieve all MCP apps from the database dynamically."""
-    apps = db.query(PublicMCPApp).all()
+@dataclass(frozen=True)
+class MCPAppSnapshot:
+    """One catalog/server view for repeated canonical builtin validation."""
+
+    catalog_apps: tuple[PublicMCPApp, ...]
+    servers: tuple[Any, ...]
+
+
+def load_mcp_app_snapshot(db: Session) -> MCPAppSnapshot:
+    """Load the catalog and server rows once for one validation projection."""
+    from .models.mcp import MCPServer
+
+    return MCPAppSnapshot(
+        catalog_apps=tuple(db.query(PublicMCPApp).all()),
+        servers=tuple(db.query(MCPServer).all()),
+    )
+
+
+def get_all_mcp_apps(
+    db: Session,
+    *,
+    snapshot: MCPAppSnapshot | None = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve all MCP apps from the database or a fixed snapshot."""
+    apps: Sequence[PublicMCPApp] = (
+        snapshot.catalog_apps if snapshot is not None else db.query(PublicMCPApp).all()
+    )
     return [_app_to_dict(app) for app in apps]
 
 
@@ -215,6 +240,7 @@ def _strict_catalog_app_by_id(
     *,
     require_builtin_oauth: bool = False,
     require_visible: bool = False,
+    snapshot: MCPAppSnapshot | None = None,
 ) -> Dict[str, Any]:
     """Resolve one exact app while rejecting normalized-ID collisions.
 
@@ -227,16 +253,20 @@ def _strict_catalog_app_by_id(
             "builtin OAuth app_id must be an exact non-empty string"
         )
 
-    app = db.query(PublicMCPApp).filter(PublicMCPApp.app_id == app_id).one_or_none()
-    if app is None:
+    catalog_apps: Sequence[PublicMCPApp] = (
+        snapshot.catalog_apps if snapshot is not None else db.query(PublicMCPApp).all()
+    )
+    matches = [app for app in catalog_apps if app.app_id == app_id]
+    if len(matches) != 1:
         raise BuiltinOAuthServerDefinitionError(
             f"builtin OAuth catalog app {app_id!r} is unavailable"
         )
+    app = matches[0]
 
     normalized_id = _normalized_catalog_key(app_id)
     collisions = [
         candidate
-        for candidate in db.query(PublicMCPApp).all()
+        for candidate in catalog_apps
         if _normalized_catalog_key(candidate.app_id) == normalized_id
     ]
     if len(collisions) != 1:
@@ -399,7 +429,12 @@ def _is_expected_unique_violation(
     return "unique constraint failed" in message and sqlite_columns in message
 
 
-def _builtin_server_candidates(db: Session, app_info: Mapping[str, Any]) -> list[Any]:
+def _builtin_server_candidates(
+    db: Session,
+    app_info: Mapping[str, Any],
+    *,
+    snapshot: MCPAppSnapshot | None = None,
+) -> list[Any]:
     """Return candidates for one app and reject reserved-name conflicts."""
     from .models.mcp import MCPServer
 
@@ -408,13 +443,17 @@ def _builtin_server_candidates(db: Session, app_info: Mapping[str, Any]) -> list
     normalized_names = {
         key for key in map(_normalized_catalog_key, (app_id, app_name)) if key
     }
-    legacy_name_matches = (
-        db.query(PublicMCPApp).filter(PublicMCPApp.name == app_name).all()
+    catalog_apps: Sequence[PublicMCPApp] = (
+        snapshot.catalog_apps if snapshot is not None else db.query(PublicMCPApp).all()
     )
+    servers: Sequence[Any] = (
+        snapshot.servers if snapshot is not None else db.query(MCPServer).all()
+    )
+    legacy_name_matches = [app for app in catalog_apps if app.name == app_name]
     legacy_name_is_unique = len({str(app.app_id) for app in legacy_name_matches}) == 1
 
     candidates: list[Any] = []
-    for server in db.query(MCPServer).all():
+    for server in servers:
         server_auth: Mapping[str, Any] = (
             server.auth if isinstance(server.auth, Mapping) else {}
         )
@@ -440,7 +479,7 @@ def _builtin_server_candidates(db: Session, app_info: Mapping[str, Any]) -> list
         and not (
             isinstance(server.auth, Mapping) and server.auth.get("app_id") == app_id
         )
-        for server in db.query(MCPServer).all()
+        for server in servers
     ):
         raise BuiltinOAuthServerDefinitionError(
             f"builtin OAuth app {app_id!r} has ambiguous legacy catalog identity"
@@ -536,7 +575,11 @@ def classify_actor_builtin_oauth_server(
 
 
 def require_builtin_oauth_server_definition(
-    db: Session, *, app_id: str, provider: str
+    db: Session,
+    *,
+    app_id: str,
+    provider: str,
+    snapshot: MCPAppSnapshot | None = None,
 ) -> Any:
     """Require one canonical server for an exact visible app/provider pair."""
     app_info = _strict_catalog_app_by_id(
@@ -544,12 +587,13 @@ def require_builtin_oauth_server_definition(
         app_id,
         require_builtin_oauth=True,
         require_visible=True,
+        snapshot=snapshot,
     )
     if app_info.get("provider") != provider:
         raise BuiltinOAuthServerDefinitionError(
             f"builtin OAuth app {app_id!r} does not use provider {provider!r}"
         )
-    candidates = _builtin_server_candidates(db, app_info)
+    candidates = _builtin_server_candidates(db, app_info, snapshot=snapshot)
     if len(candidates) != 1:
         raise BuiltinOAuthServerDefinitionError(
             f"builtin OAuth app {app_id!r} must have exactly one MCP server definition"
