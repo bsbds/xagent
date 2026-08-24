@@ -1867,7 +1867,12 @@ def is_actor_oauth_cookie_header(value: str) -> bool:
 
 
 def _require_actor_oauth_personal_link(
-    db: Session, *, user_id: int, provider: str, app_id: str
+    db: Session,
+    *,
+    user_id: int,
+    provider: str,
+    app_id: str,
+    lock: bool = False,
 ) -> None:
     """Require one canonical builtin definition and its active personal link."""
     from ..mcp_apps import require_builtin_oauth_server_definition
@@ -1876,16 +1881,15 @@ def _require_actor_oauth_personal_link(
     server = require_builtin_oauth_server_definition(
         db, app_id=app_id, provider=provider
     )
-    link_count = (
-        db.query(UserMCPServer)
-        .filter(
-            UserMCPServer.user_id == user_id,
-            UserMCPServer.mcpserver_id == int(server.id),
-            UserMCPServer.is_active.is_(True),
-        )
-        .count()
+    links = db.query(UserMCPServer).filter(
+        UserMCPServer.user_id == user_id,
+        UserMCPServer.mcpserver_id == int(server.id),
+        UserMCPServer.is_active.is_(True),
     )
-    if link_count != 1:
+    if lock:
+        # Serialize one actor's credentials for this exact personal app.
+        links = links.with_for_update()
+    if len(links.all()) != 1:
         raise ValueError(
             f"actor builtin OAuth app {app_id!r} requires exactly one active "
             "personal MCP server link"
@@ -2982,6 +2986,7 @@ def generic_oauth_callback(
                     user_id=user_id,
                     provider=provider,
                     app_id=app_id,
+                    lock=True,
                 )
             except ValueError:
                 db.rollback()
