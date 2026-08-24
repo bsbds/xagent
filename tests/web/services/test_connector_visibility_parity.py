@@ -149,10 +149,16 @@ def seed(db_session: Session):
     team_x = _create_mcp(db_session, "team-x")
     # OAuth server with no matching catalog app: exercises the tool loader's
     # "unavailable" shape, whose id lives at config["server_id"], not "id".
-    oauth_no_grant = _create_mcp(db_session, "oauth-no-grant", owner=c, transport="oauth")
+    oauth_no_grant = _create_mcp(
+        db_session, "oauth-no-grant", owner=c, transport="oauth"
+    )
 
-    active_own_api = _create_custom_api(db_session, "active-own-api", owner=c, active=True)
-    inactive_own_api = _create_custom_api(db_session, "inactive-own-api", owner=c, active=False)
+    active_own_api = _create_custom_api(
+        db_session, "active-own-api", owner=c, active=True
+    )
+    inactive_own_api = _create_custom_api(
+        db_session, "inactive-own-api", owner=c, active=False
+    )
     stranger_api = _create_custom_api(db_session, "stranger-api", owner=stranger_owner)
     team_a_api = _create_custom_api(db_session, "team-a-api", owner=team_a_owner)
     team_b_api = _create_custom_api(db_session, "team-b-api", owner=team_b_owner)
@@ -212,7 +218,9 @@ async def _parity_ids(
     visible = _load_visible_runtime_connectors(
         db_session, user_id=int(seed.c.id), agent_team_id=team
     )
-    runtime_ids = {ref.connector_id for ref in visible if ref.connector_type == connector_type}
+    runtime_ids = {
+        ref.connector_id for ref in visible if ref.connector_type == connector_type
+    }
 
     cfg = WebToolConfig(
         db=db_session,
@@ -223,7 +231,9 @@ async def _parity_ids(
     )
     if connector_type == "mcp":
         configs = await cfg._load_mcp_server_configs()
-        loader_ids = {c.get("id") or c.get("config", {}).get("server_id") for c in configs}
+        loader_ids = {
+            c.get("id") or c.get("config", {}).get("server_id") for c in configs
+        }
     else:
         # The custom-API loader always emits a top-level "id"
         # (_custom_api_config_from_model, config.py:781), so no
@@ -237,7 +247,9 @@ async def _parity_ids(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("team", [T1, None, T2])
 async def test_runtime_view_and_tool_config_agree_mcp(db_session, seed, team):
-    runtime_ids, loader_ids = await _parity_ids(db_session, seed, team=team, connector_type="mcp")
+    runtime_ids, loader_ids = await _parity_ids(
+        db_session, seed, team=team, connector_type="mcp"
+    )
     assert runtime_ids == loader_ids
 
     # Every seeded category is represented in the agreed-on set so the

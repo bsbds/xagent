@@ -169,7 +169,9 @@ def _create_mcp(db: Session, name: str, *, owner: User | None = None) -> MCPServ
     return server
 
 
-def _create_custom_api(db: Session, name: str, *, owner: User | None = None) -> CustomApi:
+def _create_custom_api(
+    db: Session, name: str, *, owner: User | None = None
+) -> CustomApi:
     api = CustomApi(
         name=name,
         description=f"{name} description",
@@ -389,7 +391,9 @@ def test_installed_hook_returning_empty_does_not_fall_back(db_session, seed):
 # ---------------------------------------------------------------------------
 
 
-def test_installed_hook_with_no_governing_agent_supersedes_legacy_overlay(db_session, seed):
+def test_installed_hook_with_no_governing_agent_supersedes_legacy_overlay(
+    db_session, seed
+):
     connector_team_scope.set_connector_team_hooks(
         visibility=lambda db, user_id: (
             {"mcp": {int(seed.team_s.id)}, "custom_api": {int(seed.a_capi.id)}}
