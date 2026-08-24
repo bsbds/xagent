@@ -2666,6 +2666,59 @@ def test_reconcile_reports_watch_deleted_after_its_cloud_update(
     assert str(state_id) in result.errors[0]
 
 
+def test_reconcile_rechecks_owner_after_cloud_update(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    _create_gmail_trigger(db_session, user, agent, account)
+
+    class ActorAfterModifySubscriber(ResyncFakeSubscriber):
+        oauth_account_id: int | None = None
+
+        def modify_push_config(self, *, request: dict[str, Any]) -> None:
+            super().modify_push_config(request=request)
+            assert self.oauth_account_id is not None
+            with get_session_local()() as concurrent_db:
+                concurrent_db.query(UserOAuth).filter(
+                    UserOAuth.id == self.oauth_account_id
+                ).update(
+                    {UserOAuth.resource_owner_key: "toby:slack:41:UALICE"},
+                    synchronize_session=False,
+                )
+                concurrent_db.commit()
+
+    subscriber = ActorAfterModifySubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    subscriber.oauth_account_id = int(account.id)
+    previous_audience = str(state.push_audience)
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        execute=True,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    db_session.expire_all()
+    persisted = (
+        db_session.query(GmailWatchState)
+        .filter(GmailWatchState.id == int(state.id))
+        .one()
+    )
+    assert result.scanned == 1
+    assert result.changed == 0
+    assert result.failed == 1
+    assert persisted.push_audience == previous_audience
+
+
 def test_reconciliation_serializes_with_concurrent_provisioning(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

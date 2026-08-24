@@ -733,12 +733,23 @@ def _reconcile_gmail_push_endpoint(
             # Besides releasing the row lock, this guarded update detects a
             # concurrent SQLite teardown after the cloud call (PostgreSQL's
             # FOR UPDATE lock prevents that race directly).
+            ordinary_account_exists = (
+                transition_db.query(UserOAuth.id)
+                .filter(
+                    UserOAuth.id == GmailWatchState.oauth_account_id,
+                    UserOAuth.user_id == GmailWatchState.user_id,
+                    UserOAuth.provider == "gmail",
+                    UserOAuth.resource_owner_key.is_(None),
+                )
+                .exists()
+            )
             updated = (
                 transition_db.query(GmailWatchState)
                 .filter(
                     GmailWatchState.id == int(state_id),
                     GmailWatchState.oauth_account_id == int(oauth_account_id),
                     GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
+                    ordinary_account_exists,
                 )
                 .update(
                     transition_values,
