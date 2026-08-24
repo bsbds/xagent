@@ -87,7 +87,9 @@ def _provider() -> SimpleNamespace:
     )
 
 
-def _catalog_link(db: Session, user: User) -> tuple[MCPServer, UserMCPServer]:
+def _catalog_link(
+    db: Session, user: User, *, server_name: str = "Google Calendar"
+) -> tuple[MCPServer, UserMCPServer]:
     app = PublicMCPApp(
         app_id="calendar",
         name="Google Calendar",
@@ -98,7 +100,7 @@ def _catalog_link(db: Session, user: User) -> tuple[MCPServer, UserMCPServer]:
         is_visible_in_connector=True,
     )
     server = MCPServer(
-        name="Google Calendar",
+        name=server_name,
         description="Calendar",
         managed="external",
         transport="oauth",
@@ -371,6 +373,25 @@ def test_actor_callback_claims_nonce_before_exchange_and_persists_exact_owner(
     }
     assert rows == {(None, "ordinary"), (ACTOR_BOB, "bob"), (ACTOR_ALICE, "new-access")}
     side_effects.assert_not_called()
+
+
+def test_actor_callback_keeps_canonical_nonowning_link(oauth_db, monkeypatch) -> None:
+    db, user = oauth_db
+    server, link = _catalog_link(db, user, server_name="calendar")
+    start = _start(db, user)
+    _mock_exchange(monkeypatch)
+
+    response = generic_oauth_callback(
+        "custom",
+        _request(_state(start), cookie=_flow_cookie(start)[:2]),
+        db,
+        _provider(),
+    )
+
+    assert response.status_code == 200
+    assert db.query(MCPServer).all() == [server]
+    assert db.query(UserMCPServer).all() == [link]
+    assert link.is_owner is False
 
 
 @pytest.mark.parametrize("cookie_mode", ["missing", "wrong"])

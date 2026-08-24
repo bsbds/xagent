@@ -2969,6 +2969,27 @@ def generic_oauth_callback(
             provider_user_id = info_data.get(db_provider.user_id_path or "id")
             email = info_data.get(db_provider.email_path or "email")
 
+        if is_actor_flow:
+            assert user_id is not None
+            assert isinstance(app_id, str)
+
+            try:
+                # The provider exchange can take long enough for connector state
+                # to change. Recheck the canonical, non-owning link before the
+                # actor credential is persisted.
+                _require_actor_oauth_personal_link(
+                    db,
+                    user_id=user_id,
+                    provider=provider,
+                    app_id=app_id,
+                )
+            except ValueError:
+                db.rollback()
+                return HTMLResponse(
+                    content="<h1>Error: Invalid or expired actor OAuth flow</h1>",
+                    status_code=400,
+                )
+
         if user_id:
             if is_actor_flow:
                 # Serialize replacement in the stable user namespace.
@@ -3035,7 +3056,7 @@ def generic_oauth_callback(
             from ..mcp_apps import get_all_mcp_apps
             from .mcp import _reject_hidden_catalog_app
 
-            if app_id:
+            if app_id and not is_actor_flow:
                 # Reuse target_app_info from the earlier hidden-app-gate
                 # check above rather than re-fetching by app_id: nothing
                 # mutates public_mcp_apps between there and here, so a second
@@ -3059,7 +3080,7 @@ def generic_oauth_callback(
                             ),
                             status_code=400,
                         )
-            else:
+            elif not app_id:
                 from ..mcp_apps import requires_app_scoped_oauth_grant
 
                 apps = [
