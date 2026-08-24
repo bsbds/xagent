@@ -499,6 +499,54 @@ def test_sweep_isolates_invalid_mailbox_failures(db_session: Session) -> None:
     assert states[int(valid.id)].status == TriggerProvisioningStatus.ACTIVE.value
 
 
+def test_sweep_filters_actor_rows_before_limit(db_session: Session) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    actor = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        access_token="actor-token",
+        email="actor@gmail.example",
+        resource_owner_key="toby:slack:41:UALICE",
+    )
+    db_session.add(actor)
+    db_session.commit()
+    db_session.refresh(actor)
+    ordinary = _create_oauth(db_session, user, email="ordinary@gmail.example")
+    _create_gmail_trigger(db_session, user, agent, actor)
+    _create_gmail_trigger(db_session, user, agent, ordinary)
+    for index, account in enumerate((actor, ordinary), start=1):
+        db_session.add(
+            GmailWatchState(
+                user_id=int(user.id),
+                oauth_account_id=int(account.id),
+                email=str(account.email),
+                history_id="",
+                topic_name="",
+                status=TriggerProvisioningStatus.FAILED.value,
+                last_error="old failure",
+                updated_at=datetime.now(timezone.utc) - timedelta(minutes=10 - index),
+            )
+        )
+    db_session.commit()
+
+    attempts = sweep_gmail_provisioning(
+        db_session,
+        limit=1,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: FakeSubscriber(),
+    )
+
+    assert attempts == 1
+    state = (
+        db_session.query(GmailWatchState)
+        .filter(GmailWatchState.oauth_account_id == int(ordinary.id))
+        .one()
+    )
+    assert state.status == TriggerProvisioningStatus.ACTIVE.value
+
+
 def test_sweep_matches_duplicate_mailboxes_by_oauth_account_id(
     db_session: Session,
 ) -> None:

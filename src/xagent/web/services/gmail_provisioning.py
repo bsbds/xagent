@@ -1452,12 +1452,21 @@ def sweep_gmail_provisioning(
     stale_before = scan_time - timedelta(seconds=stale_pending_seconds)
     candidates = (
         db.query(GmailWatchState)
+        .join(
+            UserOAuth,
+            and_(
+                UserOAuth.id == GmailWatchState.oauth_account_id,
+                UserOAuth.user_id == GmailWatchState.user_id,
+            ),
+        )
         .filter(
+            UserOAuth.provider == "gmail",
+            UserOAuth.resource_owner_key.is_(None),
             (GmailWatchState.status == TriggerProvisioningStatus.FAILED.value)
             | (
                 (GmailWatchState.status == TriggerProvisioningStatus.PENDING.value)
                 & (GmailWatchState.updated_at <= stale_before)
-            )
+            ),
         )
         .order_by(GmailWatchState.updated_at.asc())
         .limit(max(1, min(limit, 500)))
