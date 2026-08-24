@@ -151,16 +151,12 @@ def _link_own_env(
 @pytest.fixture()
 def seed(db_session: Session):
     c = _create_user(db_session, "run-owner")
-    team_server = _create_stdio_mcp(
-        db_session, "team-server", env={"GLOBAL": "global-value"}
-    )
+    team_server = _create_stdio_mcp(db_session, "team-server", env={"GLOBAL": "global-value"})
     personal_server = _create_stdio_mcp(
         db_session, "personal-server", owner=c, env={"GLOBAL": "global-value"}
     )
     db_session.commit()
-    return SimpleNamespace(
-        c=c, team_server=team_server, personal_server=personal_server
-    )
+    return SimpleNamespace(c=c, team_server=team_server, personal_server=personal_server)
 
 
 def _install_visibility(*, ids_by_team: dict[int, set[int]]) -> None:
@@ -224,12 +220,8 @@ async def _config_for(db_session, seed, server, *, connector_team_id) -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "runner_is_member", [True, False], ids=["member", "non-member"]
-)
-async def test_team_env_layer_keyed_on_governing_team(
-    db_session, seed, runner_is_member
-):
+@pytest.mark.parametrize("runner_is_member", [True, False], ids=["member", "non-member"])
+async def test_team_env_layer_keyed_on_governing_team(db_session, seed, runner_is_member):
     _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
@@ -296,9 +288,7 @@ async def test_team_env_hook_wait_does_not_block_event_loop(db_session, seed):
 
 
 @pytest.mark.asyncio
-async def test_connector_team_id_none_never_invokes_team_env_hook(
-    db_session, seed, monkeypatch
-):
+async def test_connector_team_id_none_never_invokes_team_env_hook(db_session, seed, monkeypatch):
     """In practice team_mcp_ids is already empty whenever connector_team_id
     is None (resolve_team_connector_ids_or_raise short-circuits on
     ``team_id is None`` before ever calling the visibility hook), and
@@ -339,9 +329,7 @@ async def test_connector_team_id_none_never_invokes_team_env_hook(
 async def test_empty_team_mcp_ids_never_invokes_team_env_hook(db_session, seed):
     _install_visibility(ids_by_team={})  # T1 resolves to no ids at all
     calls: list[int] = []
-    mcp_runtime.set_mcp_team_env_hook(
-        lambda db, *, team_id: (calls.append(team_id), {})[1]
-    )
+    mcp_runtime.set_mcp_team_env_hook(lambda db, *, team_id: (calls.append(team_id), {})[1])
 
     cfg = _cfg(db_session, seed, connector_team_id=T1)
     await cfg._load_mcp_server_configs()
@@ -426,12 +414,8 @@ async def test_governing_team_no_row_scrubs_legacy_shared_value(db_session, seed
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "has_own_key", [True, False], ids=["own-key-present", "own-key-absent"]
-)
-async def test_shared_pick_degrades_when_owning_team_has_no_row(
-    db_session, seed, has_own_key
-):
+@pytest.mark.parametrize("has_own_key", [True, False], ids=["own-key-present", "own-key-absent"])
+async def test_shared_pick_degrades_when_owning_team_has_no_row(db_session, seed, has_own_key):
     _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
@@ -599,9 +583,7 @@ async def test_team_env_hook_failure_raises_connector_runtime_error(db_session, 
 
 
 @pytest.mark.asyncio
-async def test_team_env_hook_failure_survives_create_mcp_tools_boundary(
-    db_session, seed
-):
+async def test_team_env_hook_failure_survives_create_mcp_tools_boundary(db_session, seed):
     _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
 
     def boom(db, *, team_id):
@@ -785,14 +767,10 @@ async def test_empty_team_row_behaves_exactly_like_no_row(db_session, seed):
     )
 
     mcp_runtime.set_mcp_team_env_hook(lambda db, *, team_id: {seed.team_server.id: {}})
-    env_empty_row = await _env_for(
-        db_session, seed, seed.team_server, connector_team_id=T1
-    )
+    env_empty_row = await _env_for(db_session, seed, seed.team_server, connector_team_id=T1)
 
     mcp_runtime.set_mcp_team_env_hook(lambda db, *, team_id: {})
-    env_no_row = await _env_for(
-        db_session, seed, seed.team_server, connector_team_id=T1
-    )
+    env_no_row = await _env_for(db_session, seed, seed.team_server, connector_team_id=T1)
 
     assert env_empty_row == env_no_row
     # And the shared outcome is the degrade, not a global-only pin.
@@ -828,9 +806,7 @@ async def test_warns_once_when_team_connectors_exist_without_the_env_hook(
 
 
 @pytest.mark.asyncio
-async def test_no_warning_when_the_env_hook_is_installed(
-    db_session, seed, monkeypatch, caplog
-):
+async def test_no_warning_when_the_env_hook_is_installed(db_session, seed, monkeypatch, caplog):
     monkeypatch.setattr(mcp_runtime, "_team_env_hook_missing_warned", False)
     _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
     mcp_runtime.set_mcp_team_env_hook(lambda db, *, team_id: {})

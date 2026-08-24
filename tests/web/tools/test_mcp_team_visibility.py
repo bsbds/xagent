@@ -168,9 +168,7 @@ def _team_visibility_hook(seed):
 def _install_env_t(seed) -> None:
     """Install the team_visibility hook *and* the agent-team-scope hook
     mapping the run owner C -> T1 (the team that owns ``team_s``)."""
-    install_team_hooks(
-        team_visibility=_team_visibility_hook(seed), agent_owner_id=int(seed.c.id)
-    )
+    install_team_hooks(team_visibility=_team_visibility_hook(seed), agent_owner_id=int(seed.c.id))
 
 
 def _cfg(db_session: Session, seed, *, connector_team_id: int | None) -> WebToolConfig:
@@ -213,9 +211,7 @@ async def test_no_hooks_matches_legacy_result_set(db_session, seed, connector_te
 
 
 @pytest.mark.asyncio
-async def test_mcp_team_snapshot_resolves_factory_before_worker(
-    db_session, seed, monkeypatch
-):
+async def test_mcp_team_snapshot_resolves_factory_before_worker(db_session, seed, monkeypatch):
     cfg = _cfg(db_session, seed, connector_team_id=None)
     main_thread_id = threading.get_ident()
     factory_thread_ids: list[int] = []
@@ -264,9 +260,7 @@ async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
     )
     ticker_task = asyncio.create_task(ticker())
     try:
-        configs = await _cfg(
-            db_session, seed, connector_team_id=T1
-        )._load_mcp_server_configs()
+        configs = await _cfg(db_session, seed, connector_team_id=T1)._load_mcp_server_configs()
     finally:
         stop = True
         await ticker_task
@@ -320,9 +314,9 @@ async def test_personal_agent_gets_no_team_connector(db_session, seed):
 def test_production_mcp_query_shape(db_session, seed):
     cfg = _cfg(db_session, seed, connector_team_id=T1)
     sql = str(
-        cfg._visible_mcp_server_query(
-            frozenset({int(seed.team_s.id)})
-        ).statement.compile(dialect=postgresql.dialect())
+        cfg._visible_mcp_server_query(frozenset({int(seed.team_s.id)})).statement.compile(
+            dialect=postgresql.dialect()
+        )
     )
     norm = " ".join(sql.split()).upper()
     assert norm.startswith("SELECT")
@@ -396,9 +390,7 @@ async def test_team_hook_failure_survives_tool_registry_boundary(db_session, see
     ToolRegistry._tool_creators = []
     ToolRegistry._modules_imported = True
     try:
-        ToolRegistry.register(
-            real_create_mcp_tools, categories={"mcp"}, selection_gate="mcp"
-        )
+        ToolRegistry.register(real_create_mcp_tools, categories={"mcp"}, selection_gate="mcp")
         with pytest.raises(ConnectorRuntimeError) as excinfo:
             await ToolRegistry.create_registered_tools(cfg)
     finally:
