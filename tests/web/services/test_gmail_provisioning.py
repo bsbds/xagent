@@ -1048,6 +1048,63 @@ def test_reconcile_legacy_trigger_without_account_binding_matches_by_email(
     assert trigger.provisioning_error is None
 
 
+def test_reconcile_legacy_trigger_ignores_actor_watch_with_same_email(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    ordinary = _create_oauth(db_session, user)
+    actor = UserOAuth(
+        user_id=int(user.id),
+        provider="gmail",
+        resource_owner_key="toby:slack:41:UALICE",
+        access_token="actor-access-token",
+        email=ordinary.email,
+    )
+    trigger = AgentTrigger(
+        user_id=int(user.id),
+        agent_id=int(agent.id),
+        type=TriggerType.GMAIL.value,
+        name="Legacy Gmail inbox",
+        enabled=True,
+        provider=TriggerType.GMAIL.value,
+        resource_id=str(ordinary.email).lower(),
+        config={"watch_label": "INBOX"},
+        provisioning_status=TriggerProvisioningStatus.PENDING.value,
+    )
+    db_session.add_all([actor, trigger])
+    db_session.commit()
+    db_session.refresh(actor)
+    db_session.refresh(trigger)
+    db_session.add_all(
+        [
+            GmailWatchState(
+                user_id=int(user.id),
+                oauth_account_id=int(ordinary.id),
+                email=str(ordinary.email),
+                history_id="ordinary-history",
+                topic_name="projects/demo/topics/ordinary",
+                status=TriggerProvisioningStatus.ACTIVE.value,
+            ),
+            GmailWatchState(
+                user_id=int(user.id),
+                oauth_account_id=int(actor.id),
+                email=str(actor.email),
+                history_id="actor-history",
+                topic_name="projects/demo/topics/actor",
+                status=TriggerProvisioningStatus.ACTIVE.value,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert reconcile_gmail_trigger_provisioning(db_session, [trigger]) == 1
+    db_session.refresh(trigger)
+    assert trigger.provisioning_status == TriggerProvisioningStatus.ACTIVE.value
+    assert trigger.provisioning_error is None
+
+
 def test_sweep_recovers_disabled_failed_watch_once_flag_flips_on(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

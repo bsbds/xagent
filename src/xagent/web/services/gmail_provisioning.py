@@ -1272,27 +1272,29 @@ def _reconcile_gmail_trigger_batch(
         filters.append(GmailWatchState.oauth_account_id.in_(account_ids))
     if emails:
         filters.append(func.lower(GmailWatchState.email).in_(emails))
-    states = db.query(GmailWatchState).filter(or_(*filters)).all() if filters else []
+    states = (
+        db.query(GmailWatchState)
+        .join(
+            UserOAuth,
+            and_(
+                UserOAuth.id == GmailWatchState.oauth_account_id,
+                UserOAuth.user_id == GmailWatchState.user_id,
+            ),
+        )
+        .filter(
+            UserOAuth.provider == "gmail",
+            UserOAuth.resource_owner_key.is_(None),
+            or_(*filters),
+        )
+        .all()
+        if filters
+        else []
+    )
 
     states_by_account_id = {int(state.oauth_account_id): state for state in states}
     states_by_key = {
         (int(state.user_id), str(state.email or "").strip().lower()): state
         for state in states
-    }
-    state_account_ids = {int(state.oauth_account_id) for state in states}
-    ordinary_account_users = {
-        int(account_id): int(user_id)
-        for account_id, user_id in (
-            db.query(UserOAuth.id, UserOAuth.user_id)
-            .filter(
-                UserOAuth.id.in_(state_account_ids),
-                UserOAuth.provider == "gmail",
-                UserOAuth.resource_owner_key.is_(None),
-            )
-            .all()
-            if state_account_ids
-            else ()
-        )
     }
 
     updated = 0
@@ -1303,11 +1305,7 @@ def _reconcile_gmail_trigger_batch(
         else:
             key = (int(trigger.user_id), str(trigger.resource_id).strip().lower())
             state = states_by_key.get(key)
-        if state is not None and (
-            int(state.user_id) != int(trigger.user_id)
-            or ordinary_account_users.get(int(state.oauth_account_id))
-            != int(trigger.user_id)
-        ):
+        if state is not None and int(state.user_id) != int(trigger.user_id):
             state = None
         error: str | None
         if state is None:
