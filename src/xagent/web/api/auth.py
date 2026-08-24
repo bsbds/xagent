@@ -1896,7 +1896,7 @@ def start_builtin_oauth_for_resource_owner(
     db: Session,
     db_provider: Any,
 ) -> Any:
-    """Start OAuth for a trusted xagent user and exact actor owner namespace."""
+    """Start actor OAuth; the caller owns the surrounding transaction."""
     if not isinstance(app_id, str) or not app_id.strip():
         raise ValueError("actor builtin OAuth app_id must be a non-empty string")
     if user.id is None:
@@ -1915,7 +1915,6 @@ def start_builtin_oauth_for_resource_owner(
     browser_nonce = secrets.token_urlsafe(32)
     nonce_digest = hashlib.sha256(browser_nonce.encode()).hexdigest()
     expires_at = datetime.now(timezone.utc) + _ACTOR_OAUTH_FLOW_TTL
-    db.add(ActorOAuthFlowState(nonce=nonce_digest, expires_at=expires_at))
     response = _generic_oauth_login(
         provider,
         token=None,
@@ -1928,9 +1927,8 @@ def start_builtin_oauth_for_resource_owner(
         actor_flow_nonce=nonce_digest,
     )
     if not isinstance(response, RedirectResponse):
-        db.rollback()
         return response
-    db.commit()
+    db.add(ActorOAuthFlowState(nonce=nonce_digest, expires_at=expires_at))
     response.set_cookie(
         _actor_oauth_cookie_name(nonce_digest),
         browser_nonce,
