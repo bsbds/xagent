@@ -50,10 +50,10 @@ def user_oauth_owner_clause(
 
 
 def ordinary_gmail_clause() -> ColumnElement[bool]:
-    """Build the canonical SQL predicate for one ordinary Gmail credential.
+    """Build the ordinary-Gmail conditions for a direct ``UserOAuth`` query.
 
-    Use it in SQL queries that select or atomically update ordinary Gmail
-    credentials. Use is_ordinary_gmail() for an already loaded credential.
+    Queries based on ``scoped_user_oauth_query(..., resource_owner_key=None)``
+    must also filter ``UserOAuth.provider`` to Gmail.
     """
     return and_(
         UserOAuth.provider == GMAIL_OAUTH_PROVIDER,
@@ -62,7 +62,7 @@ def ordinary_gmail_clause() -> ColumnElement[bool]:
 
 
 def is_ordinary_gmail(account: UserOAuth) -> bool:
-    """Return whether an already loaded credential is ordinary Gmail."""
+    """Return whether a loaded credential is an ordinary Gmail credential."""
     return bool(
         account.provider == GMAIL_OAUTH_PROVIDER and account.resource_owner_key is None
     )
