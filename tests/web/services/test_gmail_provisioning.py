@@ -31,6 +31,7 @@ from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
 from xagent.web.services import gmail_provisioning
 from xagent.web.services.gmail_provisioning import (
+    GMAIL_ACCOUNT_UNAVAILABLE_ERROR,
     GMAIL_PUSH_PUBLISHER,
     GMAIL_WATCH_DISABLED_ERROR,
     ensure_gmail_mailbox_provisioned,
@@ -1677,7 +1678,7 @@ def test_reconcile_reports_expired_active_watch_as_failed(
 def test_reconcile_rejects_cross_user_bound_watch(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "false")
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")
     account_user = _create_user(db_session)
     trigger_user = User(
         username="cross-user-trigger-owner",
@@ -1708,7 +1709,7 @@ def test_reconcile_rejects_cross_user_bound_watch(
 
     db_session.refresh(trigger)
     assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
-    assert trigger.provisioning_error == GMAIL_WATCH_DISABLED_ERROR
+    assert trigger.provisioning_error == GMAIL_ACCOUNT_UNAVAILABLE_ERROR
 
 
 def test_reconcile_matches_gmail_trigger_by_account_id_when_email_diverges(
@@ -3161,7 +3162,7 @@ def test_reconcile_legacy_binding_falls_back_to_mailbox_email(
     assert result.scanned == 1
 
 
-@pytest.mark.parametrize("oauth_account_id", [None, "malformed"])
+@pytest.mark.parametrize("oauth_account_id", [None, "malformed", True, 1.5])
 def test_reconcile_rejects_malformed_account_binding(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,

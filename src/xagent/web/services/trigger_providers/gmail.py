@@ -32,14 +32,18 @@ from ..gmail_provisioning import (
     provision_gmail_trigger,
     release_gmail_mailbox_if_unused,
 )
-from ..gmail_triggers import ordinary_gmail_triggers
+from ..gmail_triggers import gmail_binding_id, ordinary_gmail_triggers
 from ..ops_signals import (
     GMAIL_OIDC_SERVICE_ACCOUNT_UNVERIFIED,
     GMAIL_WATCH_REGISTRATION_DISABLED,
     clear_degradation,
     register_degradation,
 )
-from ..user_oauth import ordinary_gmail_clause
+from ..user_oauth import (
+    get_scoped_user_oauth_account,
+    is_ordinary_gmail,
+    ordinary_gmail_clause,
+)
 from .base import (
     CallbackRequestContext,
     TriggerConfigError,
@@ -107,16 +111,6 @@ def warn_if_gmail_watch_registration_degraded() -> None:
     )
     register_degradation(GMAIL_WATCH_REGISTRATION_DISABLED, message)
     logger.warning(message)
-
-
-def _binding_oauth_account_id(config: Any) -> int | None:
-    """Read the bound OAuth account from a binding config.
-
-    CRUD dispatch always passes the previous config as a plain dict
-    (AgentTrigger.config is a JSON column).
-    """
-    value = (config or {}).get("oauth_account_id")
-    return int(value) if value is not None else None
 
 
 def _accepted_callback_audiences(
@@ -475,11 +469,20 @@ class GmailProvider:
     async def unregister(self, db: Session, trigger: AgentTrigger, config: Any) -> None:
         # The binding must come from config: CRUD passes the trigger's
         # previous config, and on delete the trigger row no longer exists.
-        oauth_account_id = _binding_oauth_account_id(config)
-        if oauth_account_id is not None:
-            await asyncio.to_thread(
-                release_gmail_mailbox_if_unused, db, oauth_account_id
-            )
+        oauth_account_id = gmail_binding_id(config)
+        if oauth_account_id is None:
+            return
+
+        oauth_account = get_scoped_user_oauth_account(
+            db,
+            user_id=int(trigger.user_id),
+            account_id=oauth_account_id,
+            resource_owner_key=None,
+        )
+        if oauth_account is None or not is_ordinary_gmail(oauth_account):
+            return
+
+        await asyncio.to_thread(release_gmail_mailbox_if_unused, db, oauth_account_id)
 
     async def parse_events(
         self,

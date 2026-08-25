@@ -511,10 +511,15 @@ def gmail_binding_id(config: Any) -> int | None:
     """Return an explicit Gmail OAuth account id when it is valid."""
     if not isinstance(config, dict) or "oauth_account_id" not in config:
         return None
-    try:
-        return int(config["oauth_account_id"])
-    except (TypeError, ValueError):
+
+    value = config["oauth_account_id"]
+    if isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+        return None
+    return int(value)
 
 
 def is_legacy_gmail_binding(config: Any) -> bool:

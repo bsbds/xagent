@@ -1449,13 +1449,30 @@ def _reconcile_gmail_trigger_batch(
             status = TriggerProvisioningStatus.FAILED.value
             error = GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR
 
-        if state is not None and int(state.user_id) != int(trigger.user_id):
+        has_mismatched_watch_owner = state is not None and int(state.user_id) != int(
+            trigger.user_id
+        )
+        if has_mismatched_watch_owner:
             state = None
         if state is None and bound_account_id is not None:
-            if get_gmail_watch_enabled():
+            oauth_account = get_scoped_user_oauth_account(
+                db,
+                user_id=int(trigger.user_id),
+                account_id=bound_account_id,
+                resource_owner_key=None,
+            )
+            if (
+                has_mismatched_watch_owner
+                or oauth_account is None
+                or not is_ordinary_gmail(oauth_account)
+            ):
+                status = TriggerProvisioningStatus.FAILED.value
+                error = GMAIL_ACCOUNT_UNAVAILABLE_ERROR
+            elif get_gmail_watch_enabled():
                 continue
-            status = TriggerProvisioningStatus.FAILED.value
-            error = gmail_watch_disabled_error()
+            else:
+                status = TriggerProvisioningStatus.FAILED.value
+                error = gmail_watch_disabled_error()
         elif state is None and is_legacy_gmail_binding(trigger.config):
             if get_gmail_watch_enabled():
                 continue
