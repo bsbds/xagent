@@ -3675,6 +3675,7 @@ class WebToolConfig(BaseToolConfig):
             logger.warning(
                 "Failed to resolve MCP team scope with %s",
                 type(error).__name__,
+                exc_info=True,
             )
             raise MCPConfigLoadError() from error
 
