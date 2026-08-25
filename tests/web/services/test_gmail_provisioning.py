@@ -3992,11 +3992,20 @@ def test_pending_write_locks_ordinary_oauth_owner_until_commit(
     db.commit()
 
     pending_written = threading.Event()
+    provision_committed = threading.Event()
     allow_provision_commit = threading.Event()
-    owner_change_attempted = threading.Event()
+    allow_owner_attempt = threading.Event()
+    owner_first_attempt_done = threading.Event()
     owner_change_committed = threading.Event()
     errors: list[BaseException] = []
+    first_attempt_errors: list[BaseException] = []
     account_id = int(account.id)
+    new_owner_id = int(other_user.id)
+    new_owner_key = "toby:slack:41:UALICE"
+    owner_values = {
+        UserOAuth.user_id: new_owner_id,
+        UserOAuth.resource_owner_key: new_owner_key,
+    }
 
     def provision() -> None:
         session = get_session_local()()
@@ -4006,6 +4015,7 @@ def test_pending_write_locks_ordinary_oauth_owner_until_commit(
             pending_written.set()
             allow_provision_commit.wait(timeout=30)
             real_commit()
+            provision_committed.set()
 
         session.commit = pause_after_pending_write  # type: ignore[method-assign]
         try:
@@ -4024,14 +4034,32 @@ def test_pending_write_locks_ordinary_oauth_owner_until_commit(
     def change_owner() -> None:
         session = get_session_local()()
         try:
-            owner_change_attempted.set()
-            session.query(UserOAuth).filter(UserOAuth.id == account_id).update(
-                {
-                    UserOAuth.user_id: int(other_user.id),
-                    UserOAuth.resource_owner_key: "toby:slack:41:UALICE",
-                },
-                synchronize_session=False,
+            assert allow_owner_attempt.wait(timeout=30)
+            session.execute(sql_text("SET LOCAL lock_timeout = '1s'"))
+            try:
+                session.query(UserOAuth).filter(UserOAuth.id == account_id).update(
+                    owner_values,
+                    synchronize_session=False,
+                )
+                session.commit()
+            except OperationalError as exc:
+                # The guarded PENDING DML holds this owner row until commit.
+                first_attempt_errors.append(exc)
+                session.rollback()
+            else:
+                first_attempt_errors.append(
+                    AssertionError("owner update did not time out on the row lock")
+                )
+            finally:
+                owner_first_attempt_done.set()
+
+            assert provision_committed.wait(timeout=30)
+            updated = (
+                session.query(UserOAuth)
+                .filter(UserOAuth.id == account_id)
+                .update(owner_values, synchronize_session=False)
             )
+            assert updated == 1
             session.commit()
             owner_change_committed.set()
         except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
@@ -4041,16 +4069,24 @@ def test_pending_write_locks_ordinary_oauth_owner_until_commit(
 
     provisioner = threading.Thread(target=provision)
     owner_changer = threading.Thread(target=change_owner)
-    provisioner.start()
-    assert pending_written.wait(timeout=30)
+    try:
+        provisioner.start()
+        owner_changer.start()
+        assert pending_written.wait(timeout=30)
 
-    owner_changer.start()
-    assert owner_change_attempted.wait(timeout=10)
-    assert not owner_change_committed.wait(timeout=1.0)
+        allow_owner_attempt.set()
+        assert owner_first_attempt_done.wait(timeout=10)
+        assert len(first_attempt_errors) == 1
+        first_attempt_error = first_attempt_errors[0]
+        assert isinstance(first_attempt_error, OperationalError)
+        assert getattr(first_attempt_error.orig, "pgcode", None) == "55P03"
+    finally:
+        # Never strand either transaction if an assertion above fails.
+        allow_owner_attempt.set()
+        allow_provision_commit.set()
+        provisioner.join(timeout=30)
+        owner_changer.join(timeout=30)
 
-    allow_provision_commit.set()
-    provisioner.join(timeout=30)
-    owner_changer.join(timeout=30)
     assert not provisioner.is_alive() and not owner_changer.is_alive()
     assert errors == []
     assert owner_change_committed.is_set()
@@ -4059,8 +4095,8 @@ def test_pending_write_locks_ordinary_oauth_owner_until_commit(
     changed_account = db.get(UserOAuth, account_id)
     changed_state = db.get(GmailWatchState, int(state.id))
     assert changed_account is not None
-    assert changed_account.user_id == int(other_user.id)
-    assert changed_account.resource_owner_key == "toby:slack:41:UALICE"
+    assert changed_account.user_id == new_owner_id
+    assert changed_account.resource_owner_key == new_owner_key
     assert changed_state is not None
     assert changed_state.status == TriggerProvisioningStatus.PENDING.value
 
