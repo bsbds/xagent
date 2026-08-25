@@ -203,6 +203,7 @@ def seed(db_session: Session):
     team_x = _create_mcp(db_session, "team-x")
     capi_own = _create_custom_api(db_session, "capi-own", owner=c)
     a_capi = _create_custom_api(db_session, "a-capi")
+    # Worker-owned hook sessions can read only committed fixture rows.
     db_session.commit()
     return SimpleNamespace(
         c=c,

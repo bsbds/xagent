@@ -115,6 +115,7 @@ def seed(db_session: Session):
     stranger = _create_mcp(db_session, "stranger", owner=z)
     team_s = _create_mcp(db_session, "team-s")
     team_x = _create_mcp(db_session, "team-x")
+    # Worker-owned hook sessions can read only committed fixture rows.
     db_session.commit()
     return SimpleNamespace(
         c=c,
@@ -565,6 +566,60 @@ async def test_mcp_team_snapshot_maps_pool_timeout_to_config_error(tmp_path):
             await cfg._load_mcp_server_configs()
 
         assert isinstance(exc_info.value.__cause__, SQLAlchemyTimeoutError)
+    finally:
+        db.rollback()
+        db.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_team_snapshot_keeps_dirty_caller_session(tmp_path):
+    """A dirty caller can keep its connection when the pool has spare capacity."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'mcp-team-dirty-caller.db'}",
+        poolclass=QueuePool,
+        pool_size=2,
+        max_overflow=0,
+        pool_timeout=0.05,
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine)
+    db = factory()
+    try:
+        user = _create_user(db, "dirty-caller-user")
+        server = _create_mcp(db, "dirty-caller-server", owner=user)
+        user_id = int(user.id)
+        server_id = int(server.id)
+        db.commit()
+
+        pending = User(username="pending-dirty-user", password_hash="hash")
+        db.add(pending)
+        db.flush()
+
+        def team_visibility(hook_db, *, team_id):
+            hook_db.connection()
+            return {
+                "mcp": {server_id} if team_id == T1 else set(),
+                "custom_api": set(),
+            }
+
+        connector_team_scope.set_connector_team_hooks(team_visibility=team_visibility)
+        cfg = WebToolConfig(
+            db=db,
+            request=None,
+            user_id=user_id,
+            connector_team_id=T1,
+            include_mcp_tools=True,
+        )
+
+        assert engine.pool.checkedout() == 1
+        configs = await cfg._load_mcp_server_configs()
+
+        assert {config["id"] for config in configs} == {server_id}
+        assert engine.pool.checkedout() == 1
+        assert pending in db
     finally:
         db.rollback()
         db.close()
