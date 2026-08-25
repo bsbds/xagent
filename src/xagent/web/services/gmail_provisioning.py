@@ -1683,16 +1683,44 @@ def release_gmail_mailbox_if_unused(
         db.commit()
         return False
 
+    service = None
     try:
         service = service_factory(db, oauth_account)
     except Exception as exc:
         logger.warning("Failed to build Gmail service for %s: %s", email, exc)
-    else:
-        # Service construction can commit. Recheck the owner before teardown
-        # so PostgreSQL reacquires the row lock and SQLite still fails closed.
-        if ordinary_account() is None:
-            db.rollback()
-            return False
+
+    # Service construction can commit or roll back. Rebuild the complete lock
+    # boundary and release decision before any remote teardown.
+    oauth_account = ordinary_account()
+    if oauth_account is None:
+        db.rollback()
+        return False
+    state = (
+        db.query(GmailWatchState)
+        .filter(
+            GmailWatchState.id == state_id,
+            GmailWatchState.oauth_account_id == state_oauth_account_id,
+            GmailWatchState.user_id == state_user_id,
+        )
+        .with_for_update()
+        .one_or_none()
+    )
+    if state is None:
+        db.rollback()
+        return False
+
+    email = str(state.email or "").strip().lower()
+    if _fail_invalid_release_bindings(db, user_id=state_user_id, email=email):
+        return False
+    referenced_account_ids = _referenced_gmail_oauth_account_ids(
+        db,
+        [(state_oauth_account_id, state_user_id, email)],
+    )
+    if state_oauth_account_id in referenced_account_ids:
+        db.commit()
+        return False
+
+    if service is not None:
         try:
             service.users().stop(userId="me").execute()
         except Exception as exc:

@@ -4254,6 +4254,119 @@ def test_release_and_reprovision_contend_on_the_watch_state_lock(
 
 
 @pytest.mark.postgresql
+def test_release_rechecks_watch_after_service_commit(
+    pg_session: Session,
+) -> None:
+    """A token-refresh commit must not expose a stale release decision."""
+    db = pg_session
+    user = _create_user(db)
+    agent = _create_agent(db, user)
+    account = _create_oauth(db, user)
+    trigger = _create_gmail_trigger(db, user, agent, account, enabled=False)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    release_gmail = FakeGmailService()
+    ensure_gmail_mailbox_provisioned(
+        db,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    account_id = int(account.id)
+    trigger_id = int(trigger.id)
+
+    service_committed = threading.Event()
+    provision_finished = threading.Event()
+    errors: list[BaseException] = []
+    results: dict[str, Any] = {}
+
+    def committing_service_factory(
+        session: Session,
+        _account: UserOAuth,
+    ) -> FakeGmailService:
+        # Token refresh commits inside build_gmail_service and releases both
+        # row locks before release can call users.stop.
+        session.commit()
+        service_committed.set()
+        assert provision_finished.wait(timeout=30)
+        return release_gmail
+
+    def release() -> None:
+        session = get_session_local()()
+        try:
+            results["released"] = release_gmail_mailbox_if_unused(
+                session,
+                account_id,
+                service_factory=committing_service_factory,
+                publisher_factory=lambda: publisher,
+                subscriber_factory=lambda: subscriber,
+            )
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            errors.append(exc)
+        finally:
+            session.close()
+
+    def provision() -> None:
+        session = get_session_local()()
+        try:
+            current_trigger = (
+                session.query(AgentTrigger).filter(AgentTrigger.id == trigger_id).one()
+            )
+            current_trigger.enabled = True
+            session.commit()
+            current_account = (
+                session.query(UserOAuth).filter(UserOAuth.id == account_id).one()
+            )
+            state = ensure_gmail_mailbox_provisioned(
+                session,
+                current_account,
+                service_factory=lambda _db, _account: FakeGmailService(
+                    history_id="hist-reprovisioned"
+                ),
+                publisher_factory=lambda: publisher,
+                subscriber_factory=lambda: subscriber,
+            )
+            results["status"] = str(state.status)
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            errors.append(exc)
+        finally:
+            session.close()
+            provision_finished.set()
+
+    releaser = threading.Thread(target=release)
+    provisioner = threading.Thread(target=provision)
+    try:
+        releaser.start()
+        assert service_committed.wait(timeout=30)
+        provisioner.start()
+        provisioner.join(timeout=30)
+        releaser.join(timeout=30)
+    finally:
+        provision_finished.set()
+        releaser.join(timeout=30)
+        provisioner.join(timeout=30)
+
+    assert not releaser.is_alive() and not provisioner.is_alive()
+    assert errors == []
+    assert results == {
+        "released": False,
+        "status": TriggerProvisioningStatus.ACTIVE.value,
+    }
+    assert release_gmail.stop_calls == []
+    assert publisher.deleted_topics == []
+    assert subscriber.deleted_subscriptions == []
+    db.expire_all()
+    state = (
+        db.query(GmailWatchState)
+        .filter(GmailWatchState.oauth_account_id == account_id)
+        .one()
+    )
+    assert state.status == TriggerProvisioningStatus.ACTIVE.value
+    assert state.history_id == "hist-reprovisioned"
+
+
+@pytest.mark.postgresql
 def test_release_locks_oauth_before_watch_delete(
     pg_session: Session,
     monkeypatch: pytest.MonkeyPatch,
