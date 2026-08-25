@@ -1351,7 +1351,6 @@ def reconcile_gmail_trigger_provisioning(
                 for trigger in triggers
                 if str(trigger.type) == TriggerType.GMAIL.value
                 and bool(trigger.enabled)
-                and trigger.resource_id
             ],
         )
 
@@ -1364,7 +1363,6 @@ def reconcile_gmail_trigger_provisioning(
             .filter(
                 AgentTrigger.type == TriggerType.GMAIL.value,
                 AgentTrigger.enabled.is_(True),
-                AgentTrigger.resource_id.isnot(None),
                 AgentTrigger.id > last_id,
             )
             .order_by(AgentTrigger.id.asc())

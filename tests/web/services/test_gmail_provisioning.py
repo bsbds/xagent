@@ -3118,13 +3118,14 @@ def test_reconcile_rejects_nonordinary_bound_account(
     account = _create_oauth(db_session, user)
     trigger = _create_gmail_trigger(db_session, user, agent, account)
     trigger.provisioning_status = TriggerProvisioningStatus.ACTIVE.value
+    trigger.resource_id = None
     if account_kind == "actor":
         account.resource_owner_key = "toby:slack:41:UALICE"
     else:
         account.provider = "google-drive"
     db_session.commit()
 
-    assert reconcile_gmail_trigger_provisioning(db_session, [trigger]) == 1
+    assert reconcile_gmail_trigger_provisioning(db_session) == 1
 
     db_session.refresh(trigger)
     assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
