@@ -3244,6 +3244,7 @@ def test_reconcile_rejects_malformed_account_binding(
     }
     trigger.provisioning_status = TriggerProvisioningStatus.ACTIVE.value
     trigger.provisioning_error = None
+    trigger.resource_id = None
     db_session.commit()
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
 
@@ -3253,7 +3254,7 @@ def test_reconcile_rejects_malformed_account_binding(
     )
 
     assert result.scanned == 0
-    assert reconcile_gmail_trigger_provisioning(db_session, [trigger]) == 1
+    assert reconcile_gmail_trigger_provisioning(db_session) == 1
     db_session.refresh(trigger)
     assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
     assert (
