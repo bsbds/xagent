@@ -535,14 +535,18 @@ def ordinary_gmail_triggers(
 ) -> list[AgentTrigger]:
     """Filter triggers after the caller verifies the ordinary watch account.
 
-    Only a missing ``oauth_account_id`` key uses legacy mailbox matching.
-    Explicit malformed values and mismatched account ids are rejected.
+    Only a missing ``oauth_account_id`` key with a non-empty mailbox uses
+    legacy matching. Explicit malformed values and mismatched account ids are
+    rejected.
     """
     ordinary_triggers: list[AgentTrigger] = []
     for trigger in triggers:
         account_id = gmail_binding_id(trigger.config)
         if account_id is None:
-            if is_legacy_gmail_binding(trigger.config):
+            if (
+                is_legacy_gmail_binding(trigger.config)
+                and str(trigger.resource_id or "").strip()
+            ):
                 ordinary_triggers.append(trigger)
             continue
 

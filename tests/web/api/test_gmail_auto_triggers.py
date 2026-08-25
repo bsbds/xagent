@@ -296,6 +296,7 @@ def _create_gmail_trigger(
         type=TriggerType.GMAIL.value,
         name="Gmail inbox",
         enabled=enabled,
+        resource_id="codeacme17@gmail.com",
         config=config or {"watch_label": "INBOX"},
         prompt_template="Handle {{payload}}",
     )
@@ -583,6 +584,146 @@ def test_gmail_actor_owned_callback_is_acked_without_execution(
         db.refresh(state)
         assert state.history_id == "100"
         assert mock_bg_scheduler.call_count == 0
+    finally:
+        register_trigger_provider(GmailProvider(), replace=True)
+        db.close()
+
+
+@pytest.mark.parametrize("resource_id", [None, "   "], ids=["null", "blank"])
+def test_gmail_callback_rejects_legacy_binding_without_mailbox(
+    mock_bg_scheduler,
+    resource_id: str | None,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-empty-legacy-callback-user")
+        oauth = _create_gmail_oauth(db, user)
+        trigger = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(db, user, config={"watch_label": "INBOX"}),
+        )
+        trigger.resource_id = resource_id
+        db.commit()
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-empty-legacy",
+        )
+        verifier_calls: list[str] = []
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-empty"}}]}]
+            },
+            messages={"msg-empty": _gmail_message("msg-empty")},
+        )
+
+        def fake_verify(_token: str, audience: str) -> dict[str, object]:
+            verifier_calls.append(audience)
+            return {"iss": "https://accounts.google.com", "aud": audience}
+
+        register_trigger_provider(
+            GmailProvider(
+                service_factory=lambda _db, _oauth: fake_service,
+                oidc_verifier=fake_verify,
+            ),
+            replace=True,
+        )
+
+        response = client.post(
+            "/api/triggers/callback/gmail/cb-empty-legacy",
+            headers={"Authorization": "Bearer oidc-token"},
+            content=_gmail_pubsub_push_body(
+                claimed_email="codeacme17@gmail.com",
+                message_id="pubsub-empty-legacy",
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["outcome"] == "unknown_callback"
+        assert verifier_calls == []
+        assert db.query(TriggerRun).count() == 0
+        db.refresh(state)
+        assert state.history_id == "100"
+        assert mock_bg_scheduler.call_count == 0
+    finally:
+        register_trigger_provider(GmailProvider(), replace=True)
+        db.close()
+
+
+def test_gmail_callback_ignores_blank_legacy_binding_with_valid_sibling(
+    mock_bg_scheduler,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-empty-legacy-sibling-user")
+        oauth = _create_gmail_oauth(db, user)
+        invalid = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(db, user, config={"watch_label": "INBOX"}),
+        )
+        invalid.resource_id = "   "
+        valid = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(oauth.id),
+                },
+            ),
+            callback_id="legacy-trigger-callback-valid",
+        )
+        db.commit()
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-empty-legacy-sibling",
+        )
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-sibling"}}]}]
+            },
+            messages={"msg-sibling": _gmail_message("msg-sibling")},
+        )
+        register_trigger_provider(
+            GmailProvider(
+                service_factory=lambda _db, _oauth: fake_service,
+                oidc_verifier=lambda _token, audience: {
+                    "iss": "https://accounts.google.com",
+                    "aud": audience,
+                },
+            ),
+            replace=True,
+        )
+
+        response = client.post(
+            "/api/triggers/callback/gmail/cb-empty-legacy-sibling",
+            headers={"Authorization": "Bearer oidc-token"},
+            content=_gmail_pubsub_push_body(
+                claimed_email="codeacme17@gmail.com",
+                message_id="pubsub-empty-legacy-sibling",
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["outcome"] == "accepted"
+        audit = (
+            db.query(TriggerAudit)
+            .filter(
+                TriggerAudit.callback_id == "cb-empty-legacy-sibling",
+                TriggerAudit.outcome == "accepted",
+            )
+            .one()
+        )
+        assert audit.detail["rejected_events"] == 0
+        runs = db.query(TriggerRun).all()
+        assert [int(run.trigger_id) for run in runs] == [int(valid.id)]
+        db.refresh(state)
+        assert state.history_id == "222"
+        assert mock_bg_scheduler.call_count == 1
     finally:
         register_trigger_provider(GmailProvider(), replace=True)
         db.close()
