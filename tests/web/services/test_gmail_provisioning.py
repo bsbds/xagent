@@ -337,6 +337,65 @@ def test_watch_state_rejects_mismatched_user(db_session: Session) -> None:
         )
 
 
+def test_watch_state_adoption_rejects_mismatched_user(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent insert must not adopt a watch owned by another user."""
+    account_user = _create_user(db_session)
+    state_user = User(
+        username="racing-watch-owner",
+        email="racing-watch-owner@example.com",
+        password_hash="hash",
+        is_admin=False,
+    )
+    db_session.add(state_user)
+    db_session.commit()
+    db_session.refresh(state_user)
+    account = _create_oauth(db_session, account_user)
+    db_session.add(
+        GmailWatchState(
+            user_id=int(state_user.id),
+            oauth_account_id=int(account.id),
+            email=str(account.email),
+            history_id="",
+            topic_name="",
+        )
+    )
+    db_session.commit()
+
+    original_query = db_session.query
+    initial_lookup = True
+
+    class MissingWatchQuery:
+        def filter(self, *_args: object) -> MissingWatchQuery:
+            return self
+
+        def with_for_update(self) -> MissingWatchQuery:
+            return self
+
+        def first(self) -> None:
+            return None
+
+    def race_initial_watch_lookup(*entities: object) -> Any:
+        nonlocal initial_lookup
+        if initial_lookup and entities == (GmailWatchState,):
+            initial_lookup = False
+            return MissingWatchQuery()
+        return original_query(*entities)
+
+    monkeypatch.setattr(db_session, "query", race_initial_watch_lookup)
+
+    with pytest.raises(
+        gmail_provisioning.GmailProvisioningError,
+        match="watch and OAuth account users do not match",
+    ):
+        gmail_provisioning._get_or_create_watch_state(
+            db_session,
+            account,
+            str(account.email),
+        )
+
+
 def test_fresh_session_provisioning_rejects_actor_account(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -354,6 +413,24 @@ def test_fresh_session_provisioning_rejects_actor_account(
     gmail_provisioning._provision_in_fresh_session(int(account.id))
 
 
+def test_fresh_session_provisioning_accepts_ordinary_account(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    provisioned: list[int] = []
+
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "ensure_gmail_mailbox_provisioned",
+        lambda _db, oauth_account: provisioned.append(int(oauth_account.id)),
+    )
+
+    gmail_provisioning._provision_in_fresh_session(int(account.id))
+
+    assert provisioned == [int(account.id)]
+
+
 def test_trigger_provisioning_rejects_actor_account(db_session: Session) -> None:
     user = _create_user(db_session)
     agent = _create_agent(db_session, user)
@@ -365,7 +442,7 @@ def test_trigger_provisioning_rejects_actor_account(db_session: Session) -> None
     status = gmail_provisioning.provision_gmail_trigger(db_session, trigger)
 
     assert status == TriggerProvisioningStatus.FAILED.value
-    assert trigger.provisioning_error == "ordinary Gmail account not found"
+    assert trigger.provisioning_error == "Gmail account is unavailable"
 
 
 def test_release_rejects_actor_owned_account(db_session: Session) -> None:
@@ -671,7 +748,7 @@ def test_trigger_provisioning_rejects_owner_change_after_worker(
     )
 
     assert status == TriggerProvisioningStatus.FAILED.value
-    assert trigger.provisioning_error == "ordinary Gmail account not found"
+    assert trigger.provisioning_error == "Gmail account is unavailable"
 
 
 def test_sweep_does_not_record_actor_owner_failure(
@@ -1597,6 +1674,43 @@ def test_reconcile_reports_expired_active_watch_as_failed(
     assert "expired" in str(trigger.provisioning_error)
 
 
+def test_reconcile_rejects_cross_user_bound_watch(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "false")
+    account_user = _create_user(db_session)
+    trigger_user = User(
+        username="cross-user-trigger-owner",
+        email="cross-user-trigger-owner@example.com",
+        password_hash="hash",
+        is_admin=False,
+    )
+    db_session.add(trigger_user)
+    db_session.commit()
+    db_session.refresh(trigger_user)
+    agent = _create_agent(db_session, trigger_user)
+    account = _create_oauth(db_session, account_user)
+    trigger = _create_gmail_trigger(db_session, trigger_user, agent, account)
+    trigger.provisioning_status = TriggerProvisioningStatus.ACTIVE.value
+    db_session.add(
+        GmailWatchState(
+            user_id=int(account_user.id),
+            oauth_account_id=int(account.id),
+            email=str(account.email),
+            history_id="hist-1",
+            topic_name="projects/demo-project/topics/xagent-gmail-abc",
+            status=TriggerProvisioningStatus.ACTIVE.value,
+        )
+    )
+    db_session.commit()
+
+    assert reconcile_gmail_trigger_provisioning(db_session, [trigger]) == 1
+
+    db_session.refresh(trigger)
+    assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
+    assert trigger.provisioning_error == GMAIL_WATCH_DISABLED_ERROR
+
+
 def test_reconcile_matches_gmail_trigger_by_account_id_when_email_diverges(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1650,8 +1764,7 @@ def test_reconcile_matches_gmail_trigger_by_account_id_when_email_diverges(
 def test_reconcile_legacy_trigger_without_account_binding_matches_by_email(
     db_session: Session,
 ) -> None:
-    """A trigger whose config carries no oauth_account_id (legacy/malformed)
-    still resolves through the (user_id, resource_id-email) fallback key."""
+    """A trigger with no oauth_account_id uses mailbox fallback."""
     user = _create_user(db_session)
     agent = _create_agent(db_session, user)
     account = _create_oauth(db_session, user)
@@ -3020,8 +3133,36 @@ def test_reconcile_matches_enabled_triggers_by_oauth_account_id(
     assert result.scanned == 1
 
 
-@pytest.mark.parametrize("oauth_account_id", [None, "malformed"])
 def test_reconcile_legacy_binding_falls_back_to_mailbox_email(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    trigger.config = {"watch_label": "INBOX"}
+    db_session.commit()
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.scanned == 1
+
+
+@pytest.mark.parametrize("oauth_account_id", [None, "malformed"])
+def test_reconcile_rejects_malformed_account_binding(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     oauth_account_id: object,
@@ -3040,12 +3181,10 @@ def test_reconcile_legacy_binding_falls_back_to_mailbox_email(
     )
     trigger.config = {
         "watch_label": "INBOX",
-        **(
-            {"oauth_account_id": oauth_account_id}
-            if oauth_account_id is not None
-            else {}
-        ),
+        "oauth_account_id": oauth_account_id,
     }
+    trigger.provisioning_status = TriggerProvisioningStatus.ACTIVE.value
+    trigger.provisioning_error = None
     db_session.commit()
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
 
@@ -3054,7 +3193,14 @@ def test_reconcile_legacy_binding_falls_back_to_mailbox_email(
         subscriber_factory=lambda: subscriber,
     )
 
-    assert result.scanned == 1
+    assert result.scanned == 0
+    assert reconcile_gmail_trigger_provisioning(db_session, [trigger]) == 1
+    db_session.refresh(trigger)
+    assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
+    assert (
+        trigger.provisioning_error
+        == "Gmail trigger has an invalid OAuth account binding"
+    )
 
 
 def test_reconcile_bounds_gmail_trigger_lookup_to_each_watch_page(
@@ -3268,6 +3414,7 @@ def test_reconcile_rechecks_owner_after_cloud_update(
     assert result.scanned == 1
     assert result.changed == 0
     assert result.failed == 1
+    assert "changed ownership or disappeared" in result.errors[0]
     assert persisted.push_audience == previous_audience
 
 

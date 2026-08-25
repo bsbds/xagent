@@ -322,10 +322,8 @@ class GmailProvider:
         state = _watch_state_for_callback(db, callback_id)
         if state is None:
             return None
-        # Prefer triggers bound to this callback's mailbox so the disabled
-        # check applies to the right binding; fall back to the user's other
-        # Gmail triggers so cross-mailbox events still surface as audited
-        # rejected_resource outcomes instead of unknown callbacks.
+        # Prefer this mailbox. Explicit bindings to another account fail
+        # closed; only unbound legacy triggers use mailbox matching.
         mailbox_matches = case(
             (
                 func.lower(AgentTrigger.resource_id) == _normalized_email(state.email),

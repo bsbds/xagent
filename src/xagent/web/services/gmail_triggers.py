@@ -507,24 +507,37 @@ def _trigger_matches_message(trigger: AgentTrigger, payload: dict[str, Any]) -> 
     return True
 
 
+def gmail_binding_id(config: Any) -> int | None:
+    """Return an explicit Gmail OAuth account id when it is valid."""
+    if not isinstance(config, dict) or "oauth_account_id" not in config:
+        return None
+    try:
+        return int(config["oauth_account_id"])
+    except (TypeError, ValueError):
+        return None
+
+
+def is_legacy_gmail_binding(config: Any) -> bool:
+    """Return true only when a Gmail trigger has no account-binding key."""
+    return isinstance(config, dict) and "oauth_account_id" not in config
+
+
 def ordinary_gmail_triggers(
     *,
     triggers: list[AgentTrigger],
     oauth_account_id: int,
 ) -> list[AgentTrigger]:
+    """Filter triggers after the caller verifies the ordinary watch account.
+
+    Only a missing ``oauth_account_id`` key uses legacy mailbox matching.
+    Explicit malformed values and mismatched account ids are rejected.
+    """
     ordinary_triggers: list[AgentTrigger] = []
     for trigger in triggers:
-        config: dict[str, Any] = (
-            trigger.config if isinstance(trigger.config, dict) else {}
-        )
-        raw_account_id = config.get("oauth_account_id")
-        if raw_account_id is None:
-            ordinary_triggers.append(trigger)
-            continue
-
-        try:
-            account_id = int(raw_account_id)
-        except (TypeError, ValueError):
+        account_id = gmail_binding_id(trigger.config)
+        if account_id is None:
+            if is_legacy_gmail_binding(trigger.config):
+                ordinary_triggers.append(trigger)
             continue
 
         if account_id == oauth_account_id:

@@ -119,3 +119,17 @@ def test_gmail_trigger_binding_rejects_an_actor_row(oauth_rows) -> None:
             user_id=int(user.id),
             oauth_account_id=int(actor_gmail.id),
         )
+
+
+def test_gmail_trigger_binding_rejects_a_non_gmail_row(oauth_rows) -> None:
+    db, user, ordinary, _actor, _actor_gmail = oauth_rows
+
+    with pytest.raises(
+        TriggerServiceError,
+        match="Selected account is not a Gmail account",
+    ):
+        _resolve_gmail_resource(
+            db,
+            user_id=int(user.id),
+            oauth_account_id=int(ordinary.id),
+        )

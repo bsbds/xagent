@@ -45,6 +45,7 @@ from ..models.trigger import (
     TriggerType,
 )
 from ..models.user_oauth import UserOAuth
+from .gmail_triggers import gmail_binding_id, is_legacy_gmail_binding
 from .time_utils import coerce_utc as _coerce_utc
 from .user_oauth import (
     GMAIL_OAUTH_PROVIDER,
@@ -73,6 +74,10 @@ SubscriberFactory = Callable[[], Any]
 GMAIL_WATCH_DISABLED_ERROR = (
     "Gmail watch registration is disabled "
     "(set XAGENT_GMAIL_WATCH_ENABLED=true to enable)"
+)
+GMAIL_ACCOUNT_UNAVAILABLE_ERROR = "Gmail account is unavailable"
+GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR = (
+    "Gmail trigger has an invalid OAuth account binding"
 )
 
 
@@ -314,28 +319,15 @@ def _validate_provisioning_config() -> tuple[str, str, str]:
     return project_id, base_url, push_service_account
 
 
-def _coerce_oauth_account_id(value: Any) -> int | None:
-    """Tolerantly coerce a stored ``oauth_account_id`` value to an int.
-
-    ``None`` maps to ``None``; anything int-coercible maps to that int;
-    anything else (a malformed config value) also maps to ``None`` rather
-    than raising.
-    """
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 def _referenced_gmail_oauth_account_ids(
     db: Session,
     accounts: Sequence[tuple[int, int, str]],
 ) -> set[int]:
     """Resolve enabled Gmail trigger bindings for a bounded owner-account batch.
 
-    Modern triggers bind to ``config.oauth_account_id``. Legacy or malformed
-    configs fall back to the mailbox resource ID. Both forms must belong to the
-    same user as the candidate OAuth account.
+    Modern triggers bind to ``config.oauth_account_id``. Only an absent
+    binding key uses the legacy mailbox fallback. Both forms must belong to
+    the same user as the candidate OAuth account.
     """
     account_users = {
         int(account_id): int(user_id) for account_id, user_id, _email in accounts
@@ -377,15 +369,14 @@ def _referenced_gmail_oauth_account_ids(
     referenced: set[int] = set()
     for trigger_user_id, raw_config, raw_resource_id in candidate_rows:
         user_id = int(trigger_user_id)
-        config = raw_config if isinstance(raw_config, dict) else {}
-        bound_account_id = _coerce_oauth_account_id(config.get("oauth_account_id"))
+        bound_account_id = gmail_binding_id(raw_config)
         if (
             bound_account_id is not None
             and account_users.get(bound_account_id) == user_id
         ):
             referenced.add(bound_account_id)
             continue
-        if bound_account_id is not None:
+        if bound_account_id is not None or not is_legacy_gmail_binding(raw_config):
             continue
         resource_id = str(raw_resource_id or "").strip().lower()
         referenced.update(account_ids_by_user_email.get((user_id, resource_id), ()))
@@ -819,8 +810,8 @@ def _reconcile_gmail_push_endpoint(
             )
             if updated == 0:
                 raise GmailProvisioningError(
-                    f"Active Gmail watch {state_id} disappeared during "
-                    "the callback audience transition"
+                    f"Active Gmail watch {state_id} changed ownership or "
+                    "disappeared during the callback audience transition"
                 )
             transition_db.commit()
         return "changed"
@@ -1223,14 +1214,16 @@ def provision_gmail_trigger(
     unless the mailbox still has a watch state row from when the flag was
     on, in which case its derived status is reported.
     """
-    config: dict[str, Any] = trigger.config if isinstance(trigger.config, dict) else {}
-    oauth_account_id = config.get("oauth_account_id")
+    oauth_account_id = gmail_binding_id(trigger.config)
     if oauth_account_id is None:
         status = TriggerProvisioningStatus.FAILED.value
-        setattr(trigger, "provisioning_status", status)
-        setattr(
-            trigger, "provisioning_error", "Gmail trigger has no bound OAuth account"
+        binding_error = (
+            "Gmail trigger has no bound OAuth account"
+            if is_legacy_gmail_binding(trigger.config)
+            else GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR
         )
+        setattr(trigger, "provisioning_status", status)
+        setattr(trigger, "provisioning_error", binding_error)
         db.add(trigger)
         db.commit()
         return status
@@ -1244,7 +1237,7 @@ def provision_gmail_trigger(
     if oauth_account is None or not is_ordinary_gmail(oauth_account):
         status = TriggerProvisioningStatus.FAILED.value
         setattr(trigger, "provisioning_status", status)
-        setattr(trigger, "provisioning_error", "ordinary Gmail account not found")
+        setattr(trigger, "provisioning_error", GMAIL_ACCOUNT_UNAVAILABLE_ERROR)
         db.add(trigger)
         db.commit()
         return status
@@ -1300,7 +1293,7 @@ def provision_gmail_trigger(
     )
     if oauth_account is None or not is_ordinary_gmail(oauth_account):
         status = TriggerProvisioningStatus.FAILED.value
-        error = "ordinary Gmail account not found"
+        error = GMAIL_ACCOUNT_UNAVAILABLE_ERROR
     else:
         state = (
             db.query(GmailWatchState)
@@ -1380,14 +1373,8 @@ def reconcile_gmail_trigger_provisioning(
 
 
 def _bound_gmail_oauth_account_id(trigger: AgentTrigger) -> int | None:
-    """Read a trigger's bound OAuth account id, tolerating malformed configs.
-
-    Mirrors the coercion in ``_referenced_gmail_oauth_account_ids``: any
-    value that is present but not int-coercible is treated the same as a
-    missing binding rather than raising.
-    """
-    config: dict[str, Any] = trigger.config if isinstance(trigger.config, dict) else {}
-    return _coerce_oauth_account_id(config.get("oauth_account_id"))
+    """Read a valid explicit Gmail OAuth account id from a trigger."""
+    return gmail_binding_id(trigger.config)
 
 
 def _reconcile_gmail_trigger_batch(
@@ -1397,9 +1384,9 @@ def _reconcile_gmail_trigger_batch(
 
     Looks up each trigger's watch state by its bound OAuth account id
     (``config.oauth_account_id``) when one is present and valid, falling back
-    to the legacy ``(user_id, resource_id-email)`` key only for legacy or
-    malformed configs that carry no usable binding. This mirrors
-    ``_referenced_gmail_oauth_account_ids``'s precedence: a trigger's
+    to the legacy ``(user_id, resource_id-email)`` key only when the binding
+    key is absent. This mirrors ``_referenced_gmail_oauth_account_ids``'s
+    precedence: a trigger's
     ``resource_id`` mailbox email can go stale (the connected Google account
     changed email and a reconnect refreshed ``GmailWatchState.email``), and
     matching by the durable account id instead of the stale email avoids a
@@ -1415,7 +1402,8 @@ def _reconcile_gmail_trigger_batch(
         bound_account_id = _bound_gmail_oauth_account_id(trigger)
         if bound_account_id is not None:
             account_ids.add(bound_account_id)
-        else:
+            continue
+        if is_legacy_gmail_binding(trigger.config):
             emails.add(str(trigger.resource_id).strip().lower())
 
     filters = []
@@ -1450,20 +1438,30 @@ def _reconcile_gmail_trigger_batch(
     updated = 0
     for trigger in candidates:
         bound_account_id = _bound_gmail_oauth_account_id(trigger)
+        error: str | None
         if bound_account_id is not None:
             state = states_by_account_id.get(bound_account_id)
-        else:
+        elif is_legacy_gmail_binding(trigger.config):
             key = (int(trigger.user_id), str(trigger.resource_id).strip().lower())
             state = states_by_key.get(key)
+        else:
+            state = None
+            status = TriggerProvisioningStatus.FAILED.value
+            error = GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR
+
         if state is not None and int(state.user_id) != int(trigger.user_id):
             state = None
-        error: str | None
-        if state is None:
+        if state is None and bound_account_id is not None:
             if get_gmail_watch_enabled():
                 continue
             status = TriggerProvisioningStatus.FAILED.value
             error = gmail_watch_disabled_error()
-        else:
+        elif state is None and is_legacy_gmail_binding(trigger.config):
+            if get_gmail_watch_enabled():
+                continue
+            status = TriggerProvisioningStatus.FAILED.value
+            error = gmail_watch_disabled_error()
+        elif state is not None:
             status, error = _trigger_facing_status(state)
         if (
             str(trigger.provisioning_status or "") == status

@@ -201,9 +201,9 @@ SQLite can commit each schema operation separately during a batch-table rebuild.
 
 The migration refuses the downgrade if a non-null owner row exists. If a caller created such a row, disable that caller. Revoke and remove the credential with an approved procedure. Then retry the downgrade.
 
-## 2026-08-23 — Gmail ordinary-owner fence
+## 2026-08-24 — Gmail ordinary-owner fence
 
-### Deployment impact
+### Scope
 
 This release adds no schema, dependency, environment variable, or cleanup state. It restricts Gmail watch and trigger code to ordinary OAuth rows.
 
@@ -238,6 +238,8 @@ WHERE account.id IS NULL
 The result must be zero. Existing ordinary Gmail watch and trigger tests must also pass before deployment.
 
 A callback with only invalid or actor-owned trigger bindings is acknowledged as unknown and does not advance the Gmail history cursor. Restore a valid ordinary trigger binding before callback processing can continue.
+
+If a trigger reports `Gmail trigger has an invalid OAuth account binding`, replace its `oauth_account_id` with the matching ordinary Gmail account ID. Remove the key only for a confirmed legacy mailbox binding. Do not change actor-owned credentials or watch rows as part of this rollout.
 
 ### Rollback
 

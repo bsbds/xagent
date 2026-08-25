@@ -1891,10 +1891,13 @@ def test_collect_gmail_pubsub_events_requires_bound_watch_account() -> None:
         db.close()
 
 
-def test_collect_gmail_pubsub_events_rejects_malformed_account_binding() -> None:
+@pytest.mark.parametrize("oauth_account_id", [None, "not-an-account-id"])
+def test_collect_gmail_pubsub_events_rejects_malformed_account_binding(
+    oauth_account_id: object,
+) -> None:
     db = _direct_db_session()
     try:
-        user = _create_user(db, "gmail-malformed-binding-user")
+        user = _create_user(db, f"gmail-malformed-binding-user-{oauth_account_id}")
         watched = _create_gmail_oauth(db, user)
         _mark_unified_gmail_trigger(
             db,
@@ -1903,7 +1906,7 @@ def test_collect_gmail_pubsub_events_rejects_malformed_account_binding() -> None
                 user,
                 config={
                     "watch_label": "INBOX",
-                    "oauth_account_id": "not-an-account-id",
+                    "oauth_account_id": oauth_account_id,
                 },
             ),
         )
