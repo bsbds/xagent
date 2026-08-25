@@ -2405,6 +2405,7 @@ def test_collect_gmail_pubsub_events_specific_label_also_excludes_non_incoming_m
         user = _create_user(db, "gmail-specific-label-excludes-sent-user")
         oauth = _create_gmail_oauth(db, user)
         trigger = _create_gmail_trigger(db, user, config={"watch_label": "Support"})
+        trigger.resource_id = "codeacme18@gmail.com"
         state = GmailWatchState(
             user_id=int(user.id),
             oauth_account_id=int(oauth.id),

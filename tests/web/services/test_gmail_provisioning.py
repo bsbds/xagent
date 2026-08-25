@@ -4345,7 +4345,8 @@ def test_release_rechecks_watch_after_service_commit(
     finally:
         provision_finished.set()
         releaser.join(timeout=30)
-        provisioner.join(timeout=30)
+        if provisioner.ident is not None:
+            provisioner.join(timeout=30)
 
     assert not releaser.is_alive() and not provisioner.is_alive()
     assert errors == []
