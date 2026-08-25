@@ -3106,6 +3106,31 @@ def test_reconcile_push_endpoint_dry_run_does_not_change_cloud_or_database(
     assert subscriber.modify_calls == []
 
 
+@pytest.mark.parametrize("account_kind", ["actor", "non-gmail"])
+def test_reconcile_rejects_nonordinary_bound_account(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    account_kind: str,
+) -> None:
+    monkeypatch.setenv("XAGENT_GMAIL_WATCH_ENABLED", "true")
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account)
+    trigger.provisioning_status = TriggerProvisioningStatus.ACTIVE.value
+    if account_kind == "actor":
+        account.resource_owner_key = "toby:slack:41:UALICE"
+    else:
+        account.provider = "google-drive"
+    db_session.commit()
+
+    assert reconcile_gmail_trigger_provisioning(db_session, [trigger]) == 1
+
+    db_session.refresh(trigger)
+    assert trigger.provisioning_status == TriggerProvisioningStatus.FAILED.value
+    assert trigger.provisioning_error == GMAIL_ACCOUNT_UNAVAILABLE_ERROR
+
+
 def test_reconcile_matches_enabled_triggers_by_oauth_account_id(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3126,6 +3151,38 @@ def test_reconcile_matches_enabled_triggers_by_oauth_account_id(
         )
 
     monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+    result = reconcile_gmail_push_endpoints(
+        db_session,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert result.scanned == 1
+
+
+def test_reconcile_matches_leading_zero_account_binding(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account)
+    subscriber = ResyncFakeSubscriber()
+    ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: FakePublisher(),
+        subscriber_factory=lambda: subscriber,
+    )
+    trigger.config = {
+        "watch_label": "INBOX",
+        "oauth_account_id": f"0{int(account.id)}",
+    }
+    trigger.resource_id = "stale@gmail.example"
+    db_session.commit()
+    monkeypatch.setenv("XAGENT_S2S_API_BASE_URL", "https://sg-origin.cloud.xagent.co")
+
     result = reconcile_gmail_push_endpoints(
         db_session,
         subscriber_factory=lambda: subscriber,
@@ -4337,8 +4394,15 @@ def test_gmail_trigger_lookup_resolves_bindings_on_postgresql(
     user = _create_user(db)
     agent = _create_agent(db, user)
     account = _create_oauth(db, user)
-    _create_gmail_trigger(db, user, agent, account)
-    _create_gmail_trigger(db, user, agent, account)
+    first = _create_gmail_trigger(db, user, agent, account)
+    second = _create_gmail_trigger(db, user, agent, account)
+    for trigger in (first, second):
+        trigger.config = {
+            "watch_label": "INBOX",
+            "oauth_account_id": f"0{int(account.id)}",
+        }
+        trigger.resource_id = "stale@gmail.example"
+    db.commit()
 
     referenced = gmail_provisioning._referenced_gmail_oauth_account_ids(
         db,

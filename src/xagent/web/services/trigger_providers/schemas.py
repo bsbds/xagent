@@ -345,6 +345,15 @@ class GmailTriggerConfig(BaseTriggerConfig):
     sender_filter: str | None = None
     subject_keyword: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _explicit_account_id(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "oauth_account_id" not in value:
+            return value
+        if value["oauth_account_id"] is None:
+            raise ValueError("oauth_account_id must be an integer")
+        return value
+
     @field_validator("oauth_account_id", mode="before")
     @classmethod
     def _account_id(cls, value: Any) -> int | None:

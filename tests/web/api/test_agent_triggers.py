@@ -941,6 +941,30 @@ def test_gmail_trigger_requires_oauth_account() -> None:
     assert "oauth_account_id" in created.json()["detail"]
 
 
+@pytest.mark.parametrize("oauth_account_id", [None, True, 1.5])
+def test_gmail_trigger_rejects_invalid_oauth_account_id(
+    oauth_account_id: object,
+) -> None:
+    headers = _admin_headers()
+    agent_id = _create_agent(headers)
+
+    created = client.post(
+        f"/api/agents/{agent_id}/triggers",
+        headers=headers,
+        json={
+            "type": "gmail",
+            "name": "Invalid account",
+            "config": {
+                "watch_label": "INBOX",
+                "oauth_account_id": oauth_account_id,
+            },
+        },
+    )
+
+    assert created.status_code == 400
+    assert "oauth_account_id must be an integer" in created.json()["detail"]
+
+
 def test_gmail_trigger_rejects_foreign_oauth_account() -> None:
     headers = _admin_headers()
     agent_id = _create_agent(headers)

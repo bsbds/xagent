@@ -1973,6 +1973,48 @@ def test_gmail_unregister_skips_cross_user_binding(
         db.close()
 
 
+@pytest.mark.parametrize("binding_kind", ["actor", "non-gmail", "missing", "malformed"])
+def test_gmail_unregister_skips_invalid_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    binding_kind: str,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, f"gmail-unregister-{binding_kind}-user")
+        account = _create_gmail_oauth(db, user)
+        config: dict[str, object] = {
+            "watch_label": "INBOX",
+            "oauth_account_id": int(account.id),
+        }
+        if binding_kind == "actor":
+            account.resource_owner_key = "toby:slack:41:UALICE"
+        elif binding_kind == "non-gmail":
+            account.provider = "google-drive"
+        elif binding_kind == "missing":
+            config["oauth_account_id"] = int(account.id) + 10_000
+        else:
+            config["oauth_account_id"] = "not-an-account-id"
+        db.commit()
+        trigger = _create_gmail_trigger(db, user, config=config)
+        released: list[int] = []
+
+        def record_release(_db, oauth_account_id: int, **_kwargs: object) -> bool:
+            released.append(oauth_account_id)
+            return True
+
+        monkeypatch.setattr(
+            gmail_trigger_provider,
+            "release_gmail_mailbox_if_unused",
+            record_release,
+        )
+
+        asyncio.run(GmailProvider().unregister(db, trigger, trigger.config))
+
+        assert released == []
+    finally:
+        db.close()
+
+
 def test_collect_gmail_pubsub_events_skips_actor_owned_watch_account() -> None:
     db = _direct_db_session()
     try:

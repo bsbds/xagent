@@ -310,7 +310,7 @@ class TestScheduledTriggerConfigValidation:
 
 
 class TestGmailTriggerConfigValidation:
-    @pytest.mark.parametrize("oauth_account_id", [True, 1.5])
+    @pytest.mark.parametrize("oauth_account_id", [None, True, 1.5])
     def test_rejects_non_integer_account_binding(self, oauth_account_id: object):
         from pydantic import ValidationError
 
@@ -322,6 +322,11 @@ class TestGmailTriggerConfigValidation:
                     "oauth_account_id": oauth_account_id,
                 },
             )
+
+    def test_accepts_missing_account_binding_for_legacy_records(self):
+        config = parse_trigger_config("gmail", {"watch_label": "INBOX"})
+
+        assert config.oauth_account_id is None
 
     def test_accepts_numeric_string_account_binding(self):
         config = parse_trigger_config(

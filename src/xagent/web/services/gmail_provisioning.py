@@ -346,6 +346,11 @@ def _referenced_gmail_oauth_account_ids(
         AgentTrigger.config["oauth_account_id"].as_string(),
         String,
     )
+    # Normalize accepted decimal strings without casting malformed JSON values.
+    normalized_binding_text = func.coalesce(
+        func.nullif(func.ltrim(binding_text, "0"), ""),
+        "0",
+    )
     # Do not add DISTINCT. PostgreSQL cannot compare the projected JSON config.
     candidate_rows = (
         db.query(
@@ -357,7 +362,9 @@ def _referenced_gmail_oauth_account_ids(
             AgentTrigger.type == TriggerType.GMAIL.value,
             AgentTrigger.enabled.is_(True),
             or_(
-                binding_text.in_({str(account_id) for account_id in account_users}),
+                normalized_binding_text.in_(
+                    {str(account_id) for account_id in account_users}
+                ),
                 func.lower(AgentTrigger.resource_id).in_(
                     {email for _user_id, email in account_ids_by_user_email}
                 ),
