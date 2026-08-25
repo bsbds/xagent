@@ -2199,6 +2199,12 @@ class WebToolConfig(BaseToolConfig):
         self._cached_tool_allowlist = snapshot.tool_allowlist
         self._tool_allowlist_cached = True
 
+    def _needs_inline_db(self) -> bool:
+        """Return True for database doubles that cannot mint worker Sessions."""
+        from sqlalchemy.orm import Session
+
+        return self._db_factory is None and not isinstance(self._live_db, Session)
+
     async def prepare_factory_runtime(self) -> None:
         """Prefetch synchronous ToolFactory inputs without blocking its loop.
 
@@ -2206,15 +2212,12 @@ class WebToolConfig(BaseToolConfig):
         owns and closes every Session it creates; the request Session and ORM
         user retained by this config never cross the thread boundary.
         """
-        if self._db_factory is None:
-            from sqlalchemy.orm import Session
-
-            # Some standalone/test configs supply duck-typed DB objects rather
-            # than a real SQLAlchemy Session. They retain the legacy synchronous
-            # getter contract; there is no safe engine from which to mint a
-            # worker-owned Session.
-            if not isinstance(self._live_db, Session):
-                return
+        # Some standalone/test configs supply duck-typed DB objects rather
+        # than a real SQLAlchemy Session. They retain the legacy synchronous
+        # getter contract; there is no safe engine from which to mint a
+        # worker-owned Session.
+        if self._needs_inline_db():
+            return
 
         from ..services.db_runtime import run_db_io_cancellation_safe
 
@@ -2336,9 +2339,7 @@ class WebToolConfig(BaseToolConfig):
         if self._user_id is None or not has_user_tool_policy_hooks():
             policy_snapshot = _ToolRuntimePolicySnapshot()
         else:
-            from sqlalchemy.orm import Session
-
-            if self._db_factory is None and not isinstance(self._live_db, Session):
+            if self._needs_inline_db():
                 self._cached_tool_overrides = None
                 self._tool_allowlist_cached = False
                 self._cached_tool_allowlist = None
@@ -3631,8 +3632,6 @@ class WebToolConfig(BaseToolConfig):
         self._reset_mcp_config_load_cache_state()
 
         # Team hooks can query the database. Keep those waits off Uvicorn.
-        from sqlalchemy.orm import Session
-
         from ..services.connector_team_scope import team_connector_hook_installed
         from ..services.db_runtime import run_db_io_cancellation_safe
 
@@ -3646,7 +3645,7 @@ class WebToolConfig(BaseToolConfig):
                     team_env_by_id={},
                     team_env_hook_installed=False,
                 )
-            elif self._db_factory is None and not isinstance(self._live_db, Session):
+            elif self._needs_inline_db():
                 # Standalone callers can supply a query-shaped test double. It has
                 # no engine from which to mint a worker-owned session.
                 team_snapshot = _load_mcp_team_hook_snapshot_from_db(
