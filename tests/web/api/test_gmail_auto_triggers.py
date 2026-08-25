@@ -1737,6 +1737,57 @@ def test_collect_gmail_pubsub_events_collects_matching_trigger_events() -> None:
         db.close()
 
 
+def test_collect_gmail_pubsub_events_rechecks_owner_before_emitting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-dispatch-owner-change-user")
+        oauth = _create_gmail_oauth(db, user)
+        _create_gmail_trigger(db, user)
+        state = _create_gmail_watch_state(db, user, oauth)
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "message-1"}}]}]
+            },
+            messages={
+                "message-1": {
+                    "id": "message-1",
+                    "labelIds": ["INBOX"],
+                    "payload": {"headers": []},
+                }
+            },
+        )
+        get_message = gmail_triggers._get_gmail_message
+
+        def become_actor(service: object, message_id: str) -> dict[str, object]:
+            message = get_message(service, message_id)
+            oauth.resource_owner_key = "toby:slack:41:UALICE"
+            db.commit()
+            return message
+
+        monkeypatch.setattr(gmail_triggers, "_get_gmail_message", become_actor)
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address="codeacme17@gmail.com",
+                    history_id="222",
+                    pubsub_message_id="pubsub-owner-change",
+                ),
+                state=state,
+                service_factory=lambda _db, _oauth: fake_service,
+            )
+        )
+
+        assert result.events == []
+        assert result.skipped == 1
+        db.refresh(state)
+        assert state.history_id == "100"
+    finally:
+        db.close()
+
+
 def test_collect_gmail_pubsub_events_skips_actor_owned_trigger_binding() -> None:
     db = _direct_db_session()
     try:

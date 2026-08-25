@@ -270,14 +270,25 @@ def _record_watch_state_error(
     error_message: str,
     mark_failed: bool = False,
 ) -> None:
-    state = db.query(GmailWatchState).filter(GmailWatchState.id == state_id).first()
-    if state is None:
-        return
+    ordinary_account_exists = (
+        db.query(UserOAuth.id)
+        .filter(
+            UserOAuth.id == GmailWatchState.oauth_account_id,
+            UserOAuth.user_id == GmailWatchState.user_id,
+            ordinary_gmail_clause(),
+        )
+        .exists()
+    )
+    values: dict[Any, Any] = {GmailWatchState.last_error: error_message}
     if mark_failed:
-        setattr(state, "status", TriggerProvisioningStatus.FAILED.value)
-    setattr(state, "last_error", error_message)
-    db.add(state)
-    db.commit()
+        values[GmailWatchState.status] = TriggerProvisioningStatus.FAILED.value
+    updated = (
+        db.query(GmailWatchState)
+        .filter(GmailWatchState.id == state_id, ordinary_account_exists)
+        .update(values, synchronize_session=False)
+    )
+    if updated:
+        db.commit()
 
 
 def _renew_watch_for_account(
@@ -391,15 +402,28 @@ def scan_due_gmail_watch_renewals(
             db.rollback()
             if state is None:
                 continue
-            state = (
-                db.query(GmailWatchState)
-                .filter(GmailWatchState.oauth_account_id == int(oauth_account.id))
-                .first()
+            ordinary_account_exists = (
+                db.query(UserOAuth.id)
+                .filter(
+                    UserOAuth.id == GmailWatchState.oauth_account_id,
+                    UserOAuth.user_id == GmailWatchState.user_id,
+                    ordinary_gmail_clause(),
+                )
+                .exists()
             )
-            if state is None:
+            updated = (
+                db.query(GmailWatchState)
+                .filter(
+                    GmailWatchState.oauth_account_id == int(oauth_account.id),
+                    ordinary_account_exists,
+                )
+                .update(
+                    {GmailWatchState.last_error: str(exc)},
+                    synchronize_session=False,
+                )
+            )
+            if not updated:
                 continue
-            setattr(state, "last_error", str(exc))
-            db.add(state)
             try:
                 db.commit()
             except Exception as commit_exc:
@@ -746,5 +770,20 @@ async def collect_gmail_pubsub_events(
             error_message=error_message,
         )
         raise GmailTriggerError(error_message)
+
+    # History reads can outlive the initial account lookup. Do not emit work
+    # that the callback pipeline could execute after ownership changed.
+    current_account = get_scoped_user_oauth_account(
+        db,
+        user_id=int(state.user_id),
+        account_id=int(state.oauth_account_id),
+        resource_owner_key=None,
+    )
+    if current_account is None or not is_ordinary_gmail(current_account):
+        logger.warning(
+            "Skipping Gmail callback for watch %s because account ownership changed",
+            state.id,
+        )
+        return GmailPubsubEventCollection(events=[], skipped=1)
 
     return GmailPubsubEventCollection(events=events, skipped=skipped)

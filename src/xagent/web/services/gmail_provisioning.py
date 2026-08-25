@@ -414,6 +414,21 @@ def _get_or_create_watch_state(
         setattr(target, "status", TriggerProvisioningStatus.PENDING.value)
 
     state = locked_state()
+    # Preserve release's state-then-account lock order. The caller may hold
+    # an ordinary row that another writer reassigned before this mutation.
+    ordinary_account = (
+        db.query(UserOAuth)
+        .filter(
+            UserOAuth.id == int(oauth_account.id),
+            UserOAuth.user_id == int(oauth_account.user_id),
+            ordinary_gmail_clause(),
+        )
+        .with_for_update()
+        .one_or_none()
+    )
+    if ordinary_account is None:
+        raise GmailProvisioningError("ordinary Gmail account not found")
+
     if state is None:
         state = GmailWatchState(
             user_id=int(oauth_account.user_id),
@@ -989,13 +1004,31 @@ def _ensure_gmail_mailbox_provisioned_locked(
         # checks the flag before reaching here (provision_gmail_trigger,
         # sweep_gmail_provisioning, best_effort_provision_gmail_watches_for_user,
         # _renew_watch_for_account), so this only fires for a future ungated
-        # caller. Converging to a failed watch state here preserves this
-        # function's "never raises" contract instead of leaking the disabled
-        # condition as an exception.
+        # caller. Keep the failure state inside the ordinary owner fence.
         state = _get_or_create_watch_state(db, oauth_account, email)
-        setattr(state, "status", TriggerProvisioningStatus.FAILED.value)
-        setattr(state, "last_error", GMAIL_WATCH_DISABLED_ERROR)
-        db.add(state)
+        ordinary_account_exists = (
+            db.query(UserOAuth.id)
+            .filter(
+                UserOAuth.id == GmailWatchState.oauth_account_id,
+                UserOAuth.user_id == GmailWatchState.user_id,
+                ordinary_gmail_clause(),
+            )
+            .exists()
+        )
+        updated = (
+            db.query(GmailWatchState)
+            .filter(GmailWatchState.id == int(state.id), ordinary_account_exists)
+            .update(
+                {
+                    GmailWatchState.status: TriggerProvisioningStatus.FAILED.value,
+                    GmailWatchState.last_error: GMAIL_WATCH_DISABLED_ERROR,
+                },
+                synchronize_session=False,
+            )
+        )
+        if updated == 0:
+            db.rollback()
+            raise GmailProvisioningError("ordinary Gmail ownership changed")
         db.commit()
         db.refresh(state)
         return state
@@ -1023,12 +1056,31 @@ def _ensure_gmail_mailbox_provisioned_locked(
         history_id, watch_expiration = _register_gmail_watch(service, topic_path)
     except Exception as exc:
         db.rollback()
-        state = db.query(GmailWatchState).filter(GmailWatchState.id == state_id).one()
-        setattr(state, "status", TriggerProvisioningStatus.FAILED.value)
-        setattr(state, "last_error", str(exc))
-        db.add(state)
+        ordinary_account_exists = (
+            db.query(UserOAuth.id)
+            .filter(
+                UserOAuth.id == GmailWatchState.oauth_account_id,
+                UserOAuth.user_id == GmailWatchState.user_id,
+                ordinary_gmail_clause(),
+            )
+            .exists()
+        )
+        updated = (
+            db.query(GmailWatchState)
+            .filter(GmailWatchState.id == state_id, ordinary_account_exists)
+            .update(
+                {
+                    GmailWatchState.status: TriggerProvisioningStatus.FAILED.value,
+                    GmailWatchState.last_error: str(exc),
+                },
+                synchronize_session=False,
+            )
+        )
+        if updated == 0:
+            db.rollback()
+            raise GmailProvisioningError("ordinary Gmail ownership changed") from exc
         db.commit()
-        db.refresh(state)
+        state = db.query(GmailWatchState).filter(GmailWatchState.id == state_id).one()
         logger.warning("Gmail provisioning failed for %s: %s", email, exc)
         return state
 
@@ -1196,19 +1248,29 @@ def provision_gmail_trigger(
     thread.join(timeout)
 
     db.expire_all()
-    state = (
-        db.query(GmailWatchState)
-        .filter(
-            GmailWatchState.oauth_account_id == int(oauth_account_id),
-            GmailWatchState.user_id == int(trigger.user_id),
-        )
-        .first()
+    oauth_account = get_scoped_user_oauth_account(
+        db,
+        user_id=int(trigger.user_id),
+        account_id=int(oauth_account_id),
+        resource_owner_key=None,
     )
-    if thread.is_alive() or state is None:
-        status = TriggerProvisioningStatus.PENDING.value
-        error = None
+    if oauth_account is None or not is_ordinary_gmail(oauth_account):
+        status = TriggerProvisioningStatus.FAILED.value
+        error = "ordinary Gmail account not found"
     else:
-        status, error = _trigger_facing_status(state)
+        state = (
+            db.query(GmailWatchState)
+            .filter(
+                GmailWatchState.oauth_account_id == int(oauth_account_id),
+                GmailWatchState.user_id == int(trigger.user_id),
+            )
+            .first()
+        )
+        if thread.is_alive() or state is None:
+            status = TriggerProvisioningStatus.PENDING.value
+            error = None
+        else:
+            status, error = _trigger_facing_status(state)
     setattr(trigger, "provisioning_status", status)
     setattr(trigger, "provisioning_error", error)
     db.add(trigger)
@@ -1472,18 +1534,40 @@ def release_gmail_mailbox_if_unused(
                 logger.warning(
                     "Failed to delete subscription %s: %s", subscription_path, exc
                 )
+        # Recheck between the two remote deletes. An actor transition after
+        # subscription deletion must not continue into topic deletion.
+        if ordinary_account() is None:
+            db.rollback()
+            return False
         try:
             publisher_factory().delete_topic(request={"topic": topic_path})
         except Exception as exc:
             if not _is_not_found(exc):
                 logger.warning("Failed to delete topic %s: %s", topic_path, exc)
 
-    # Recheck immediately before deleting local state. PostgreSQL still holds
-    # the OAuth row lock; SQLite re-evaluates the same owner fence here.
-    if ordinary_account() is None:
+    # Delete local state only while its current account remains ordinary.
+    ordinary_account_exists = (
+        db.query(UserOAuth.id)
+        .filter(
+            UserOAuth.id == GmailWatchState.oauth_account_id,
+            UserOAuth.user_id == GmailWatchState.user_id,
+            ordinary_gmail_clause(),
+        )
+        .exists()
+    )
+    deleted = (
+        db.query(GmailWatchState)
+        .filter(
+            GmailWatchState.id == state_id,
+            GmailWatchState.oauth_account_id == state_oauth_account_id,
+            GmailWatchState.user_id == state_user_id,
+            ordinary_account_exists,
+        )
+        .delete(synchronize_session="fetch")
+    )
+    if deleted == 0:
         db.rollback()
         return False
-    db.delete(state)
     db.commit()
     return True
 
@@ -1570,19 +1654,27 @@ def sweep_gmail_provisioning(
             )
         except Exception as exc:
             db.rollback()
-            failed_state = (
-                db.query(GmailWatchState)
-                .filter(GmailWatchState.id == state_id)
-                .one_or_none()
-            )
-            if failed_state is not None:
-                setattr(
-                    failed_state,
-                    "status",
-                    TriggerProvisioningStatus.FAILED.value,
+            ordinary_account_exists = (
+                db.query(UserOAuth.id)
+                .filter(
+                    UserOAuth.id == GmailWatchState.oauth_account_id,
+                    UserOAuth.user_id == GmailWatchState.user_id,
+                    ordinary_gmail_clause(),
                 )
-                setattr(failed_state, "last_error", str(exc))
-                db.add(failed_state)
+                .exists()
+            )
+            updated = (
+                db.query(GmailWatchState)
+                .filter(GmailWatchState.id == state_id, ordinary_account_exists)
+                .update(
+                    {
+                        GmailWatchState.status: TriggerProvisioningStatus.FAILED.value,
+                        GmailWatchState.last_error: str(exc),
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if updated:
                 db.commit()
             logger.error(
                 "Gmail provisioning sweep failed for watch %s: %s",
