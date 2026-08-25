@@ -534,13 +534,20 @@ async def test_mcp_team_snapshot_maps_pool_timeout_to_config_error(tmp_path):
     factory = sessionmaker(bind=engine)
     db = factory()
     try:
-        db.add(User(username="pending-user", password_hash="hash"))
+        user = User(username="pending-team-user", password_hash="hash")
+        db.add(user)
         db.flush()
+        connector_team_scope.set_connector_team_hooks(
+            team_visibility=lambda db, *, team_id: {
+                "mcp": set(),
+                "custom_api": set(),
+            }
+        )
         cfg = WebToolConfig(
             db=db,
             request=None,
-            user_id=1,
-            connector_team_id=None,
+            user_id=int(user.id),
+            connector_team_id=T1,
             include_mcp_tools=True,
         )
 
@@ -548,6 +555,56 @@ async def test_mcp_team_snapshot_maps_pool_timeout_to_config_error(tmp_path):
             await cfg._load_mcp_server_configs()
 
         assert isinstance(exc_info.value.__cause__, SQLAlchemyTimeoutError)
+    finally:
+        db.rollback()
+        db.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("connector_team_id", "install_hook"),
+    [(None, True), (T1, False)],
+    ids=["no-team", "no-hook"],
+)
+@pytest.mark.asyncio
+async def test_mcp_team_snapshot_skips_worker_without_team_scope(
+    tmp_path, connector_team_id, install_hook
+):
+    """No team-hook work must not require a second pool connection."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'mcp-team-skip.db'}",
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.05,
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine)
+    db = factory()
+    try:
+        user = User(username="pending-user", password_hash="hash")
+        db.add(user)
+        db.flush()
+        if install_hook:
+            connector_team_scope.set_connector_team_hooks(
+                team_visibility=lambda db, *, team_id: {
+                    "mcp": set(),
+                    "custom_api": set(),
+                }
+            )
+        cfg = WebToolConfig(
+            db=db,
+            request=None,
+            user_id=int(user.id),
+            connector_team_id=connector_team_id,
+            include_mcp_tools=True,
+        )
+
+        assert engine.pool.checkedout() == 1
+        assert await cfg._load_mcp_server_configs() == []
+        assert engine.pool.checkedout() == 1
     finally:
         db.rollback()
         db.close()

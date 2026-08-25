@@ -3632,10 +3632,20 @@ class WebToolConfig(BaseToolConfig):
         # Team hooks can query the database. Keep those waits off Uvicorn.
         from sqlalchemy.orm import Session
 
+        from ..services.connector_team_scope import team_connector_hook_installed
         from ..services.db_runtime import run_db_io_cancellation_safe
 
         try:
-            if self._db_factory is None and not isinstance(self._live_db, Session):
+            if (
+                self._connector_team_id is None
+                or not team_connector_hook_installed()
+            ):
+                team_snapshot = _MCPTeamHookSnapshot(
+                    mcp_ids=frozenset(),
+                    team_env_by_id={},
+                    team_env_hook_installed=False,
+                )
+            elif self._db_factory is None and not isinstance(self._live_db, Session):
                 # Standalone callers can supply a query-shaped test double. It has
                 # no engine from which to mint a worker-owned session.
                 team_snapshot = _load_mcp_team_hook_snapshot_from_db(
