@@ -436,10 +436,18 @@ def _fail_invalid_release_bindings(
 def _get_or_create_watch_state(
     db: Session, oauth_account: UserOAuth, email: str
 ) -> GmailWatchState:
-    # Lock an existing state against release. No account lock is taken: two
-    # absent rows must still race on the unique constraint and adopt a winner.
+    # Probe without a row lock so concurrent first-time creators can still
+    # race on the unique constraint. Existing rows use OAuth-before-watch
+    # ordering, matching release and credential deletion.
     account_id = int(oauth_account.id)
     user_id = int(oauth_account.user_id)
+
+    def current_state() -> GmailWatchState | None:
+        return (
+            db.query(GmailWatchState)
+            .filter(GmailWatchState.oauth_account_id == account_id)
+            .first()
+        )
 
     def locked_state() -> GmailWatchState | None:
         return (
@@ -447,6 +455,18 @@ def _get_or_create_watch_state(
             .filter(GmailWatchState.oauth_account_id == account_id)
             .with_for_update()
             .first()
+        )
+
+    def locked_ordinary_account() -> UserOAuth | None:
+        return (
+            db.query(UserOAuth)
+            .filter(
+                UserOAuth.id == account_id,
+                UserOAuth.user_id == user_id,
+                ordinary_gmail_clause(),
+            )
+            .with_for_update()
+            .one_or_none()
         )
 
     def ordinary_account_exists() -> Any:
@@ -487,15 +507,24 @@ def _get_or_create_watch_state(
             raise GmailProvisioningError("ordinary Gmail account not found")
         db.commit()
 
-    state = locked_state()
+    state = current_state()
     if state is not None:
         if int(state.user_id) != user_id:
             raise GmailProvisioningError(
                 "Gmail watch and OAuth account users do not match"
             )
-        persist_pending(state)
-        db.refresh(state)
-        return state
+        if locked_ordinary_account() is None:
+            db.rollback()
+            raise GmailProvisioningError("ordinary Gmail account not found")
+        state = locked_state()
+        if state is not None:
+            if int(state.user_id) != user_id:
+                raise GmailProvisioningError(
+                    "Gmail watch and OAuth account users do not match"
+                )
+            persist_pending(state)
+            db.refresh(state)
+            return state
 
     callback_id = _new_callback_id()
     try:
@@ -531,6 +560,8 @@ def _get_or_create_watch_state(
         # the insert path; the loser trips the oauth_account_id unique
         # constraint and adopts the winner's row instead of erroring out.
         db.rollback()
+        if locked_ordinary_account() is None:
+            raise GmailProvisioningError("ordinary Gmail account not found")
         state = locked_state()
         if state is None:  # pragma: no cover - row deleted between retries
             raise

@@ -4480,6 +4480,93 @@ def test_first_time_creation_race_adopts_winner_row(
 
 
 @pytest.mark.postgresql
+def test_existing_watch_provision_locks_oauth_before_watch(
+    pg_session: Session,
+) -> None:
+    """Provisioning must wait on OAuth before it can lock an existing watch."""
+    db = pg_session
+    user = _create_user(db)
+    account = _create_oauth(db, user)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="history",
+        topic_name="projects/demo/topics/lock-order",
+        callback_id="lock-order-callback",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+    )
+    db.add(state)
+    db.commit()
+
+    account_id = int(account.id)
+    state_id = int(state.id)
+    owner_lock_attempted = threading.Event()
+    errors: list[BaseException] = []
+    watch_lock_errors: list[OperationalError] = []
+    engine = get_engine()
+
+    def note_owner_lock_attempt(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if threading.current_thread() is not provisioner:
+            return
+
+        normalized = statement.strip().upper()
+        locks_owner = "FROM USER_OAUTH" in normalized and "FOR UPDATE" in normalized
+        updates_watch = normalized.startswith("UPDATE GMAIL_WATCH_STATES")
+        if locks_owner or updates_watch:
+            owner_lock_attempted.set()
+
+    def provision() -> None:
+        session = get_session_local()()
+        try:
+            oauth_account = session.get(UserOAuth, account_id)
+            assert oauth_account is not None
+            gmail_provisioning._get_or_create_watch_state(
+                session,
+                oauth_account,
+                str(oauth_account.email),
+            )
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+        finally:
+            session.close()
+
+    provisioner = threading.Thread(target=provision)
+    event.listen(engine, "before_cursor_execute", note_owner_lock_attempt)
+    try:
+        db.execute(sql_text("SET LOCAL lock_timeout = '500ms'"))
+        db.query(UserOAuth).filter(UserOAuth.id == account_id).with_for_update().one()
+
+        provisioner.start()
+        assert owner_lock_attempted.wait(timeout=30)
+        try:
+            db.query(GmailWatchState).filter(
+                GmailWatchState.id == state_id
+            ).with_for_update().one()
+        except OperationalError as exc:
+            watch_lock_errors.append(exc)
+        finally:
+            db.rollback()
+
+        provisioner.join(timeout=30)
+    finally:
+        db.rollback()
+        event.remove(engine, "before_cursor_execute", note_owner_lock_attempt)
+        provisioner.join(timeout=30)
+
+    assert not provisioner.is_alive()
+    assert errors == []
+    assert watch_lock_errors == []
+
+
+@pytest.mark.postgresql
 def test_pending_write_locks_ordinary_oauth_owner_until_commit(
     pg_session: Session,
 ) -> None:
