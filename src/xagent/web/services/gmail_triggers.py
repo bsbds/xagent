@@ -516,10 +516,11 @@ def gmail_binding_id(config: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        return value if value > 0 else None
     if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
         return None
-    return int(value)
+    account_id = int(value)
+    return account_id if account_id > 0 else None
 
 
 def is_legacy_gmail_binding(config: Any) -> bool:

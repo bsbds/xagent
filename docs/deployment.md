@@ -213,6 +213,16 @@ Actor-owned Gmail credentials remain available to builtin MCP tools. Gmail provi
 
 Keep every actor-owned credential writer disabled during this rollout. The owner-aware OAuth migration above must already be current.
 
+### Gmail trigger binding contract
+
+`oauth_account_id` has three states:
+
+1. An absent key is a legacy binding. It uses the trigger mailbox (`resource_id`) and that mailbox must be non-empty.
+2. A positive integer or ASCII decimal string is an explicit binding. It must match a same-user ordinary Gmail account.
+3. Any other present value is invalid. New API requests reject it. Persisted invalid bindings fail closed, are marked failed, and prevent mailbox teardown until repaired.
+
+Do not remove an invalid key to repair a trigger unless it is a confirmed legacy mailbox binding. Do not use `0`, `null`, booleans, floats, or non-decimal strings as Gmail account IDs.
+
 ### Deployment and migration steps
 
 1. Deploy this release to every Gmail API, callback, trigger, dispatcher, and worker process.

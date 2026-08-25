@@ -79,6 +79,7 @@ GMAIL_ACCOUNT_UNAVAILABLE_ERROR = "Gmail account is unavailable"
 GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR = (
     "Gmail trigger has an invalid OAuth account binding"
 )
+GMAIL_LEGACY_MAILBOX_BINDING_ERROR = "Gmail trigger has no legacy mailbox binding"
 
 
 def gmail_watch_disabled_error() -> str:
@@ -388,6 +389,48 @@ def _referenced_gmail_oauth_account_ids(
         resource_id = str(raw_resource_id or "").strip().lower()
         referenced.update(account_ids_by_user_email.get((user_id, resource_id), ()))
     return referenced
+
+
+def _fail_invalid_release_bindings(
+    db: Session,
+    *,
+    user_id: int,
+    email: str,
+) -> bool:
+    """Fail closed before teardown when a persisted binding needs repair."""
+    if not email:
+        return False
+
+    invalid_triggers = [
+        trigger
+        for trigger in (
+            db.query(AgentTrigger)
+            .filter(
+                AgentTrigger.type == TriggerType.GMAIL.value,
+                AgentTrigger.enabled.is_(True),
+                AgentTrigger.user_id == user_id,
+                func.lower(AgentTrigger.resource_id) == email,
+            )
+            .all()
+        )
+        if (
+            gmail_binding_id(trigger.config) is None
+            and not is_legacy_gmail_binding(trigger.config)
+        )
+    ]
+    if not invalid_triggers:
+        return False
+
+    for trigger in invalid_triggers:
+        setattr(trigger, "provisioning_status", TriggerProvisioningStatus.FAILED.value)
+        setattr(
+            trigger,
+            "provisioning_error",
+            GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR,
+        )
+        db.add(trigger)
+    db.commit()
+    return True
 
 
 def _get_or_create_watch_state(
@@ -700,7 +743,7 @@ def _reconcile_gmail_push_endpoint(
                     GmailWatchState.status == TriggerProvisioningStatus.ACTIVE.value,
                     ordinary_gmail_clause(),
                 )
-                .with_for_update()
+                .with_for_update(of=GmailWatchState)
                 .one_or_none()
             )
             if current_row is None:
@@ -1382,6 +1425,12 @@ def _bound_gmail_oauth_account_id(trigger: AgentTrigger) -> int | None:
     return gmail_binding_id(trigger.config)
 
 
+def _legacy_gmail_resource_id(trigger: AgentTrigger) -> str | None:
+    """Return the mailbox key for an unbound legacy trigger."""
+    resource_id = str(trigger.resource_id or "").strip().lower()
+    return resource_id or None
+
+
 def _reconcile_gmail_trigger_batch(
     db: Session, candidates: Sequence[AgentTrigger]
 ) -> int:
@@ -1409,7 +1458,9 @@ def _reconcile_gmail_trigger_batch(
             account_ids.add(bound_account_id)
             continue
         if is_legacy_gmail_binding(trigger.config):
-            emails.add(str(trigger.resource_id).strip().lower())
+            resource_id = _legacy_gmail_resource_id(trigger)
+            if resource_id:
+                emails.add(resource_id)
 
     filters = []
     if account_ids:
@@ -1440,15 +1491,45 @@ def _reconcile_gmail_trigger_batch(
         for state in states
     }
 
+    unresolved_bound_account_ids: set[int] = set()
+    for trigger in candidates:
+        bound_account_id = _bound_gmail_oauth_account_id(trigger)
+        if bound_account_id is None:
+            continue
+        state = states_by_account_id.get(bound_account_id)
+        if state is None or int(state.user_id) != int(trigger.user_id):
+            unresolved_bound_account_ids.add(bound_account_id)
+
+    ordinary_accounts_by_key: dict[tuple[int, int], UserOAuth] = {}
+    if unresolved_bound_account_ids:
+        ordinary_accounts_by_key = {
+            (int(account.user_id), int(account.id)): account
+            for account in (
+                db.query(UserOAuth)
+                .filter(
+                    UserOAuth.id.in_(unresolved_bound_account_ids),
+                    ordinary_gmail_clause(),
+                )
+                .all()
+            )
+        }
+
     updated = 0
     for trigger in candidates:
         bound_account_id = _bound_gmail_oauth_account_id(trigger)
+        legacy_binding = is_legacy_gmail_binding(trigger.config)
+        legacy_resource_id = (
+            _legacy_gmail_resource_id(trigger) if legacy_binding else None
+        )
         error: str | None
         if bound_account_id is not None:
             state = states_by_account_id.get(bound_account_id)
-        elif is_legacy_gmail_binding(trigger.config):
-            key = (int(trigger.user_id), str(trigger.resource_id).strip().lower())
-            state = states_by_key.get(key)
+        elif legacy_binding and legacy_resource_id:
+            state = states_by_key.get((int(trigger.user_id), legacy_resource_id))
+        elif legacy_binding:
+            state = None
+            status = TriggerProvisioningStatus.FAILED.value
+            error = GMAIL_LEGACY_MAILBOX_BINDING_ERROR
         else:
             state = None
             status = TriggerProvisioningStatus.FAILED.value
@@ -1460,17 +1541,10 @@ def _reconcile_gmail_trigger_batch(
         if has_mismatched_watch_owner:
             state = None
         if state is None and bound_account_id is not None:
-            oauth_account = get_scoped_user_oauth_account(
-                db,
-                user_id=int(trigger.user_id),
-                account_id=bound_account_id,
-                resource_owner_key=None,
+            oauth_account = ordinary_accounts_by_key.get(
+                (int(trigger.user_id), bound_account_id)
             )
-            if (
-                has_mismatched_watch_owner
-                or oauth_account is None
-                or not is_ordinary_gmail(oauth_account)
-            ):
+            if has_mismatched_watch_owner or oauth_account is None:
                 status = TriggerProvisioningStatus.FAILED.value
                 error = GMAIL_ACCOUNT_UNAVAILABLE_ERROR
             elif get_gmail_watch_enabled():
@@ -1478,11 +1552,14 @@ def _reconcile_gmail_trigger_batch(
             else:
                 status = TriggerProvisioningStatus.FAILED.value
                 error = gmail_watch_disabled_error()
-        elif state is None and is_legacy_gmail_binding(trigger.config):
-            if get_gmail_watch_enabled():
+        elif state is None and legacy_binding:
+            if legacy_resource_id is None:
+                pass
+            elif get_gmail_watch_enabled():
                 continue
-            status = TriggerProvisioningStatus.FAILED.value
-            error = gmail_watch_disabled_error()
+            else:
+                status = TriggerProvisioningStatus.FAILED.value
+                error = gmail_watch_disabled_error()
         elif state is not None:
             status, error = _trigger_facing_status(state)
         if (
@@ -1509,14 +1586,32 @@ def release_gmail_mailbox_if_unused(
 ) -> bool:
     """Reference-counted teardown of one mailbox's delivery resources.
 
-    Locks the watch state row, counts remaining enabled Gmail triggers bound
-    to the mailbox, and only when none remain stops the Gmail watch and
-    deletes the per-mailbox subscription, topic, and watch state.
-    Returns True when resources were released.
+    Locks the OAuth row before its watch state. This matches the FK-cascade
+    order for credential deletion and prevents an OAuth/watch lock cycle.
+    When no trigger references the mailbox, stops the Gmail watch and deletes
+    the per-mailbox subscription, topic, and watch state. Returns True when
+    resources were released.
     """
     service_factory = service_factory or _default_gmail_service
     publisher_factory = publisher_factory or _default_publisher
     subscriber_factory = subscriber_factory or _default_subscriber
+
+    def ordinary_account() -> UserOAuth | None:
+        return (
+            db.query(UserOAuth)
+            .filter(
+                UserOAuth.id == int(oauth_account_id),
+                ordinary_gmail_clause(),
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+
+    oauth_account = ordinary_account()
+    if oauth_account is None:
+        db.rollback()
+        return False
+
     state = (
         db.query(GmailWatchState)
         .filter(GmailWatchState.oauth_account_id == int(oauth_account_id))
@@ -1530,7 +1625,25 @@ def release_gmail_mailbox_if_unused(
     state_id = int(state.id)
     state_user_id = int(state.user_id)
     state_oauth_account_id = int(state.oauth_account_id)
+    if state_user_id != int(oauth_account.user_id):
+        logger.warning(
+            "Skipping Gmail watch release for state %s because account %s is "
+            "not owned by user %s",
+            state_id,
+            state_oauth_account_id,
+            state_user_id,
+        )
+        db.rollback()
+        return False
+
     email = str(state.email or "").strip().lower()
+    if _fail_invalid_release_bindings(
+        db,
+        user_id=state_user_id,
+        email=email,
+    ):
+        return False
+
     referenced_account_ids = _referenced_gmail_oauth_account_ids(
         db,
         [(state_oauth_account_id, state_user_id, email)],
@@ -1539,37 +1652,13 @@ def release_gmail_mailbox_if_unused(
         db.commit()
         return False
 
-    def ordinary_account() -> UserOAuth | None:
-        return (
-            db.query(UserOAuth)
-            .filter(
-                UserOAuth.id == state_oauth_account_id,
-                UserOAuth.user_id == state_user_id,
-                ordinary_gmail_clause(),
-            )
-            .with_for_update()
-            .one_or_none()
-        )
-
-    oauth_account = ordinary_account()
-    if oauth_account is None:
-        logger.warning(
-            "Skipping Gmail watch release for state %s because account %s is "
-            "not an ordinary Gmail account for user %s",
-            state_id,
-            state_oauth_account_id,
-            state_user_id,
-        )
-        db.rollback()
-        return False
-
     try:
         service = service_factory(db, oauth_account)
     except Exception as exc:
         logger.warning("Failed to build Gmail service for %s: %s", email, exc)
     else:
-        # Recheck after service construction. PostgreSQL holds the OAuth row
-        # lock across teardown; this also fails closed on SQLite.
+        # Service construction can commit. Recheck the owner before teardown
+        # so PostgreSQL reacquires the row lock and SQLite still fails closed.
         if ordinary_account() is None:
             db.rollback()
             return False

@@ -941,7 +941,10 @@ def test_gmail_trigger_requires_oauth_account() -> None:
     assert "oauth_account_id" in created.json()["detail"]
 
 
-@pytest.mark.parametrize("oauth_account_id", [None, True, 1.5])
+@pytest.mark.parametrize(
+    "oauth_account_id",
+    [None, True, 1.5, "not-an-account-id", 0, "0"],
+)
 def test_gmail_trigger_rejects_invalid_oauth_account_id(
     oauth_account_id: object,
 ) -> None:
@@ -962,7 +965,10 @@ def test_gmail_trigger_rejects_invalid_oauth_account_id(
     )
 
     assert created.status_code == 400
-    assert "oauth_account_id must be an integer" in created.json()["detail"]
+    assert created.json()["detail"] == (
+        "gmail trigger config invalid: gmail.oauth_account_id: "
+        "oauth_account_id must be a positive integer"
+    )
 
 
 def test_gmail_trigger_rejects_foreign_oauth_account() -> None:
