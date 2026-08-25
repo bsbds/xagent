@@ -218,7 +218,13 @@ async def test_no_hooks_matches_legacy_result_set(db_session, seed, connector_te
 async def test_mcp_team_snapshot_resolves_factory_before_worker(
     db_session, seed, monkeypatch
 ):
-    cfg = _cfg(db_session, seed, connector_team_id=None)
+    connector_team_scope.set_connector_team_hooks(
+        team_visibility=lambda db, *, team_id: {
+            "mcp": set(),
+            "custom_api": set(),
+        }
+    )
+    cfg = _cfg(db_session, seed, connector_team_id=T1)
     main_thread_id = threading.get_ident()
     factory_thread_ids: list[int] = []
     original_get_session_factory = cfg.get_session_factory
