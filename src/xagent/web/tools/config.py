@@ -910,6 +910,7 @@ def _load_mcp_team_hook_snapshot_from_db(
     has_team_env_hook = team_env_hook_installed()
     team_env_by_id: Mapping[int, Any] = {}
     if connector_team_id is not None and mcp_ids and has_team_env_hook:
+        # Detach nested hook-owned values before they cross the thread boundary.
         team_env_by_id = copy.deepcopy(load_team_env_overrides(db, connector_team_id))
     return _MCPTeamHookSnapshot(
         mcp_ids=mcp_ids,
