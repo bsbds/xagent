@@ -919,23 +919,6 @@ def _load_mcp_team_hook_snapshot_from_db(
     )
 
 
-def _load_mcp_team_hook_snapshot(
-    session_factory: Any,
-    *,
-    user_id: int | None,
-    connector_team_id: int | None,
-) -> _MCPTeamHookSnapshot:
-    """Create and close a worker-owned Session, then return detached values."""
-    return _run_with_checked_out_session(
-        session_factory,
-        lambda db: _load_mcp_team_hook_snapshot_from_db(
-            db,
-            user_id=user_id,
-            connector_team_id=connector_team_id,
-        ),
-    )
-
-
 def _load_tool_factory_runtime_snapshot(
     session_factory: Any,
     plan: _ToolFactoryRuntimeLoadPlan,
@@ -3636,10 +3619,7 @@ class WebToolConfig(BaseToolConfig):
         from ..services.db_runtime import run_db_io_cancellation_safe
 
         try:
-            if (
-                self._connector_team_id is None
-                or not team_connector_hook_installed()
-            ):
+            if self._connector_team_id is None or not team_connector_hook_installed():
                 team_snapshot = _MCPTeamHookSnapshot(
                     mcp_ids=frozenset(),
                     team_env_by_id=MappingProxyType({}),
@@ -3662,10 +3642,13 @@ class WebToolConfig(BaseToolConfig):
                 # reloads their attributes from the database.
                 self.release_db_connection()
                 team_snapshot = await run_db_io_cancellation_safe(
-                    lambda: _load_mcp_team_hook_snapshot(
+                    lambda: _run_with_checked_out_session(
                         session_factory,
-                        user_id=user_id,
-                        connector_team_id=connector_team_id,
+                        lambda db: _load_mcp_team_hook_snapshot_from_db(
+                            db,
+                            user_id=user_id,
+                            connector_team_id=connector_team_id,
+                        ),
                     )
                 )
         except ConnectorRuntimeError:
