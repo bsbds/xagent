@@ -3658,6 +3658,8 @@ class WebToolConfig(BaseToolConfig):
                 session_factory = self.get_session_factory()
                 user_id = self._user_id
                 connector_team_id = self._connector_team_id
+                # A clean release can expire caller ORM objects. Later access
+                # reloads their attributes from the database.
                 self.release_db_connection()
                 team_snapshot = await run_db_io_cancellation_safe(
                     lambda: _load_mcp_team_hook_snapshot(
