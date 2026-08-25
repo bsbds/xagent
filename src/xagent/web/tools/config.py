@@ -3667,6 +3667,8 @@ class WebToolConfig(BaseToolConfig):
                     )
                 )
         except ConnectorRuntimeError:
+            # Preserve the team-scope 503. MCPConfigLoadError reports a
+            # different failure: selected server configuration could not load.
             raise
         except Exception as error:
             logger.warning(
