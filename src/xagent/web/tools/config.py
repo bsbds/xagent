@@ -914,7 +914,7 @@ def _load_mcp_team_hook_snapshot_from_db(
         team_env_by_id = copy.deepcopy(load_team_env_overrides(db, connector_team_id))
     return _MCPTeamHookSnapshot(
         mcp_ids=mcp_ids,
-        team_env_by_id=team_env_by_id,
+        team_env_by_id=MappingProxyType(dict(team_env_by_id)),
         team_env_hook_installed=has_team_env_hook,
     )
 
@@ -3642,7 +3642,7 @@ class WebToolConfig(BaseToolConfig):
             ):
                 team_snapshot = _MCPTeamHookSnapshot(
                     mcp_ids=frozenset(),
-                    team_env_by_id={},
+                    team_env_by_id=MappingProxyType({}),
                     team_env_hook_installed=False,
                 )
             elif self._needs_inline_db():

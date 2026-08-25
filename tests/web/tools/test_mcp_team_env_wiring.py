@@ -32,6 +32,7 @@ import logging
 import threading
 from collections.abc import Iterator
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from sqlalchemy import create_engine
@@ -42,7 +43,10 @@ from xagent.core.tools.adapters.vibe.connector_runtime import ConnectorRuntimeEr
 from xagent.core.tools.adapters.vibe.mcp_tools import create_mcp_tools
 from xagent.web.models import Base, MCPServer, User, UserMCPServer
 from xagent.web.services import agent_team_scope, connector_team_scope, mcp_runtime
-from xagent.web.tools.config import WebToolConfig
+from xagent.web.tools.config import (
+    WebToolConfig,
+    _load_mcp_team_hook_snapshot_from_db,
+)
 
 T1 = 301  # the governing team throughout this file
 T2 = 302  # a team the runner might also belong to, never the governing one
@@ -224,6 +228,24 @@ async def _config_for(db_session, seed, server, *, connector_team_id) -> dict:
 # -- the resolution never consults that hook at all, so the outcome
 # must be identical either way.
 # ---------------------------------------------------------------------------
+
+
+def test_team_env_snapshot_mapping_is_read_only(db_session, seed):
+    server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {server_id}})
+    mcp_runtime.set_mcp_team_env_hook(
+        lambda db, *, team_id: {server_id: {"TEAM_KEY": "team-value"}}
+    )
+
+    snapshot = _load_mcp_team_hook_snapshot_from_db(
+        db_session,
+        user_id=int(seed.c.id),
+        connector_team_id=T1,
+    )
+
+    assert snapshot.team_env_by_id[server_id]["TEAM_KEY"] == "team-value"
+    with pytest.raises(TypeError):
+        cast(dict[int, dict[str, str]], snapshot.team_env_by_id)[server_id] = {}
 
 
 @pytest.mark.asyncio
