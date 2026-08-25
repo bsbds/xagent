@@ -217,9 +217,13 @@ Keep every actor-owned credential writer disabled during this rollout. The owner
 
 `oauth_account_id` has three states:
 
-1. An absent key is a legacy binding. It uses the trigger mailbox (`resource_id`) and that mailbox must be non-empty.
+1. An absent key is a persisted legacy binding. Its mailbox (`resource_id`) must be non-empty.
 2. A positive integer or ASCII decimal string is an explicit binding. It must match a same-user ordinary Gmail account.
 3. Any other present value is invalid. New API requests reject it. Persisted invalid bindings fail closed, are marked failed, and prevent mailbox teardown until repaired.
+
+Provisioning resolves a legacy binding only when its mailbox matches exactly one same-user ordinary Gmail account. It does not add an account ID to the stored legacy configuration. A missing or ambiguous match fails closed.
+
+New or edited Gmail trigger configurations must use an explicit account ID. You can re-enable a persisted legacy trigger without editing its configuration. To repair an unavailable legacy binding, replace it with the matching ordinary Gmail account ID.
 
 Do not remove an invalid key to repair a trigger unless it is a confirmed legacy mailbox binding. Do not use `0`, `null`, booleans, floats, or non-decimal strings as Gmail account IDs.
 

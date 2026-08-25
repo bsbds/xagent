@@ -1274,6 +1274,44 @@ def _provision_in_fresh_session(oauth_account_id: int) -> None:
         db.close()
 
 
+def _provisioning_account(
+    db: Session,
+    trigger: AgentTrigger,
+) -> UserOAuth | None:
+    account_id = gmail_binding_id(trigger.config)
+    if account_id is not None:
+        account = get_scoped_user_oauth_account(
+            db,
+            user_id=int(trigger.user_id),
+            account_id=account_id,
+            resource_owner_key=None,
+        )
+        return account if account is not None and is_ordinary_gmail(account) else None
+
+    if not is_legacy_gmail_binding(trigger.config):
+        return None
+
+    mailbox = str(trigger.resource_id or "").strip().lower()
+    if not mailbox:
+        return None
+
+    matches = (
+        scoped_user_oauth_query(
+            db,
+            user_id=int(trigger.user_id),
+            resource_owner_key=None,
+        )
+        .filter(
+            UserOAuth.provider == GMAIL_OAUTH_PROVIDER,
+            func.lower(UserOAuth.email) == mailbox,
+        )
+        .order_by(UserOAuth.id)
+        .limit(2)
+        .all()
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
 def provision_gmail_trigger(
     db: Session,
     trigger: AgentTrigger,
@@ -1295,33 +1333,28 @@ def provision_gmail_trigger(
     unless the mailbox still has a watch state row from when the flag was
     on, in which case its derived status is reported.
     """
-    oauth_account_id = gmail_binding_id(trigger.config)
-    if oauth_account_id is None:
+    legacy_binding = is_legacy_gmail_binding(trigger.config)
+    bound_account_id = gmail_binding_id(trigger.config)
+    oauth_account = _provisioning_account(db, trigger)
+    if oauth_account is None:
         status = TriggerProvisioningStatus.FAILED.value
-        binding_error = (
-            "Gmail trigger has no bound OAuth account"
-            if is_legacy_gmail_binding(trigger.config)
-            else GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR
-        )
+        if legacy_binding:
+            binding_error = (
+                GMAIL_ACCOUNT_UNAVAILABLE_ERROR
+                if str(trigger.resource_id or "").strip()
+                else GMAIL_LEGACY_MAILBOX_BINDING_ERROR
+            )
+        elif bound_account_id is not None:
+            binding_error = GMAIL_ACCOUNT_UNAVAILABLE_ERROR
+        else:
+            binding_error = GMAIL_INVALID_OAUTH_ACCOUNT_BINDING_ERROR
         setattr(trigger, "provisioning_status", status)
         setattr(trigger, "provisioning_error", binding_error)
         db.add(trigger)
         db.commit()
         return status
 
-    oauth_account = get_scoped_user_oauth_account(
-        db,
-        user_id=int(trigger.user_id),
-        account_id=int(oauth_account_id),
-        resource_owner_key=None,
-    )
-    if oauth_account is None or not is_ordinary_gmail(oauth_account):
-        status = TriggerProvisioningStatus.FAILED.value
-        setattr(trigger, "provisioning_status", status)
-        setattr(trigger, "provisioning_error", GMAIL_ACCOUNT_UNAVAILABLE_ERROR)
-        db.add(trigger)
-        db.commit()
-        return status
+    oauth_account_id = int(oauth_account.id)
 
     if not get_gmail_watch_enabled():
         state = (

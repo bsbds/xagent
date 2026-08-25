@@ -447,6 +447,144 @@ def test_trigger_provisioning_rejects_actor_account(db_session: Session) -> None
     assert trigger.provisioning_error == "Gmail account is unavailable"
 
 
+def test_trigger_provisioning_resolves_persisted_legacy_mailbox(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    account = _create_oauth(db_session, user)
+    trigger = _create_gmail_trigger(db_session, user, agent, account, enabled=False)
+    trigger.config = {"watch_label": "INBOX"}
+    trigger.enabled = True
+    trigger.name = "Re-enabled legacy Gmail inbox"
+    db_session.commit()
+    provisioned_account_ids: list[int] = []
+
+    class CompletedThread:
+        def join(self, _timeout: int | None) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+    def provision(account_id: int) -> Any:
+        provisioned_account_ids.append(account_id)
+        db_session.add(
+            GmailWatchState(
+                user_id=int(user.id),
+                oauth_account_id=account_id,
+                email=str(account.email),
+                history_id="legacy-history",
+                topic_name="projects/demo-project/topics/legacy",
+                status=TriggerProvisioningStatus.ACTIVE.value,
+                watch_expiration=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+        db_session.commit()
+        return CompletedThread()
+
+    status = gmail_provisioning.provision_gmail_trigger(
+        db_session,
+        trigger,
+        run_in_thread=provision,
+    )
+
+    assert status == TriggerProvisioningStatus.ACTIVE.value
+    assert provisioned_account_ids == [int(account.id)]
+    assert trigger.config == {"watch_label": "INBOX"}
+    assert trigger.provisioning_error is None
+
+
+@pytest.mark.parametrize("account_kind", ["actor", "cross-user", "non-gmail"])
+def test_trigger_provisioning_rejects_nonordinary_legacy_mailbox(
+    db_session: Session,
+    account_kind: str,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    mailbox = "legacy@gmail.example"
+    account_user = user
+    provider = "gmail"
+    owner_key: str | None = None
+    if account_kind == "actor":
+        owner_key = "toby:slack:41:UALICE"
+    elif account_kind == "cross-user":
+        account_user = User(
+            username="other-legacy-owner",
+            email="other-legacy-owner@example.com",
+            password_hash="hash",
+            is_admin=False,
+        )
+        db_session.add(account_user)
+        db_session.commit()
+        db_session.refresh(account_user)
+    else:
+        provider = "google-drive"
+
+    db_session.add_all(
+        [
+            UserOAuth(
+                user_id=int(account_user.id),
+                provider=provider,
+                resource_owner_key=owner_key,
+                access_token="legacy-decoy-token",
+                email=mailbox,
+            ),
+            AgentTrigger(
+                user_id=int(user.id),
+                agent_id=int(agent.id),
+                type=TriggerType.GMAIL.value,
+                name="Legacy Gmail inbox",
+                enabled=True,
+                provider=TriggerType.GMAIL.value,
+                resource_id=mailbox,
+                config={"watch_label": "INBOX"},
+            ),
+        ]
+    )
+    db_session.commit()
+    trigger = db_session.query(AgentTrigger).one()
+
+    def forbidden_run_in_thread(_account_id: int) -> NoReturn:
+        raise AssertionError("invalid legacy account reached provisioning")
+
+    status = gmail_provisioning.provision_gmail_trigger(
+        db_session,
+        trigger,
+        run_in_thread=forbidden_run_in_thread,
+    )
+
+    assert status == TriggerProvisioningStatus.FAILED.value
+    assert trigger.provisioning_error == GMAIL_ACCOUNT_UNAVAILABLE_ERROR
+    assert db_session.query(GmailWatchState).count() == 0
+
+
+def test_trigger_provisioning_rejects_ambiguous_legacy_mailbox(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    agent = _create_agent(db_session, user)
+    first = _create_oauth(db_session, user, email="legacy@gmail.example")
+    second = _create_oauth(db_session, user, email="Legacy@Gmail.Example")
+    trigger = _create_gmail_trigger(db_session, user, agent, first)
+    trigger.config = {"watch_label": "INBOX"}
+    db_session.commit()
+
+    def forbidden_run_in_thread(_account_id: int) -> NoReturn:
+        raise AssertionError("ambiguous legacy account reached provisioning")
+
+    status = gmail_provisioning.provision_gmail_trigger(
+        db_session,
+        trigger,
+        run_in_thread=forbidden_run_in_thread,
+    )
+
+    assert int(first.id) != int(second.id)
+    assert status == TriggerProvisioningStatus.FAILED.value
+    assert trigger.provisioning_error == GMAIL_ACCOUNT_UNAVAILABLE_ERROR
+    assert db_session.query(GmailWatchState).count() == 0
+
+
 def test_release_rejects_actor_owned_account(db_session: Session) -> None:
     user = _create_user(db_session)
     account = _create_oauth(db_session, user)
