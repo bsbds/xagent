@@ -24,7 +24,7 @@ from typing import Any, Callable, Iterator
 
 from sqlalchemy import String, and_
 from sqlalchemy import cast as sql_cast
-from sqlalchemy import func, or_, text
+from sqlalchemy import func, insert, literal, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -395,53 +395,92 @@ def _referenced_gmail_oauth_account_ids(
 def _get_or_create_watch_state(
     db: Session, oauth_account: UserOAuth, email: str
 ) -> GmailWatchState:
-    # Locked so create/reconcile serializes against the FOR UPDATE taken by
-    # release_gmail_mailbox_if_unused: without it, unregistering the last
-    # trigger can delete the row a concurrent provisioning run is updating,
-    # stranding the new trigger at PENDING until the sweep retries.
+    # Lock an existing state against release. No account lock is taken: two
+    # absent rows must still race on the unique constraint and adopt a winner.
+    account_id = int(oauth_account.id)
+    user_id = int(oauth_account.user_id)
+
     def locked_state() -> GmailWatchState | None:
         return (
             db.query(GmailWatchState)
-            .filter(GmailWatchState.oauth_account_id == int(oauth_account.id))
+            .filter(GmailWatchState.oauth_account_id == account_id)
             .with_for_update()
             .first()
         )
 
-    def mark_pending(target: GmailWatchState) -> None:
-        if not target.callback_id:
-            setattr(target, "callback_id", _new_callback_id())
-        setattr(target, "email", email)
-        setattr(target, "status", TriggerProvisioningStatus.PENDING.value)
+    def ordinary_account_exists() -> Any:
+        return (
+            db.query(UserOAuth.id)
+            .filter(
+                UserOAuth.id == account_id,
+                UserOAuth.user_id == user_id,
+                ordinary_gmail_clause(),
+            )
+            .exists()
+        )
+
+    def pending_values(state: GmailWatchState) -> dict[Any, Any]:
+        values: dict[Any, Any] = {
+            GmailWatchState.email: email,
+            GmailWatchState.status: TriggerProvisioningStatus.PENDING.value,
+        }
+        if not state.callback_id:
+            values[GmailWatchState.callback_id] = _new_callback_id()
+        return values
+
+    def persist_pending(state: GmailWatchState) -> None:
+        updated = (
+            db.query(GmailWatchState)
+            .filter(
+                GmailWatchState.id == int(state.id),
+                GmailWatchState.oauth_account_id == account_id,
+                GmailWatchState.user_id == user_id,
+                ordinary_account_exists(),
+            )
+            .update(pending_values(state), synchronize_session=False)
+        )
+        if updated == 0:
+            db.rollback()
+            raise GmailProvisioningError("ordinary Gmail account not found")
+        db.commit()
 
     state = locked_state()
-    # Preserve release's state-then-account lock order. The caller may hold
-    # an ordinary row that another writer reassigned before this mutation.
-    ordinary_account = (
-        db.query(UserOAuth)
-        .filter(
-            UserOAuth.id == int(oauth_account.id),
-            UserOAuth.user_id == int(oauth_account.user_id),
-            ordinary_gmail_clause(),
-        )
-        .with_for_update()
-        .one_or_none()
-    )
-    if ordinary_account is None:
-        raise GmailProvisioningError("ordinary Gmail account not found")
+    if state is not None:
+        if int(state.user_id) != user_id:
+            raise GmailProvisioningError(
+                "Gmail watch and OAuth account users do not match"
+            )
+        persist_pending(state)
+        db.refresh(state)
+        return state
 
-    if state is None:
-        state = GmailWatchState(
-            user_id=int(oauth_account.user_id),
-            oauth_account_id=int(oauth_account.id),
-            email=email,
-            history_id="",
-            topic_name="",
-        )
-        db.add(state)
-    elif int(state.user_id) != int(oauth_account.user_id):
-        raise GmailProvisioningError("Gmail watch and OAuth account users do not match")
-    mark_pending(state)
+    callback_id = _new_callback_id()
     try:
+        inserted = db.execute(
+            insert(GmailWatchState).from_select(
+                [
+                    GmailWatchState.user_id,
+                    GmailWatchState.oauth_account_id,
+                    GmailWatchState.email,
+                    GmailWatchState.history_id,
+                    GmailWatchState.topic_name,
+                    GmailWatchState.callback_id,
+                    GmailWatchState.status,
+                ],
+                select(
+                    literal(user_id),
+                    literal(account_id),
+                    literal(email),
+                    literal(""),
+                    literal(""),
+                    literal(callback_id),
+                    literal(TriggerProvisioningStatus.PENDING.value),
+                ).where(ordinary_account_exists()),
+            )
+        )
+        if int(getattr(inserted, "rowcount", 0) or 0) != 1:
+            db.rollback()
+            raise GmailProvisioningError("ordinary Gmail account not found")
         db.commit()
     except IntegrityError:
         # FOR UPDATE takes no lock when the row does not exist yet, so two
@@ -449,16 +488,19 @@ def _get_or_create_watch_state(
         # the insert path; the loser trips the oauth_account_id unique
         # constraint and adopts the winner's row instead of erroring out.
         db.rollback()
-        adopted = locked_state()
-        if adopted is None:  # pragma: no cover - row deleted between retries
+        state = locked_state()
+        if state is None:  # pragma: no cover - row deleted between retries
             raise
-        state = adopted
-        if int(state.user_id) != int(oauth_account.user_id):
+        if int(state.user_id) != user_id:
             raise GmailProvisioningError(
                 "Gmail watch and OAuth account users do not match"
             )
-        mark_pending(state)
-        db.commit()
+        persist_pending(state)
+    else:
+        state = locked_state()
+        if state is None:  # pragma: no cover - row deleted after insert
+            raise GmailProvisioningError("Gmail watch state was deleted")
+
     db.refresh(state)
     return state
 

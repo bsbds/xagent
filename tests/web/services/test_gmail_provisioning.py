@@ -744,6 +744,117 @@ def test_renewal_does_not_record_actor_owner_failure(
     assert state.last_error == "prior renewal error"
 
 
+def test_pending_update_rejects_target_actor_at_write_boundary(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The target account, not an ordinary same-user decoy, authorizes PENDING."""
+    user = _create_user(db_session)
+    target = _create_oauth(db_session, user)
+    _create_oauth(db_session, user, email="decoy@gmail.example")
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(target.id),
+        email=str(target.email),
+        history_id="history",
+        topic_name="projects/demo/topics/target",
+        callback_id="stable-callback",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    real_execute = db_session.execute
+    changed = False
+
+    def actorize_before_pending(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal changed
+        if (
+            not changed
+            and getattr(getattr(statement, "table", None), "name", None)
+            == GmailWatchState.__tablename__
+        ):
+            changed = True
+            db_session.query(UserOAuth).filter(UserOAuth.id == int(target.id)).update(
+                {UserOAuth.resource_owner_key: "toby:slack:41:UALICE"},
+                synchronize_session=False,
+            )
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", actorize_before_pending)
+
+    with pytest.raises(
+        gmail_provisioning.GmailProvisioningError,
+        match="ordinary Gmail account not found",
+    ):
+        gmail_provisioning._get_or_create_watch_state(
+            db_session,
+            target,
+            str(target.email),
+        )
+
+    db_session.expire_all()
+    persisted = db_session.get(GmailWatchState, int(state.id))
+    assert changed is True
+    assert persisted is not None
+    assert persisted.status == TriggerProvisioningStatus.ACTIVE.value
+    assert persisted.callback_id == "stable-callback"
+
+
+def test_pending_create_rejects_target_reassignment_at_write_boundary(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary same-user decoy cannot authorize a reassigned target."""
+    user = _create_user(db_session)
+    other_user = User(
+        username="other-owner",
+        email="other-owner@example.com",
+        password_hash="hash",
+        is_admin=False,
+    )
+    db_session.add(other_user)
+    db_session.commit()
+    target = _create_oauth(db_session, user)
+    _create_oauth(db_session, user, email="decoy@gmail.example")
+
+    real_execute = db_session.execute
+    changed = False
+
+    def reassign_before_pending(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal changed
+        if (
+            not changed
+            and getattr(getattr(statement, "table", None), "name", None)
+            == GmailWatchState.__tablename__
+        ):
+            changed = True
+            db_session.query(UserOAuth).filter(UserOAuth.id == int(target.id)).update(
+                {UserOAuth.user_id: int(other_user.id)},
+                synchronize_session=False,
+            )
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", reassign_before_pending)
+
+    with pytest.raises(
+        gmail_provisioning.GmailProvisioningError,
+        match="ordinary Gmail account not found",
+    ):
+        gmail_provisioning._get_or_create_watch_state(
+            db_session,
+            target,
+            str(target.email),
+        )
+
+    db_session.expire_all()
+    assert changed is True
+    assert (
+        db_session.query(GmailWatchState)
+        .filter(GmailWatchState.oauth_account_id == int(target.id))
+        .count()
+        == 0
+    )
+
+
 def test_provisioning_creates_deterministic_resources_and_active_state(
     db_session: Session,
 ) -> None:
@@ -3874,20 +3985,24 @@ def test_concurrent_first_time_creations_race_on_the_unique_constraint(
 
     def do_enable(name: str) -> None:
         session = get_session_local()()
-        real_commit = session.commit
-        insert_commit_pending = True
+        real_execute = session.execute
+        insert_pending = True
 
-        def synchronized_commit() -> None:
-            # Hold the insert commit until both sessions have run the empty
-            # FOR UPDATE select, so both take the insert path; the loser's
-            # adoption retry commit passes straight through.
-            nonlocal insert_commit_pending
-            if insert_commit_pending:
-                insert_commit_pending = False
+        def synchronized_insert(statement: Any, *args: Any, **kwargs: Any) -> Any:
+            # Hold the INSERT ... SELECT until both sessions have passed the
+            # empty FOR UPDATE select. The winner then commits immediately;
+            # the loser gets the unique violation and adopts it.
+            nonlocal insert_pending
+            if (
+                insert_pending
+                and getattr(getattr(statement, "table", None), "name", None)
+                == GmailWatchState.__tablename__
+            ):
+                insert_pending = False
                 both_past_the_empty_select.wait(timeout=30)
-            real_commit()
+            return real_execute(statement, *args, **kwargs)
 
-        session.commit = synchronized_commit  # type: ignore[method-assign]
+        session.execute = synchronized_insert  # type: ignore[method-assign]
         try:
             acct = session.query(UserOAuth).filter(UserOAuth.id == account_id).one()
             state = _get_or_create_watch_state(session, acct, "owner@gmail.example")
