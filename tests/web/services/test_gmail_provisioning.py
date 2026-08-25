@@ -402,6 +402,125 @@ def test_release_rejects_actor_owned_account(db_session: Session) -> None:
     assert db_session.get(GmailWatchState, int(state.id)) is not None
 
 
+def test_provisioning_rejects_owner_change_before_active_persist(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    gmail = FakeGmailService()
+    register_watch = gmail_provisioning._register_gmail_watch
+
+    def become_actor_after_watch(
+        service: Any, topic_path: str
+    ) -> tuple[str, datetime | None]:
+        result = register_watch(service, topic_path)
+        account.resource_owner_key = "toby:slack:41:UALICE"
+        db_session.commit()
+        return result
+
+    monkeypatch.setattr(
+        gmail_provisioning,
+        "_register_gmail_watch",
+        become_actor_after_watch,
+    )
+
+    with pytest.raises(
+        gmail_provisioning.GmailProvisioningError,
+        match="ordinary Gmail ownership changed during provisioning",
+    ):
+        ensure_gmail_mailbox_provisioned(
+            db_session,
+            account,
+            service_factory=lambda _db, _account: gmail,
+            publisher_factory=lambda: publisher,
+            subscriber_factory=lambda: subscriber,
+        )
+
+    state = db_session.query(GmailWatchState).one()
+    assert state.status == TriggerProvisioningStatus.PENDING.value
+    assert gmail.watch_calls != []
+    assert publisher.topics != set()
+    assert subscriber.subscriptions != {}
+
+
+def test_release_rechecks_owner_before_cloud_teardown(db_session: Session) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+    gmail = FakeGmailService()
+
+    def become_actor_before_stop(_db: Session, _account: UserOAuth) -> FakeGmailService:
+        account.resource_owner_key = "toby:slack:41:UALICE"
+        db_session.commit()
+        return gmail
+
+    released = release_gmail_mailbox_if_unused(
+        db_session,
+        int(account.id),
+        service_factory=become_actor_before_stop,
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert released is False
+    assert gmail.stop_calls == []
+    assert publisher.deleted_topics == []
+    assert subscriber.deleted_subscriptions == []
+    assert db_session.get(GmailWatchState, int(state.id)) is not None
+
+
+def test_release_keeps_watch_after_owner_changes_during_teardown(
+    db_session: Session,
+) -> None:
+    user = _create_user(db_session)
+    account = _create_oauth(db_session, user)
+    publisher = FakePublisher()
+    subscriber = FakeSubscriber()
+    state = ensure_gmail_mailbox_provisioned(
+        db_session,
+        account,
+        service_factory=lambda _db, _account: FakeGmailService(),
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    class ActorAfterStopUsers(FakeGmailUsers):
+        def stop(self, *, userId: str) -> FakeExecutable:
+            result = super().stop(userId=userId)
+            account.resource_owner_key = "toby:slack:41:UALICE"
+            db_session.commit()
+            return result
+
+    class ActorAfterStopService(FakeGmailService):
+        def users(self) -> ActorAfterStopUsers:
+            return ActorAfterStopUsers(self)
+
+    gmail = ActorAfterStopService()
+    released = release_gmail_mailbox_if_unused(
+        db_session,
+        int(account.id),
+        service_factory=lambda _db, _account: gmail,
+        publisher_factory=lambda: publisher,
+        subscriber_factory=lambda: subscriber,
+    )
+
+    assert released is False
+    assert gmail.stop_calls == [{"userId": "me"}]
+    assert publisher.deleted_topics == []
+    assert subscriber.deleted_subscriptions == []
+    assert db_session.get(GmailWatchState, int(state.id)) is not None
+
+
 def test_provisioning_creates_deterministic_resources_and_active_state(
     db_session: Session,
 ) -> None:

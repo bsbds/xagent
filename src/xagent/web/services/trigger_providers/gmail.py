@@ -557,9 +557,34 @@ class GmailProvider:
         )
         if not _history_cursor_advances(state.history_id, notification.history_id):
             return
-        setattr(state, "history_id", notification.history_id)
-        setattr(state, "last_error", None)
-        db.add(state)
+        ordinary_account_exists = (
+            db.query(UserOAuth.id)
+            .filter(
+                UserOAuth.id == GmailWatchState.oauth_account_id,
+                UserOAuth.user_id == GmailWatchState.user_id,
+                ordinary_gmail_clause(),
+            )
+            .exists()
+        )
+        updated = (
+            db.query(GmailWatchState)
+            .filter(
+                GmailWatchState.id == int(state.id),
+                GmailWatchState.oauth_account_id == int(state.oauth_account_id),
+                GmailWatchState.user_id == int(state.user_id),
+                ordinary_account_exists,
+            )
+            .update(
+                {
+                    GmailWatchState.history_id: notification.history_id,
+                    GmailWatchState.last_error: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        if updated == 0:
+            db.rollback()
+            return
         db.commit()
 
 

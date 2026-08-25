@@ -1032,23 +1032,50 @@ def _ensure_gmail_mailbox_provisioned_locked(
         logger.warning("Gmail provisioning failed for %s: %s", email, exc)
         return state
 
+    transition_values: dict[Any, Any] = {
+        GmailWatchState.topic_name: topic_path,
+        GmailWatchState.subscription_name: subscription_path,
+        GmailWatchState.history_id: history_id,
+        GmailWatchState.watch_expiration: watch_expiration,
+        GmailWatchState.status: TriggerProvisioningStatus.ACTIVE.value,
+        GmailWatchState.last_error: None,
+    }
     if previous_audience != push_audience:
+        transition_values[GmailWatchState.push_audience] = push_audience
         if previous_audience:
-            setattr(state, "previous_push_audience", previous_audience)
-            setattr(
-                state,
-                "previous_push_audience_expires_at",
-                _now() + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD,
+            transition_values.update(
+                {
+                    GmailWatchState.previous_push_audience: previous_audience,
+                    GmailWatchState.previous_push_audience_expires_at: (
+                        _now() + GMAIL_CALLBACK_AUDIENCE_GRACE_PERIOD
+                    ),
+                }
             )
-        setattr(state, "push_audience", push_audience)
 
-    setattr(state, "topic_name", topic_path)
-    setattr(state, "subscription_name", subscription_path)
-    setattr(state, "history_id", history_id)
-    setattr(state, "watch_expiration", watch_expiration)
-    setattr(state, "status", TriggerProvisioningStatus.ACTIVE.value)
-    setattr(state, "last_error", None)
-    db.add(state)
+    ordinary_account_exists = (
+        db.query(UserOAuth.id)
+        .filter(
+            UserOAuth.id == GmailWatchState.oauth_account_id,
+            UserOAuth.user_id == GmailWatchState.user_id,
+            ordinary_gmail_clause(),
+        )
+        .exists()
+    )
+    updated = (
+        db.query(GmailWatchState)
+        .filter(
+            GmailWatchState.id == state_id,
+            GmailWatchState.oauth_account_id == oauth_account.id,
+            GmailWatchState.user_id == oauth_account.user_id,
+            ordinary_account_exists,
+        )
+        .update(transition_values, synchronize_session=False)
+    )
+    if updated == 0:
+        db.rollback()
+        raise GmailProvisioningError(
+            "ordinary Gmail ownership changed during provisioning"
+        )
     db.commit()
     db.refresh(state)
     return state
@@ -1374,37 +1401,61 @@ def release_gmail_mailbox_if_unused(
         db.commit()
         return False
 
+    state_id = int(state.id)
+    state_user_id = int(state.user_id)
+    state_oauth_account_id = int(state.oauth_account_id)
     email = str(state.email or "").strip().lower()
     referenced_account_ids = _referenced_gmail_oauth_account_ids(
         db,
-        [(int(oauth_account_id), int(state.user_id), email)],
+        [(state_oauth_account_id, state_user_id, email)],
     )
-    if int(oauth_account_id) in referenced_account_ids:
+    if state_oauth_account_id in referenced_account_ids:
         db.commit()
         return False
 
-    oauth_account = get_scoped_user_oauth_account(
-        db,
-        user_id=int(state.user_id),
-        account_id=int(oauth_account_id),
-        resource_owner_key=None,
-    )
-    if oauth_account is None or not is_ordinary_gmail(oauth_account):
+    def ordinary_account() -> UserOAuth | None:
+        return (
+            db.query(UserOAuth)
+            .filter(
+                UserOAuth.id == state_oauth_account_id,
+                UserOAuth.user_id == state_user_id,
+                ordinary_gmail_clause(),
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+
+    oauth_account = ordinary_account()
+    if oauth_account is None:
         logger.warning(
             "Skipping Gmail watch release for state %s because account %s is "
             "not an ordinary Gmail account for user %s",
-            state.id,
-            oauth_account_id,
-            state.user_id,
+            state_id,
+            state_oauth_account_id,
+            state_user_id,
         )
         db.rollback()
         return False
 
     try:
         service = service_factory(db, oauth_account)
-        service.users().stop(userId="me").execute()
     except Exception as exc:
-        logger.warning("Failed to stop Gmail watch for %s: %s", email, exc)
+        logger.warning("Failed to build Gmail service for %s: %s", email, exc)
+    else:
+        # Recheck after service construction. PostgreSQL holds the OAuth row
+        # lock across teardown; this also fails closed on SQLite.
+        if ordinary_account() is None:
+            db.rollback()
+            return False
+        try:
+            service.users().stop(userId="me").execute()
+        except Exception as exc:
+            logger.warning("Failed to stop Gmail watch for %s: %s", email, exc)
+
+    # Do not delete Pub/Sub resources after the credential owner changes.
+    if ordinary_account() is None:
+        db.rollback()
+        return False
 
     project_id = get_gmail_pubsub_project_id()
     if project_id:
@@ -1427,6 +1478,11 @@ def release_gmail_mailbox_if_unused(
             if not _is_not_found(exc):
                 logger.warning("Failed to delete topic %s: %s", topic_path, exc)
 
+    # Recheck immediately before deleting local state. PostgreSQL still holds
+    # the OAuth row lock; SQLite re-evaluates the same owner fence here.
+    if ordinary_account() is None:
+        db.rollback()
+        return False
     db.delete(state)
     db.commit()
     return True

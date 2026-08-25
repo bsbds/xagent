@@ -45,6 +45,9 @@ from xagent.web.services.gmail_triggers import (
 )
 from xagent.web.services.trigger_providers import (
     GmailProvider,
+)
+from xagent.web.services.trigger_providers import gmail as gmail_trigger_provider
+from xagent.web.services.trigger_providers import (
     register_trigger_provider,
 )
 
@@ -3269,6 +3272,58 @@ def test_gmail_finalize_never_rolls_history_cursor_backwards() -> None:
         )
         db.refresh(state)
         assert state.history_id == "400"
+    finally:
+        db.close()
+
+
+def test_gmail_finalize_rejects_owner_change_before_cursor_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xagent.web.services.trigger_providers import CallbackRequestContext
+
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-finalize-owner-change-user")
+        oauth = _create_gmail_oauth(db, user)
+        state = _create_gmail_watch_state(
+            db, user, oauth, callback_id="cb-owner-change"
+        )
+        state.last_error = "keep this error"
+        db.add(state)
+        db.commit()
+
+        def become_actor(_current: object, _incoming: str) -> bool:
+            oauth.resource_owner_key = "toby:slack:41:UALICE"
+            db.commit()
+            return True
+
+        monkeypatch.setattr(
+            gmail_trigger_provider,
+            "_history_cursor_advances",
+            become_actor,
+        )
+        provider = GmailProvider()
+        context = CallbackRequestContext(
+            provider="gmail", callback_id="cb-owner-change"
+        )
+        body = _gmail_pubsub_push_body(
+            claimed_email="codeacme17@gmail.com",
+            history_id="400",
+        )
+
+        asyncio.run(
+            provider.finalize_callback(
+                db=db,
+                context=context,
+                trigger=None,
+                events=[],
+                raw_body=body,
+            )
+        )
+
+        db.refresh(state)
+        assert state.history_id == "100"
+        assert state.last_error == "keep this error"
     finally:
         db.close()
 
