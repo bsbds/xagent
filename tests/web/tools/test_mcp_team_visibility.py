@@ -243,6 +243,7 @@ async def test_mcp_team_snapshot_resolves_factory_before_worker(
 @pytest.mark.asyncio
 async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
     release = threading.Event()
+    wait_results: list[bool] = []
     ticks_during_hook: list[int] = []
     ticks = 0
     stop = False
@@ -253,7 +254,7 @@ async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
         timer = threading.Timer(0.1, release.set)
         timer.daemon = True
         timer.start()
-        assert release.wait(timeout=1)
+        wait_results.append(release.wait(timeout=1))
         ticks_during_hook.append(ticks - ticks_before_wait)
         return {
             "mcp": {team_server_id} if team_id == T1 else set(),
@@ -279,6 +280,7 @@ async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
         stop = True
         await ticker_task
 
+    assert wait_results == [True]
     assert ticks_during_hook[0] >= 3
     assert {config["name"] for config in configs} == {
         seed.active_own.name,

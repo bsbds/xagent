@@ -252,6 +252,7 @@ async def test_team_env_layer_keyed_on_governing_team(
 async def test_team_env_hook_wait_does_not_block_event_loop(db_session, seed):
     _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
     release = threading.Event()
+    wait_results: list[bool] = []
     ticks_during_hook: list[int] = []
     ticks = 0
     stop = False
@@ -262,7 +263,7 @@ async def test_team_env_hook_wait_does_not_block_event_loop(db_session, seed):
         timer = threading.Timer(0.1, release.set)
         timer.daemon = True
         timer.start()
-        assert release.wait(timeout=1)
+        wait_results.append(release.wait(timeout=1))
         ticks_during_hook.append(ticks - ticks_before_wait)
         return {team_server_id: {"TEAM_KEY": "team-value"}}
 
@@ -285,6 +286,7 @@ async def test_team_env_hook_wait_does_not_block_event_loop(db_session, seed):
         stop = True
         await ticker_task
 
+    assert wait_results == [True]
     assert ticks_during_hook[0] >= 3
     assert config["config"]["env"]["TEAM_KEY"] == "team-value"
 
