@@ -1532,6 +1532,66 @@ def test_build_gmail_service_passes_persisted_token_expiry_to_credentials(
         db.close()
 
 
+def test_build_gmail_service_stops_watch_through_users_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "env-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "env-client-secret")
+    requests: list[tuple[str, str, dict[str, object]]] = []
+
+    class FakeCredentials:
+        def __init__(self, **kwargs: object) -> None:
+            self.expired = False
+            self.refresh_token = kwargs.get("refresh_token")
+
+    class FakeResponse:
+        content = b""
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAuthorizedSession:
+        def request(self, method: str, url: str, **kwargs: object) -> FakeResponse:
+            requests.append((method, url, kwargs))
+            return FakeResponse()
+
+    monkeypatch.setattr(gmail_triggers, "Credentials", FakeCredentials)
+    monkeypatch.setattr(
+        gmail_triggers,
+        "AuthorizedSession",
+        lambda _credentials: FakeAuthorizedSession(),
+    )
+
+    db = _direct_db_session()
+    try:
+        provider = (
+            db.query(OAuthProvider)
+            .filter(OAuthProvider.provider_name == "google")
+            .one()
+        )
+        provider.client_id = ""
+        provider.client_secret = ""
+        user = _create_user(db, "gmail-stop-watch-user")
+        oauth = _create_gmail_oauth(db, user)
+        db.add_all([provider, oauth])
+        db.commit()
+        db.refresh(oauth)
+
+        service = build_gmail_service(db, oauth)
+        response = service.users().stop(userId="me").execute()
+
+        assert response == {}
+        assert requests == [
+            (
+                "POST",
+                "https://gmail.googleapis.com/gmail/v1/users/me/stop",
+                {"timeout": 10},
+            )
+        ]
+    finally:
+        db.close()
+
+
 def test_credentials_expiry_converts_aware_expiry_to_naive_utc() -> None:
     """Timezone-aware expires_at (PostgreSQL) must reach google-auth as naive UTC."""
     aware = datetime(2026, 6, 29, 20, tzinfo=timezone(timedelta(hours=8)))
