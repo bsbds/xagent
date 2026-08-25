@@ -498,9 +498,11 @@ async def test_direct_private_loader_call_resolves_nothing_without_identity(db_s
     knows the measured behaviour without identity is silence, not a leak.
     """
     team_server = _create_mcp(db_session, "team-only-private-loader-probe")
+    team_server_id = int(team_server.id)
+    db_session.commit()
     connector_team_scope.set_connector_team_hooks(
         team_visibility=lambda db, *, team_id: (
-            {"mcp": {int(team_server.id)}, "custom_api": set()}
+            {"mcp": {team_server_id}, "custom_api": set()}
             if team_id == T1
             else {"mcp": set(), "custom_api": set()}
         )
