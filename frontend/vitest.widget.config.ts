@@ -28,6 +28,7 @@ const widgetConfig = mergeConfig(baseConfig, defineConfig({
         "src/lib/api-wrapper.ts",
         "src/lib/auth-cache.ts",
         "src/lib/files-disabled-presentation.ts",
+        "src/lib/public-chat-file-upload.ts",
         "src/contexts/presentation-capabilities.tsx",
         "src/app/settings/page.tsx",
         "src/components/layout/sidebar.tsx",
@@ -66,6 +67,9 @@ const widgetConfig = mergeConfig(baseConfig, defineConfig({
           statements: 85, branches: 80, functions: 90, lines: 85,
         },
         "src/lib/auth-cache.ts": { statements: 90, branches: 80, functions: 90, lines: 90 },
+        "src/lib/public-chat-file-upload.ts": {
+          statements: 90, branches: 80, functions: 100, lines: 90,
+        },
         "src/contexts/presentation-capabilities.tsx": {
           statements: 100, branches: 100, functions: 100, lines: 100,
         },
@@ -142,6 +146,7 @@ export default defineConfig({
       "src/components/widget/widget-session.test.ts",
       "src/components/widget/public-agent-chat-page.test.tsx",
       "src/components/widget/session-agent-chat-page.test.tsx",
+      "src/lib/public-chat-file-upload.test.ts",
       "src/components/widget/session-agent-chat-page.integration.test.tsx",
       "src/components/widget/use-widget-session.test.tsx",
       "src/contexts/app-context-chat.test.tsx",

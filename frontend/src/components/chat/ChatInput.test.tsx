@@ -1645,6 +1645,102 @@ describe("ChatInput", () => {
     })
   })
 
+  it("serializes default upload requests within and across selections", async () => {
+    let resolveFirst!: (response: Response) => void
+    let resolveSecond!: (response: Response) => void
+    const firstUpload = new Promise<Response>((resolve) => {
+      resolveFirst = resolve
+    })
+    const secondUpload = new Promise<Response>((resolve) => {
+      resolveSecond = resolve
+    })
+    const uploadUrl = "http://upload.local/api/files/upload"
+    const first = new File(["one"], "one.txt", { type: "text/plain" })
+    const second = new File(["two"], "two.txt", { type: "text/plain" })
+    const third = new File(["three"], "three.txt", { type: "text/plain" })
+
+    apiRequestMock.mockImplementation((url: string) => {
+      if (url !== uploadUrl) {
+        return Promise.resolve(emptyJsonResponse())
+      }
+
+      const uploadCount = apiRequestMock.mock.calls.filter(
+        ([requestUrl]) => requestUrl === uploadUrl,
+      ).length
+      if (uploadCount === 1) {
+        return firstUpload
+      }
+      if (uploadCount === 2) {
+        return secondUpload
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        success: true,
+        file_id: "file-3",
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+    })
+
+    function Harness() {
+      const [files, setFiles] = React.useState<File[]>([])
+
+      return (
+        <ChatInput
+          hideConfig
+          inputValue=""
+          files={files}
+          onFilesChange={setFiles}
+          onInputChange={vi.fn()}
+          onSend={vi.fn()}
+        />
+      )
+    }
+
+    const { container } = render(<Harness />)
+    const fileInput = container.querySelector("input[type=\"file\"]") as HTMLInputElement
+    const uploadCalls = () => apiRequestMock.mock.calls.filter(
+      ([url]) => url === uploadUrl,
+    )
+
+    fireEvent.change(fileInput, { target: { files: [first, second] } })
+    await waitFor(() => {
+      expect(uploadCalls()).toHaveLength(1)
+    })
+    expect(((uploadCalls()[0][1] as RequestInit).body as FormData).get("file")).toBe(first)
+
+    fireEvent.change(fileInput, { target: { files: [third] } })
+
+    expect(uploadCalls()).toHaveLength(1)
+    expect(container.querySelector('button[type="submit"]')).toBeDisabled()
+
+    resolveFirst(new Response(JSON.stringify({ success: true, file_id: "file-1" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }))
+
+    await waitFor(() => {
+      expect(uploadCalls()).toHaveLength(2)
+    })
+    expect(((uploadCalls()[1][1] as RequestInit).body as FormData).get("file")).toBe(second)
+
+    resolveSecond(new Response(JSON.stringify({ success: true, file_id: "file-2" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }))
+
+    await waitFor(() => {
+      expect(uploadCalls()).toHaveLength(3)
+    })
+    expect(((uploadCalls()[2][1] as RequestInit).body as FormData).get("file")).toBe(third)
+    await waitFor(() => {
+      expect((first as File & { file_id?: string }).file_id).toBe("file-1")
+      expect((second as File & { file_id?: string }).file_id).toBe("file-2")
+      expect((third as File & { file_id?: string }).file_id).toBe("file-3")
+      expect(container.querySelector('button[type="submit"]')).toBeEnabled()
+    })
+  })
+
   it("keeps pause hidden while running draft files are still uploading", async () => {
     const onPause = vi.fn()
     const uploadFile = vi.fn(() => new Promise<{ file_id: string }>(() => {}))

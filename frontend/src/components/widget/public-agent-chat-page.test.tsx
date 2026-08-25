@@ -20,6 +20,7 @@ const app = vi.hoisted(() => ({
     transport?: AppProviderTransportConfig
   },
   startScreenProps: null as null | {
+    onSend: (message: string, files: File[], config?: Record<string, string>) => Promise<void>
     voiceInputEnabled?: boolean
   },
 }))
@@ -548,6 +549,63 @@ describe("PublicAgentChatPage", () => {
     )
     await waitFor(() => {
       expect(localStorage.getItem("widget_task_wf8_guest-1")).toBe("43")
+    })
+  })
+
+  it("uploads workforce opening attachments serially before creating a task", async () => {
+    let resolveFirst!: (response: Response) => void
+    let resolveSecond!: (response: Response) => void
+    const firstUpload = new Promise<Response>((resolve) => {
+      resolveFirst = resolve
+    })
+    const secondUpload = new Promise<Response>((resolve) => {
+      resolveSecond = resolve
+    })
+    const first = new File(["one"], "one.txt", { type: "text/plain" })
+    const second = new File(["two"], "two.txt", { type: "text/plain" })
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(successfulWorkforceAuth))
+      .mockReturnValueOnce(firstUpload)
+      .mockReturnValueOnce(secondUpload)
+      .mockResolvedValueOnce(jsonResponse(widgetTaskResponse(44, "running")))
+
+    renderWidgetPage({ searchAgentId: null, widgetKey: "widget-secret" })
+
+    await screen.findByRole("button", { name: "start:Support Workforce" })
+    const opening = app.startScreenProps!.onSend(
+      "opening message",
+      [first, second],
+      { mode: "balanced" },
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://api.example/api/widget/files/upload",
+    )
+    const firstRequest = fetchMock.mock.calls[1][1] as RequestInit
+    expect((firstRequest.body as FormData).get("file")).toBe(first)
+
+    resolveFirst(jsonResponse({ success: true, file_id: "file-1" }))
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    })
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "https://api.example/api/widget/files/upload",
+    )
+    const secondRequest = fetchMock.mock.calls[2][1] as RequestInit
+    expect((secondRequest.body as FormData).get("file")).toBe(second)
+
+    resolveSecond(jsonResponse({ success: true, file_id: "file-2" }))
+
+    await opening
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    const taskRequest = fetchMock.mock.calls[3][1] as RequestInit
+    expect(JSON.parse(taskRequest.body as string)).toEqual({
+      title: "opening message",
+      description: "opening message",
+      files: ["file-1", "file-2"],
     })
   })
 
