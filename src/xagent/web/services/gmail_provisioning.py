@@ -409,6 +409,7 @@ def _get_or_create_watch_state(
         )
 
     def ordinary_account_exists() -> Any:
+        # Lock this exact owner only while guarded PENDING DML is in progress.
         return (
             db.query(UserOAuth.id)
             .filter(
@@ -416,6 +417,7 @@ def _get_or_create_watch_state(
                 UserOAuth.user_id == user_id,
                 ordinary_gmail_clause(),
             )
+            .with_for_update()
             .exists()
         )
 

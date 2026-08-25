@@ -3963,6 +3963,109 @@ def test_first_time_creation_race_adopts_winner_row(
 
 
 @pytest.mark.postgresql
+def test_pending_write_locks_ordinary_oauth_owner_until_commit(
+    pg_session: Session,
+) -> None:
+    """An owner change waits for the guarded PENDING write to commit."""
+    db = pg_session
+    user = _create_user(db)
+    other_user = User(
+        username="other-owner",
+        email="other-owner@example.com",
+        password_hash="hash",
+        is_admin=False,
+    )
+    db.add(other_user)
+    db.commit()
+    db.refresh(other_user)
+    account = _create_oauth(db, user)
+    state = GmailWatchState(
+        user_id=int(user.id),
+        oauth_account_id=int(account.id),
+        email=str(account.email),
+        history_id="history",
+        topic_name="projects/demo/topics/owner",
+        callback_id="stable-callback",
+        status=TriggerProvisioningStatus.ACTIVE.value,
+    )
+    db.add(state)
+    db.commit()
+
+    pending_written = threading.Event()
+    allow_provision_commit = threading.Event()
+    owner_change_attempted = threading.Event()
+    owner_change_committed = threading.Event()
+    errors: list[BaseException] = []
+    account_id = int(account.id)
+
+    def provision() -> None:
+        session = get_session_local()()
+        real_commit = session.commit
+
+        def pause_after_pending_write() -> None:
+            pending_written.set()
+            allow_provision_commit.wait(timeout=30)
+            real_commit()
+
+        session.commit = pause_after_pending_write  # type: ignore[method-assign]
+        try:
+            oauth_account = session.get(UserOAuth, account_id)
+            assert oauth_account is not None
+            gmail_provisioning._get_or_create_watch_state(
+                session,
+                oauth_account,
+                str(oauth_account.email),
+            )
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+        finally:
+            session.close()
+
+    def change_owner() -> None:
+        session = get_session_local()()
+        try:
+            owner_change_attempted.set()
+            session.query(UserOAuth).filter(UserOAuth.id == account_id).update(
+                {
+                    UserOAuth.user_id: int(other_user.id),
+                    UserOAuth.resource_owner_key: "toby:slack:41:UALICE",
+                },
+                synchronize_session=False,
+            )
+            session.commit()
+            owner_change_committed.set()
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+        finally:
+            session.close()
+
+    provisioner = threading.Thread(target=provision)
+    owner_changer = threading.Thread(target=change_owner)
+    provisioner.start()
+    assert pending_written.wait(timeout=30)
+
+    owner_changer.start()
+    assert owner_change_attempted.wait(timeout=10)
+    assert not owner_change_committed.wait(timeout=1.0)
+
+    allow_provision_commit.set()
+    provisioner.join(timeout=30)
+    owner_changer.join(timeout=30)
+    assert not provisioner.is_alive() and not owner_changer.is_alive()
+    assert errors == []
+    assert owner_change_committed.is_set()
+
+    db.expire_all()
+    changed_account = db.get(UserOAuth, account_id)
+    changed_state = db.get(GmailWatchState, int(state.id))
+    assert changed_account is not None
+    assert changed_account.user_id == int(other_user.id)
+    assert changed_account.resource_owner_key == "toby:slack:41:UALICE"
+    assert changed_state is not None
+    assert changed_state.status == TriggerProvisioningStatus.PENDING.value
+
+
+@pytest.mark.postgresql
 def test_concurrent_first_time_creations_race_on_the_unique_constraint(
     pg_session: Session,
 ) -> None:
