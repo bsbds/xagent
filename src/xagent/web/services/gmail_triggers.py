@@ -817,4 +817,18 @@ async def collect_gmail_pubsub_events(
         )
         return GmailPubsubEventCollection(events=[], skipped=1)
 
+    resource_updated = False
+    for trigger in triggers:
+        if gmail_binding_id(trigger.config) is None:
+            continue
+        if str(trigger.resource_id or "").strip().lower() == email_address:
+            continue
+
+        # The verified account binding is authoritative after a mailbox rename.
+        setattr(trigger, "resource_id", email_address)
+        db.add(trigger)
+        resource_updated = True
+    if resource_updated:
+        db.commit()
+
     return GmailPubsubEventCollection(events=events, skipped=skipped)

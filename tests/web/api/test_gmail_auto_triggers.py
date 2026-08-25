@@ -1224,6 +1224,73 @@ def test_gmail_unified_callback_ingests_history_filters_and_deduplicates(
         db.close()
 
 
+def test_gmail_exact_account_callback_repairs_stale_mailbox_and_fires(
+    mock_bg_scheduler,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-exact-binding-user")
+        oauth = _create_gmail_oauth(db, user)
+        trigger = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(oauth.id),
+                },
+            ),
+            resource_id="stale@old.example",
+        )
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-exact-binding",
+            email="renamed@gmail.example",
+        )
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-exact"}}]}]
+            },
+            messages={"msg-exact": _gmail_message("msg-exact")},
+        )
+        register_trigger_provider(
+            GmailProvider(
+                service_factory=lambda _db, _oauth: fake_service,
+                oidc_verifier=lambda _token, audience: {
+                    "iss": "https://accounts.google.com",
+                    "aud": audience,
+                },
+            ),
+            replace=True,
+        )
+
+        response = client.post(
+            "/api/triggers/callback/gmail/cb-exact-binding",
+            headers={"Authorization": "Bearer oidc-token"},
+            content=_gmail_pubsub_push_body(
+                claimed_email="attacker@example.com",
+                message_id="pubsub-exact",
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["outcome"] == "accepted"
+        assert len(response.json()["trigger_run_ids"]) == 1
+        run = db.query(TriggerRun).filter(TriggerRun.trigger_id == trigger.id).one()
+        assert run.source_event_id == "gmail:msg-exact"
+        db.refresh(trigger)
+        assert trigger.resource_id == "renamed@gmail.example"
+        db.refresh(state)
+        assert state.history_id == "222"
+        assert mock_bg_scheduler.call_count == 1
+    finally:
+        register_trigger_provider(GmailProvider(), replace=True)
+        db.close()
+
+
 def test_gmail_unified_callback_holds_history_cursor_when_execution_fails() -> None:
     db = _direct_db_session()
     try:
