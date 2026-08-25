@@ -895,7 +895,7 @@ def _load_mcp_team_hook_snapshot_from_db(
     user_id: int | None,
     connector_team_id: int | None,
 ) -> _MCPTeamHookSnapshot:
-    """Read and detach the team-scoped MCP hook values."""
+    """Read hook values from a caller-owned database handle and detach them."""
     from ..services.connector_team_scope import resolve_team_connector_ids_or_raise
     from ..services.mcp_runtime import (
         load_team_env_overrides,
@@ -925,7 +925,7 @@ def _load_mcp_team_hook_snapshot(
     user_id: int | None,
     connector_team_id: int | None,
 ) -> _MCPTeamHookSnapshot:
-    """Load team-owned MCP inputs through a worker-owned session."""
+    """Create and close a worker-owned Session, then return detached values."""
     return _run_with_checked_out_session(
         session_factory,
         lambda db: _load_mcp_team_hook_snapshot_from_db(
