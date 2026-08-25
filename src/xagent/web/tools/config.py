@@ -885,7 +885,7 @@ class _MCPTeamHookSnapshot:
     """Detached result of the team-scoped MCP hooks."""
 
     mcp_ids: frozenset[int]
-    team_env_by_id: Mapping[int, Any]
+    team_env_by_id: Mapping[int, dict[str, str]]
     team_env_hook_installed: bool
 
 
@@ -908,7 +908,7 @@ def _load_mcp_team_hook_snapshot_from_db(
         )["mcp"]
     )
     has_team_env_hook = team_env_hook_installed()
-    team_env_by_id: Mapping[int, Any] = {}
+    team_env_by_id: Mapping[int, dict[str, str]] = {}
     if connector_team_id is not None and mcp_ids and has_team_env_hook:
         # Detach nested hook-owned values before they cross the thread boundary.
         team_env_by_id = copy.deepcopy(load_team_env_overrides(db, connector_team_id))
