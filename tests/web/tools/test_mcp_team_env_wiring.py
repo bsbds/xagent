@@ -255,16 +255,18 @@ def test_team_env_snapshot_mapping_is_read_only(db_session, seed):
 async def test_team_env_layer_keyed_on_governing_team(
     db_session, seed, runner_is_member
 ):
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    run_user_id = int(seed.c.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
-            {seed.team_server.id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
+            {team_server_id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
         )
     )
     agent_team_scope.set_agent_team_scope_hook(
         lambda db, user_id: (
             agent_team_scope.AgentTeamScope(team_id=T1, is_team_admin=False)
-            if runner_is_member and user_id == int(seed.c.id)
+            if runner_is_member and user_id == run_user_id
             else None
         )
     )
@@ -385,7 +387,8 @@ async def test_empty_team_mcp_ids_never_invokes_team_env_hook(db_session, seed):
 
 @pytest.mark.asyncio
 async def test_no_cross_team_env_borrowing(db_session, seed):
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     # T1 (governing) has no row; T2 (a different team) does -- this must
     # never surface, and production code never even calls the hook with
     # team_id=T2 for this run.
@@ -394,7 +397,7 @@ async def test_no_cross_team_env_borrowing(db_session, seed):
     def hook(db, *, team_id):
         calls.append(team_id)
         if team_id == T2:
-            return {seed.team_server.id: {"STOLEN": "stolen-value"}}
+            return {team_server_id: {"STOLEN": "stolen-value"}}
         return {}
 
     mcp_runtime.set_mcp_team_env_hook(hook)
@@ -459,10 +462,11 @@ async def test_governing_team_no_row_scrubs_legacy_shared_value(db_session, seed
 async def test_shared_pick_degrades_when_owning_team_has_no_row(
     db_session, seed, has_own_key
 ):
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
-            {seed.team_server.id: {"STOLEN": "stolen-value"}} if team_id == T2 else {}
+            {team_server_id: {"STOLEN": "stolen-value"}} if team_id == T2 else {}
         )
     )
     _link_own_env(
@@ -492,10 +496,11 @@ async def test_shared_pick_degrades_when_owning_team_has_no_row(
 
 @pytest.mark.asyncio
 async def test_team_env_occupies_shared_slot_user_still_wins(db_session, seed):
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
-            {seed.team_server.id: {"SHARED_KEY": "from-team", "ONLY_TEAM": "team-only"}}
+            {team_server_id: {"SHARED_KEY": "from-team", "ONLY_TEAM": "team-only"}}
             if team_id == T1
             else {}
         )
@@ -582,12 +587,14 @@ async def test_installed_hook_answering_empty_still_applies_degrade(db_session, 
 
 @pytest.mark.asyncio
 async def test_ids_outside_team_mcp_ids_untouched(db_session, seed):
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    personal_server_id = int(seed.personal_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
             {
-                seed.team_server.id: {"TEAM_KEY": "team-value"},
-                seed.personal_server.id: {"SHOULD_NOT_APPEAR": "leak"},
+                team_server_id: {"TEAM_KEY": "team-value"},
+                personal_server_id: {"SHOULD_NOT_APPEAR": "leak"},
             }
             if team_id == T1
             else {}
@@ -700,10 +707,11 @@ async def test_shared_pick_with_team_row_uses_the_team_row(db_session, seed):
     """The pick="shared" + row-PRESENT combination: the team row is the
     shared layer and the runner's own key is not merged at all. The
     row-ABSENT half of this pick is pinned separately above."""
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
-            {seed.team_server.id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
+            {team_server_id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
         )
     )
     _link_own_env(
@@ -726,10 +734,11 @@ async def test_own_pick_on_a_team_server_ignores_the_team_row(db_session, seed):
     """Removing the `== "shared"` condition from the degrade in the wiring
     block would flip this pick to the legacy fallback and leak the team row
     into an "own" run; nothing else in this file would notice."""
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
-            {seed.team_server.id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
+            {team_server_id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
         )
     )
     _link_own_env(
@@ -749,10 +758,11 @@ async def test_own_pick_on_a_team_server_ignores_the_team_row(db_session, seed):
 
 @pytest.mark.asyncio
 async def test_platform_pick_on_a_team_server_stays_global_only(db_session, seed):
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
-            {seed.team_server.id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
+            {team_server_id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
         )
     )
     _link_own_env(
@@ -777,11 +787,12 @@ async def test_non_stdio_team_server_never_receives_an_env_layer(db_session):
     c = _create_user(db_session, "run-owner")
     http_server = _create_http_mcp(db_session, "team-http-server")
     seed = SimpleNamespace(c=c, team_server=http_server, personal_server=http_server)
+    http_server_id = int(http_server.id)
 
-    _install_visibility(ids_by_team={T1: {int(http_server.id)}})
+    _install_visibility(ids_by_team={T1: {http_server_id}})
     mcp_runtime.set_mcp_team_env_hook(
         lambda db, *, team_id: (
-            {http_server.id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
+            {http_server_id: {"TEAM_KEY": "team-value"}} if team_id == T1 else {}
         )
     )
 
@@ -802,7 +813,8 @@ async def test_empty_team_row_behaves_exactly_like_no_row(db_session, seed):
     """A stored row carrying an empty env mapping must be indistinguishable
     from no row at all. Both are run here and their outcomes compared
     directly, so the two states cannot drift apart later."""
-    _install_visibility(ids_by_team={T1: {int(seed.team_server.id)}})
+    team_server_id = int(seed.team_server.id)
+    _install_visibility(ids_by_team={T1: {team_server_id}})
     _link_own_env(
         db_session,
         user=seed.c,
@@ -811,7 +823,7 @@ async def test_empty_team_row_behaves_exactly_like_no_row(db_session, seed):
         env_source="shared",
     )
 
-    mcp_runtime.set_mcp_team_env_hook(lambda db, *, team_id: {seed.team_server.id: {}})
+    mcp_runtime.set_mcp_team_env_hook(lambda db, *, team_id: {team_server_id: {}})
     env_empty_row = await _env_for(
         db_session, seed, seed.team_server, connector_team_id=T1
     )

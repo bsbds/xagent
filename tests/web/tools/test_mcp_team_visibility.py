@@ -157,12 +157,14 @@ def install_team_hooks(*, team_visibility, agent_owner_id: int) -> None:
 
 def _team_visibility_hook(seed):
     """A team_visibility hook whose answer is disjoint per team, empty otherwise."""
+    team_s_id = int(seed.team_s.id)
+    team_x_id = int(seed.team_x.id)
 
     def _hook(db, *, team_id):
         if team_id == T1:
-            return {"mcp": {int(seed.team_s.id)}, "custom_api": set()}
+            return {"mcp": {team_s_id}, "custom_api": set()}
         if team_id == T2:
-            return {"mcp": {int(seed.team_x.id)}, "custom_api": set()}
+            return {"mcp": {team_x_id}, "custom_api": set()}
         return {"mcp": set(), "custom_api": set()}
 
     return _hook
