@@ -300,6 +300,72 @@ describe("useWebSocket message delivery", () => {
     })
   })
 
+  it("marks a rejection that carries the backend's reason as user facing", async () => {
+    // The clarification form only shows a rejection reason that is marked
+    // user facing; if this flag regresses, the visitor drops back to the
+    // generic "Failed to send response" toast.
+    const { result } = renderHook(() => useWebSocket({
+      url: "ws://localhost",
+      taskId: 1,
+    }))
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1))
+    const socket = MockWebSocket.instances[0]
+    act(() => socket.open())
+
+    const delivery = result.current.sendChatMessage(
+      "answer",
+      undefined,
+      false,
+      "rejected-with-reason",
+    )
+    act(() => {
+      socket.receive({
+        type: "message_rejected",
+        client_message_id: "rejected-with-reason",
+        message: "A previous guidance message is still being applied. Please wait for it to finish.",
+        rejection_outcome: "not_accepted",
+      })
+    })
+
+    await expect(delivery).rejects.toMatchObject({
+      message: "A previous guidance message is still being applied. Please wait for it to finish.",
+      disposition: "rejected",
+      userFacing: true,
+    })
+  })
+
+  it("keeps a rejection without a backend reason marked as not user facing", async () => {
+    const { result } = renderHook(() => useWebSocket({
+      url: "ws://localhost",
+      taskId: 1,
+    }))
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1))
+    const socket = MockWebSocket.instances[0]
+    act(() => socket.open())
+
+    const delivery = result.current.sendChatMessage(
+      "answer",
+      undefined,
+      false,
+      "rejected-no-reason",
+    )
+    act(() => {
+      socket.receive({
+        type: "message_rejected",
+        client_message_id: "rejected-no-reason",
+        rejection_outcome: "not_accepted",
+      })
+    })
+
+    await expect(delivery).rejects.toMatchObject({
+      message: "Message was rejected.",
+      disposition: "rejected",
+      userFacing: false,
+    })
+  })
+
   it("rejects concurrent reuse of a pending client message id without replacing its owner", async () => {
     const { result } = renderHook(() => useWebSocket({
       url: "ws://localhost",
@@ -2359,9 +2425,12 @@ describe("useWebSocket normalized connections", () => {
     act(() => socket.open())
 
     const file = new File(["secret"], "secret.txt", { type: "text/plain" })
-    await expect(result.current.sendChatMessage("with file", [file])).rejects.toThrow(
-      "not supported",
-    )
+    await expect(
+      result.current.sendChatMessage("with file", [file])
+    ).rejects.toMatchObject({
+      message: "File delivery is not supported for this connection.",
+      disposition: "not_sent",
+    })
     expect(uploadFiles).not.toHaveBeenCalled()
     expect(socket.send).not.toHaveBeenCalled()
   })
