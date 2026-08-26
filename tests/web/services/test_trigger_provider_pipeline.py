@@ -109,7 +109,14 @@ class StubProvider:
         self.register_calls.append(int(trigger.id))
         return RegistrationResult(status=TriggerProvisioningStatus.ACTIVE)
 
-    async def unregister(self, db: Session, trigger: AgentTrigger, config: Any) -> None:
+    async def unregister(
+        self,
+        db: Session,
+        trigger: AgentTrigger,
+        config: Any,
+        *,
+        resource_id: str | None = None,
+    ) -> None:
         self.unregister_calls.append(int(trigger.id))
 
     async def finalize_callback(

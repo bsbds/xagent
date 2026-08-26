@@ -294,6 +294,7 @@ def _create_gmail_trigger(
         user_id=int(user.id),
         agent_id=int(agent.id),
         type=TriggerType.GMAIL.value,
+        provider=TriggerType.GMAIL.value,
         name="Gmail inbox",
         enabled=enabled,
         resource_id="codeacme17@gmail.com",
@@ -1288,6 +1289,193 @@ def test_gmail_exact_account_callback_repairs_stale_mailbox_and_fires(
         assert mock_bg_scheduler.call_count == 1
     finally:
         register_trigger_provider(GmailProvider(), replace=True)
+        db.close()
+
+
+@pytest.mark.parametrize("provider", [None, TriggerType.WEBHOOK.value])
+def test_collect_gmail_callback_skips_non_gmail_provider_trigger(
+    provider: str | None,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-provider-filter-user")
+        oauth = _create_gmail_oauth(db, user)
+        trigger = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(oauth.id),
+                },
+            ),
+            resource_id="stale@old.example",
+        )
+        trigger.provider = provider
+        db.commit()
+        state = _create_gmail_watch_state(db, user, oauth)
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-provider"}}]}]
+            },
+            messages={"msg-provider": _gmail_message("msg-provider")},
+        )
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address="codeacme17@gmail.com",
+                    history_id="222",
+                    pubsub_message_id="pubsub-provider",
+                ),
+                state=state,
+                service_factory=lambda _db, _oauth: fake_service,
+            )
+        )
+
+        assert result.events == []
+        db.refresh(trigger)
+        assert trigger.resource_id == "stale@old.example"
+    finally:
+        db.close()
+
+
+def test_gmail_locate_prefers_enabled_bound_trigger_over_disabled_mailbox() -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-enabled-trigger-order-user")
+        oauth = _create_gmail_oauth(db, user)
+        disabled = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                enabled=False,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(oauth.id),
+                },
+            ),
+            resource_id="codeacme17@gmail.com",
+            callback_id="disabled-mailbox-trigger",
+        )
+        enabled = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(oauth.id),
+                },
+            ),
+            resource_id="stale@old.example",
+            callback_id="enabled-bound-trigger",
+        )
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-enabled-order",
+        )
+
+        located = GmailProvider().locate_trigger(db, str(state.callback_id))
+
+        assert located is not None
+        assert int(located.id) == int(enabled.id)
+        assert int(located.id) != int(disabled.id)
+    finally:
+        db.close()
+
+
+def test_collect_gmail_callback_does_not_overwrite_concurrent_rebind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from xagent.web.models.database import get_session_local
+
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-concurrent-rebind-user")
+        watched = _create_gmail_oauth(db, user)
+        rebound = UserOAuth(
+            user_id=int(user.id),
+            provider="gmail",
+            access_token="rebound-access-token",
+            refresh_token="rebound-refresh-token",
+            provider_user_id="rebound-provider-user",
+            email="rebound@gmail.example",
+        )
+        db.add(rebound)
+        db.commit()
+        db.refresh(rebound)
+        trigger = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={
+                    "watch_label": "INBOX",
+                    "oauth_account_id": int(watched.id),
+                },
+            ),
+            resource_id="stale@old.example",
+        )
+        state = _create_gmail_watch_state(db, user, watched)
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-race"}}]}]
+            },
+            messages={"msg-race": _gmail_message("msg-race")},
+        )
+        real_lookup = gmail_triggers.get_scoped_user_oauth_account
+        lookup_count = 0
+
+        def rebind_before_repair(*args, **kwargs):
+            nonlocal lookup_count
+            account = real_lookup(*args, **kwargs)
+            lookup_count += 1
+            if lookup_count == 2:
+                with get_session_local()() as concurrent_db:
+                    concurrent_trigger = concurrent_db.get(
+                        AgentTrigger, int(trigger.id)
+                    )
+                    assert concurrent_trigger is not None
+                    concurrent_trigger.config = {
+                        "watch_label": "INBOX",
+                        "oauth_account_id": int(rebound.id),
+                    }
+                    concurrent_trigger.resource_id = str(rebound.email)
+                    concurrent_db.commit()
+            return account
+
+        monkeypatch.setattr(
+            gmail_triggers,
+            "get_scoped_user_oauth_account",
+            rebind_before_repair,
+        )
+
+        result = asyncio.run(
+            collect_gmail_pubsub_events(
+                db,
+                GmailPubsubNotification(
+                    email_address="codeacme17@gmail.com",
+                    history_id="222",
+                    pubsub_message_id="pubsub-race",
+                ),
+                state=state,
+                service_factory=lambda _db, _oauth: fake_service,
+            )
+        )
+
+        assert result.events == []
+        db.expire_all()
+        persisted = db.get(AgentTrigger, int(trigger.id))
+        assert persisted is not None
+        assert persisted.config["oauth_account_id"] == int(rebound.id)
+        assert persisted.resource_id == "rebound@gmail.example"
+    finally:
         db.close()
 
 

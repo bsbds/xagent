@@ -14,7 +14,9 @@ from google.auth.transport.requests import (
     Request,
 )
 from google.oauth2.credentials import Credentials
-from sqlalchemy import case, or_
+from sqlalchemy import String, case
+from sqlalchemy import cast as sql_cast
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ...config import (
@@ -731,6 +733,7 @@ async def collect_gmail_pubsub_events(
         .filter(
             AgentTrigger.user_id == int(state.user_id),
             AgentTrigger.type == TriggerType.GMAIL.value,
+            AgentTrigger.provider == TriggerType.GMAIL.value,
             AgentTrigger.enabled.is_(True),
         )
         .all()
@@ -817,6 +820,24 @@ async def collect_gmail_pubsub_events(
         )
         return GmailPubsubEventCollection(events=[], skipped=1)
 
+    binding_text = sql_cast(
+        AgentTrigger.config["oauth_account_id"].as_string(),
+        String,
+    )
+    normalized_binding = func.coalesce(
+        func.nullif(func.ltrim(binding_text, "0"), ""),
+        "0",
+    )
+    ordinary_account_exists = (
+        db.query(UserOAuth.id)
+        .filter(
+            UserOAuth.id == int(state.oauth_account_id),
+            UserOAuth.user_id == int(state.user_id),
+            ordinary_gmail_clause(),
+        )
+        .exists()
+    )
+    rejected_trigger_ids: set[int] = set()
     resource_updated = False
     for trigger in triggers:
         if gmail_binding_id(trigger.config) is None:
@@ -824,11 +845,33 @@ async def collect_gmail_pubsub_events(
         if str(trigger.resource_id or "").strip().lower() == email_address:
             continue
 
-        # The verified account binding is authoritative after a mailbox rename.
-        setattr(trigger, "resource_id", email_address)
-        db.add(trigger)
+        # Repair only while this exact Gmail binding remains valid.
+        updated = (
+            db.query(AgentTrigger)
+            .filter(
+                AgentTrigger.id == int(trigger.id),
+                AgentTrigger.user_id == int(state.user_id),
+                AgentTrigger.type == TriggerType.GMAIL.value,
+                AgentTrigger.provider == TriggerType.GMAIL.value,
+                AgentTrigger.enabled.is_(True),
+                normalized_binding == str(state.oauth_account_id),
+                ordinary_account_exists,
+            )
+            .update(
+                {AgentTrigger.resource_id: email_address},
+                synchronize_session=False,
+            )
+        )
+        if updated == 0:
+            rejected_trigger_ids.add(int(trigger.id))
+            continue
         resource_updated = True
     if resource_updated:
         db.commit()
+    if rejected_trigger_ids:
+        events = [
+            event for event in events if event.trigger_id not in rejected_trigger_ids
+        ]
+        skipped += len(rejected_trigger_ids)
 
     return GmailPubsubEventCollection(events=events, skipped=skipped)

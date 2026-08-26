@@ -32,7 +32,11 @@ from ..gmail_provisioning import (
     provision_gmail_trigger,
     release_gmail_mailbox_if_unused,
 )
-from ..gmail_triggers import gmail_binding_id, ordinary_gmail_triggers
+from ..gmail_triggers import (
+    gmail_binding_id,
+    is_legacy_gmail_binding,
+    ordinary_gmail_triggers,
+)
 from ..ops_signals import (
     GMAIL_OIDC_SERVICE_ACCOUNT_UNVERIFIED,
     GMAIL_WATCH_REGISTRATION_DISABLED,
@@ -333,8 +337,8 @@ class GmailProvider:
                 AgentTrigger.provider == self.name,
             )
             .order_by(
-                mailbox_matches,
                 AgentTrigger.enabled.desc(),
+                mailbox_matches,
                 AgentTrigger.id.asc(),
             )
             .all()
@@ -466,21 +470,44 @@ class GmailProvider:
             error=trigger.provisioning_error,
         )
 
-    async def unregister(self, db: Session, trigger: AgentTrigger, config: Any) -> None:
-        # The binding must come from config: CRUD passes the trigger's
-        # previous config, and on delete the trigger row no longer exists.
+    async def unregister(
+        self,
+        db: Session,
+        trigger: AgentTrigger,
+        config: Any,
+        *,
+        resource_id: str | None = None,
+    ) -> None:
         oauth_account_id = gmail_binding_id(config)
         if oauth_account_id is None:
-            return
-
-        oauth_account = get_scoped_user_oauth_account(
-            db,
-            user_id=int(trigger.user_id),
-            account_id=oauth_account_id,
-            resource_owner_key=None,
-        )
-        if oauth_account is None or not is_ordinary_gmail(oauth_account):
-            return
+            if not is_legacy_gmail_binding(config):
+                return
+            mailbox = _normalized_email(resource_id)
+            if not mailbox:
+                return
+            matches = (
+                db.query(UserOAuth)
+                .filter(
+                    UserOAuth.user_id == int(trigger.user_id),
+                    ordinary_gmail_clause(),
+                    func.lower(UserOAuth.email) == mailbox,
+                )
+                .order_by(UserOAuth.id)
+                .limit(2)
+                .all()
+            )
+            if len(matches) != 1:
+                return
+            oauth_account_id = int(matches[0].id)
+        else:
+            oauth_account = get_scoped_user_oauth_account(
+                db,
+                user_id=int(trigger.user_id),
+                account_id=oauth_account_id,
+                resource_owner_key=None,
+            )
+            if oauth_account is None or not is_ordinary_gmail(oauth_account):
+                return
 
         await asyncio.to_thread(release_gmail_mailbox_if_unused, db, oauth_account_id)
 
