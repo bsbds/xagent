@@ -13,7 +13,7 @@ MIGRATION_PATH = (
     / "src/xagent/migrations/versions/20260821_add_actor_oauth_flow_states.py"
 )
 REVISION = "20260821_actor_oauth_flow_states"
-DOWN_REVISION = "20260818_user_oauth_resource_owner"
+DOWN_REVISION = "20260823_add_preferences_to_users"
 TABLE = "actor_oauth_flow_states"
 
 
@@ -31,6 +31,26 @@ def test_revision_metadata() -> None:
     migration = _migration()
     assert migration.revision == REVISION
     assert migration.down_revision == DOWN_REVISION
+
+
+def test_sqlite_upgrade_accepts_current_metadata_table(tmp_path) -> None:
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'current.db'}")
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                CREATE TABLE actor_oauth_flow_states (
+                    nonce VARCHAR(64) PRIMARY KEY NOT NULL,
+                    expires_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+
+        _run(connection, "upgrade")
+
+        assert sa.inspect(connection).has_table(TABLE)
+    engine.dispose()
 
 
 def test_sqlite_upgrade_and_downgrade_have_exact_minimal_shape(tmp_path) -> None:
