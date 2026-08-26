@@ -4296,15 +4296,13 @@ def test_postgresql_transition_lock_contends_per_oauth_account(
 
 
 @pytest.mark.postgresql
-def test_release_and_reprovision_contend_on_the_watch_state_lock(
+def test_release_lock_order(
     pg_session: Session,
 ) -> None:
-    """Unregister-of-last-trigger and a concurrent provision serialize.
+    """Release and provisioning use the OAuth-before-watch lock order.
 
-    While release_gmail_mailbox_if_unused holds the watch-state row lock,
-    _get_or_create_watch_state must block instead of updating a row that is
-    about to be deleted (which strands the new trigger at PENDING via
-    StaleDataError on the losing commit).
+    Provisioning waits on the OAuth row while release owns both locks. It
+    cannot update a watch row that release will delete.
     """
     from xagent.web.models.database import get_session_local
 

@@ -207,6 +207,8 @@ The migration refuses the downgrade if a non-null owner row exists. If a caller 
 
 This release adds no schema, dependency, environment variable, or cleanup state. It restricts Gmail watch and trigger code to ordinary OAuth rows.
 
+Mailbox release now calls Gmail `users.stop` before Pub/Sub cleanup. Each release can add one Gmail API request.
+
 Actor-owned Gmail credentials remain available to builtin MCP tools. Gmail provisioning, renewal, callback, trigger, and release paths reject these rows.
 
 ### Prerequisites and configuration
