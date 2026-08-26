@@ -37,6 +37,7 @@ from xagent.core.tools.adapters.vibe.connector_runtime import ConnectorRuntimeEr
 from xagent.core.tools.adapters.vibe.mcp_tools import create_mcp_tools
 from xagent.web.models import Base, MCPServer, User, UserMCPServer
 from xagent.web.services import agent_team_scope, connector_team_scope
+from xagent.web.tools import config as config_module
 from xagent.web.tools.config import WebToolConfig
 
 T1 = 101
@@ -574,6 +575,30 @@ async def test_direct_private_loader_call_resolves_nothing_without_identity(db_s
         assert configs == []
     finally:
         connector_team_scope.set_connector_team_hooks()
+
+
+@pytest.mark.asyncio
+async def test_mcp_team_snapshot_maps_unexpected_error_to_config_error(
+    db_session, seed, monkeypatch
+):
+    failure = _ProbeError("unexpected worker failure")
+
+    def fail_snapshot(*args, **kwargs):
+        raise failure
+
+    connector_team_scope.set_connector_team_hooks(
+        team_visibility=lambda db, *, team_id: {
+            "mcp": set(),
+            "custom_api": set(),
+        }
+    )
+    monkeypatch.setattr(config_module, "_run_with_checked_out_session", fail_snapshot)
+    cfg = _cfg(db_session, seed, connector_team_id=T1)
+
+    with pytest.raises(MCPConfigLoadError) as excinfo:
+        await cfg._load_mcp_server_configs()
+
+    assert excinfo.value.__cause__ is failure
 
 
 @pytest.mark.asyncio
