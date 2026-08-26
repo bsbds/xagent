@@ -910,11 +910,11 @@ def _load_mcp_team_hook_snapshot_from_db(
     has_team_env_hook = team_env_hook_installed()
     team_env_by_id: Mapping[int, dict[str, str]] = {}
     if connector_team_id is not None and mcp_ids and has_team_env_hook:
-        # Detach nested hook-owned values before they cross the thread boundary.
+        # Prevent later hook-side mutation through nested dictionary aliases.
         team_env_by_id = copy.deepcopy(load_team_env_overrides(db, connector_team_id))
     return _MCPTeamHookSnapshot(
         mcp_ids=mcp_ids,
-        team_env_by_id=MappingProxyType(dict(team_env_by_id)),
+        team_env_by_id=MappingProxyType(team_env_by_id),
         team_env_hook_installed=has_team_env_hook,
     )
 
@@ -3610,7 +3610,11 @@ class WebToolConfig(BaseToolConfig):
         server id, this method also re-keys the shared env layer onto the
         governing team's own row -- see the team-env block below -- instead
         of leaving the shared layer keyed on the run owner's personal
-        shared-env hook answer."""
+        shared-env hook answer.
+
+        Worker offload can release a clean caller connection. Its rollback can
+        expire caller-held ORM objects, which reload on their next access.
+        """
         self._mcp_oauth_diagnostics = []
         self._reset_mcp_config_load_cache_state()
 
@@ -3620,6 +3624,8 @@ class WebToolConfig(BaseToolConfig):
 
         try:
             if self._connector_team_id is None or not team_connector_hook_installed():
+                # Both shortcuts have no team MCP ids, so env-hook state cannot
+                # affect the downstream team-env branch.
                 team_snapshot = _MCPTeamHookSnapshot(
                     mcp_ids=frozenset(),
                     team_env_by_id=MappingProxyType({}),
