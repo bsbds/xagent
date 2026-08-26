@@ -363,6 +363,40 @@ async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
 
 
 @pytest.mark.asyncio
+async def test_mcp_team_snapshot_drains_worker_before_cancellation(db_session, seed):
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    wait_results: list[bool] = []
+
+    def blocking_visibility(db, *, team_id):
+        started.set()
+        wait_results.append(release.wait(timeout=1))
+        finished.set()
+        return {"mcp": set(), "custom_api": set()}
+
+    install_team_hooks(
+        team_visibility=blocking_visibility,
+        agent_owner_id=int(seed.c.id),
+    )
+    caller = asyncio.create_task(
+        _cfg(db_session, seed, connector_team_id=T1)._load_mcp_server_configs()
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+
+    caller.cancel()
+    await asyncio.sleep(0.02)
+    assert not caller.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, timeout=1)
+
+    assert wait_results == [True]
+    assert finished.is_set()
+
+
+@pytest.mark.asyncio
 async def test_team_agent_loads_team_connector(db_session, seed):
     _install_env_t(seed)
     cfg = _cfg(db_session, seed, connector_team_id=T1)
