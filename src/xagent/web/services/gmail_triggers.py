@@ -542,20 +542,22 @@ def ordinary_gmail_triggers(
     *,
     triggers: list[AgentTrigger],
     oauth_account_id: int,
+    mailbox: str,
 ) -> list[AgentTrigger]:
-    """Filter triggers after the caller verifies the ordinary watch account.
+    """Match triggers to a verified ordinary Gmail account and mailbox.
 
-    Only a missing ``oauth_account_id`` key with a non-empty mailbox uses
-    legacy matching. Explicit malformed values and mismatched account ids are
-    rejected.
+    Explicit bindings use the account ID. A legacy binding must have no
+    ``oauth_account_id`` key and must match the callback mailbox.
     """
+    normalized_mailbox = mailbox.strip().lower()
     ordinary_triggers: list[AgentTrigger] = []
     for trigger in triggers:
         account_id = gmail_binding_id(trigger.config)
         if account_id is None:
+            legacy_mailbox = str(trigger.resource_id or "").strip().lower()
             if (
                 is_legacy_gmail_binding(trigger.config)
-                and str(trigger.resource_id or "").strip()
+                and legacy_mailbox == normalized_mailbox
             ):
                 ordinary_triggers.append(trigger)
             continue
@@ -741,6 +743,7 @@ async def collect_gmail_pubsub_events(
     triggers = ordinary_gmail_triggers(
         triggers=triggers,
         oauth_account_id=int(oauth_account.id),
+        mailbox=email_address,
     )
 
     events: list[GmailCollectedEvent] = []

@@ -1390,6 +1390,84 @@ def test_gmail_locate_prefers_enabled_bound_trigger_over_disabled_mailbox() -> N
         db.close()
 
 
+def test_gmail_legacy_callback_uses_matching_disabled_mailbox(
+    mock_bg_scheduler,
+) -> None:
+    db = _direct_db_session()
+    try:
+        user = _create_user(db, "gmail-legacy-mailbox-order-user")
+        oauth = _create_gmail_oauth(db, user)
+        disabled = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                enabled=False,
+                config={"watch_label": "INBOX"},
+            ),
+            resource_id="codeacme17@gmail.com",
+            callback_id="disabled-legacy-mailbox",
+        )
+        enabled = _mark_unified_gmail_trigger(
+            db,
+            _create_gmail_trigger(
+                db,
+                user,
+                config={"watch_label": "INBOX"},
+            ),
+            resource_id="other@gmail.example",
+            callback_id="enabled-other-legacy-mailbox",
+        )
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-legacy-mailbox-order",
+        )
+        fake_service = _FakeGmailService(
+            history_response={
+                "history": [{"messagesAdded": [{"message": {"id": "msg-order"}}]}]
+            },
+            messages={"msg-order": _gmail_message("msg-order")},
+        )
+        register_trigger_provider(
+            GmailProvider(
+                service_factory=lambda _db, _oauth: fake_service,
+                oidc_verifier=lambda _token, audience: {
+                    "iss": "https://accounts.google.com",
+                    "aud": audience,
+                },
+            ),
+            replace=True,
+        )
+
+        response = client.post(
+            "/api/triggers/callback/gmail/cb-legacy-mailbox-order",
+            headers={"Authorization": "Bearer oidc-token"},
+            content=_gmail_pubsub_push_body(
+                claimed_email="codeacme17@gmail.com",
+                message_id="pubsub-legacy-mailbox-order",
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["outcome"] == "rejected_disabled"
+        assert db.query(TriggerRun).count() == 0
+        audit = (
+            db.query(TriggerAudit)
+            .filter(TriggerAudit.outcome == "rejected_disabled")
+            .one()
+        )
+        assert int(audit.trigger_id) == int(disabled.id)
+        assert int(audit.trigger_id) != int(enabled.id)
+        db.refresh(state)
+        assert state.history_id == "100"
+        assert mock_bg_scheduler.call_count == 0
+    finally:
+        register_trigger_provider(GmailProvider(), replace=True)
+        db.close()
+
+
 def test_collect_gmail_callback_does_not_overwrite_concurrent_rebind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1620,19 +1698,24 @@ def test_gmail_oidc_verifier_allows_clock_skew() -> None:
     assert mock_verify.call_args.kwargs["clock_skew_in_seconds"] > 0
 
 
-def test_gmail_unified_callback_rejects_resource_mismatch_without_trusting_payload_email(
+def test_gmail_callback_rejects_legacy_mailbox_mismatch_without_trusting_payload(
     mock_bg_scheduler,
 ) -> None:
     db = _direct_db_session()
     try:
         user = _create_user(db, "gmail-resource-mismatch-user")
         oauth = _create_gmail_oauth(db, user)
-        trigger = _mark_unified_gmail_trigger(
+        _mark_unified_gmail_trigger(
             db,
             _create_gmail_trigger(db, user),
             resource_id="other@example.com",
         )
-        _create_gmail_watch_state(db, user, oauth, callback_id="cb-mismatch")
+        state = _create_gmail_watch_state(
+            db,
+            user,
+            oauth,
+            callback_id="cb-mismatch",
+        )
         fake_service = _FakeGmailService(
             history_response={
                 "history": [{"messagesAdded": [{"message": {"id": "msg-mismatch"}}]}]
@@ -1657,16 +1740,16 @@ def test_gmail_unified_callback_rejects_resource_mismatch_without_trusting_paylo
         )
 
         assert response.status_code == 200, response.text
-        assert response.json()["outcome"] == "rejected_resource"
+        assert response.json()["outcome"] == "unknown_callback"
         assert db.query(TriggerRun).count() == 0
         audit = (
             db.query(TriggerAudit)
-            .filter(TriggerAudit.outcome == "rejected_resource")
+            .filter(TriggerAudit.outcome == "unknown_callback")
             .one()
         )
-        assert audit.trigger_id == trigger.id
-        assert audit.detail["attested_resource_id"] == "codeacme17@gmail.com"
-        assert audit.detail["trigger_resource_id"] == "other@example.com"
+        assert audit.trigger_id is None
+        db.refresh(state)
+        assert state.history_id == "100"
         assert mock_bg_scheduler.call_count == 0
     finally:
         register_trigger_provider(GmailProvider(), replace=True)
