@@ -126,7 +126,8 @@ def seed(db_session: Session):
     stranger = _create_mcp(db_session, "stranger", owner=z)
     team_s = _create_mcp(db_session, "team-s")
     team_x = _create_mcp(db_session, "team-x")
-    # Worker-owned hook sessions can read only committed fixture rows.
+    # StaticPool shares one DBAPI connection across caller and worker Sessions.
+    # Commit first because closing the worker can roll back shared pending rows.
     db_session.commit()
     return SimpleNamespace(
         c=c,
@@ -319,6 +320,8 @@ async def test_team_hook_wait_does_not_block_event_loop(db_session, seed):
     release = threading.Event()
     wait_results: list[bool] = []
     ticks_during_hook: list[int] = []
+    # This diagnostic targets CPython. Its GIL serializes these integer reads
+    # and writes, and the threshold allows substantial scheduling variance.
     ticks = 0
     stop = False
     team_server_id = int(seed.team_s.id)

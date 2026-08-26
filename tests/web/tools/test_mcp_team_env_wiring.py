@@ -161,7 +161,8 @@ def seed(db_session: Session):
     personal_server = _create_stdio_mcp(
         db_session, "personal-server", owner=c, env={"GLOBAL": "global-value"}
     )
-    # Worker-owned hook sessions can read only committed fixture rows.
+    # StaticPool shares one DBAPI connection across caller and worker Sessions.
+    # Commit first because closing the worker can roll back shared pending rows.
     db_session.commit()
     return SimpleNamespace(
         c=c, team_server=team_server, personal_server=personal_server
@@ -188,7 +189,8 @@ def _cfg(db_session: Session, seed, *, connector_team_id: int | None) -> WebTool
 
 
 async def _env_for(db_session, seed, server, *, connector_team_id) -> dict:
-    # Worker-owned hook sessions can read only committed fixture rows.
+    # Tests add links after the seed fixture commits. Commit those per-test rows
+    # here before the worker snapshot; the seed fixture cannot include them.
     db_session.commit()
     cfg = _cfg(db_session, seed, connector_team_id=connector_team_id)
     configs = await cfg._load_mcp_server_configs()
@@ -214,7 +216,8 @@ def _create_http_mcp(db: Session, name: str) -> MCPServer:
 
 
 async def _config_for(db_session, seed, server, *, connector_team_id) -> dict:
-    # Worker-owned hook sessions can read only committed fixture rows.
+    # Tests add links after the seed fixture commits. Commit those per-test rows
+    # here before the worker snapshot; the seed fixture cannot include them.
     db_session.commit()
     cfg = _cfg(db_session, seed, connector_team_id=connector_team_id)
     configs = await cfg._load_mcp_server_configs()
@@ -297,6 +300,8 @@ async def test_team_env_hook_wait_does_not_block_event_loop(db_session, seed):
     release = threading.Event()
     wait_results: list[bool] = []
     ticks_during_hook: list[int] = []
+    # This diagnostic targets CPython. Its GIL serializes these integer reads
+    # and writes, and the threshold allows substantial scheduling variance.
     ticks = 0
     stop = False
     team_server_id = int(seed.team_server.id)
