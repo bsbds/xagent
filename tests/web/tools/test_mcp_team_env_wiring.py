@@ -248,6 +248,22 @@ def test_team_env_snapshot_mapping_is_read_only(db_session, seed):
         cast(dict[int, dict[str, str]], snapshot.team_env_by_id)[server_id] = {}
 
 
+def test_team_env_snapshot_detaches_nested_hook_values(db_session, seed):
+    server_id = int(seed.team_server.id)
+    hook_owned = {server_id: {"TEAM_KEY": "initial"}}
+    _install_visibility(ids_by_team={T1: {server_id}})
+    mcp_runtime.set_mcp_team_env_hook(lambda db, *, team_id: hook_owned)
+
+    snapshot = _load_mcp_team_hook_snapshot_from_db(
+        db_session,
+        user_id=int(seed.c.id),
+        connector_team_id=T1,
+    )
+    hook_owned[server_id]["TEAM_KEY"] = "mutated"
+
+    assert snapshot.team_env_by_id[server_id]["TEAM_KEY"] == "initial"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "runner_is_member", [True, False], ids=["member", "non-member"]
