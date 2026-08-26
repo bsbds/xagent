@@ -47,6 +47,16 @@ class _ProbeError(RuntimeError):
     """Distinguishable failure raised by a broken team-visibility hook."""
 
 
+class _QueryDb:
+    """Non-Session database double with the loader's supported query surface."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def query(self, *entities):
+        return self._session.query(*entities)
+
+
 @pytest.fixture()
 def db_session() -> Iterator[Session]:
     engine = create_engine(
@@ -215,6 +225,40 @@ async def test_no_hooks_matches_legacy_result_set(db_session, seed, connector_te
 # A team agent resolves its team's connector for a run owner with no
 # personal row on that server.
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mcp_team_snapshot_uses_query_shaped_db_inline(db_session, seed):
+    team_server_id = int(seed.team_s.id)
+    hook_databases: list[object] = []
+    query_db = _QueryDb(db_session)
+
+    def team_visibility(hook_db, *, team_id):
+        hook_databases.append(hook_db)
+        return {
+            "mcp": {team_server_id} if team_id == T1 else set(),
+            "custom_api": set(),
+        }
+
+    install_team_hooks(
+        team_visibility=team_visibility,
+        agent_owner_id=int(seed.c.id),
+    )
+    cfg = WebToolConfig(
+        db=query_db,
+        request=None,
+        user_id=int(seed.c.id),
+        connector_team_id=T1,
+        include_mcp_tools=True,
+    )
+
+    configs = await cfg._load_mcp_server_configs()
+
+    assert hook_databases == [query_db]
+    assert {config["name"] for config in configs} == {
+        seed.active_own.name,
+        seed.team_s.name,
+    }
 
 
 @pytest.mark.asyncio
