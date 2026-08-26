@@ -3634,7 +3634,8 @@ class WebToolConfig(BaseToolConfig):
                     connector_team_id=self._connector_team_id,
                 )
             else:
-                # Detach factory resolution from the request Session before offload.
+                # Resolve only detached inputs before offload. The worker Session
+                # sees committed state, not caller-flushed uncommitted rows.
                 session_factory = self.get_session_factory()
                 user_id = self._user_id
                 connector_team_id = self._connector_team_id
