@@ -266,26 +266,52 @@ async def test_mcp_team_snapshot_uses_query_shaped_db_inline(db_session, seed):
 async def test_mcp_team_snapshot_resolves_factory_before_worker(
     db_session, seed, monkeypatch
 ):
+    team_server_id = int(seed.team_s.id)
     connector_team_scope.set_connector_team_hooks(
         team_visibility=lambda db, *, team_id: {
-            "mcp": set(),
+            "mcp": {team_server_id} if team_id == T1 else set(),
             "custom_api": set(),
         }
     )
     cfg = _cfg(db_session, seed, connector_team_id=T1)
     main_thread_id = threading.get_ident()
     factory_thread_ids: list[int] = []
+    worker_thread_ids: list[int] = []
+    factory_resolved = False
+    caller_released = False
     original_get_session_factory = cfg.get_session_factory
+    original_release = cfg.release_db_connection
 
     def record_session_factory():
+        nonlocal factory_resolved
+        assert not caller_released
         factory_thread_ids.append(threading.get_ident())
-        return original_get_session_factory()
+        factory_resolved = True
+        session_factory = original_get_session_factory()
+
+        def worker_session_factory():
+            worker_thread_ids.append(threading.get_ident())
+            return session_factory()
+
+        return worker_session_factory
+
+    def record_release():
+        nonlocal caller_released
+        assert factory_resolved
+        caller_released = True
+        return original_release()
 
     monkeypatch.setattr(cfg, "get_session_factory", record_session_factory)
+    monkeypatch.setattr(cfg, "release_db_connection", record_release)
 
-    await cfg._load_mcp_server_configs()
+    configs = await cfg._load_mcp_server_configs()
 
     assert factory_thread_ids == [main_thread_id]
+    assert worker_thread_ids and worker_thread_ids[0] != main_thread_id
+    assert {config["name"] for config in configs} == {
+        seed.active_own.name,
+        seed.team_s.name,
+    }
 
 
 @pytest.mark.asyncio
