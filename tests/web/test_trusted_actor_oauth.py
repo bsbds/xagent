@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from types import SimpleNamespace
@@ -140,6 +141,13 @@ def _request(state: str, *, cookie: tuple[str, str] | None = None, code: str = "
     )
 
 
+def _error_request(state: str, cookie: tuple[str, str]):
+    return SimpleNamespace(
+        query_params={"state": state, "error": "access_denied"},
+        cookies={cookie[0]: cookie[1]},
+    )
+
+
 def _start(
     db: Session,
     user: User,
@@ -194,7 +202,10 @@ def test_actor_start_uses_browser_bound_cookie_and_minimal_nonce(oauth_db) -> No
     encrypted_owner = state["resource_owner_key"]
     assert encrypted_owner != ACTOR_ALICE
     assert ACTOR_ALICE not in str(state)
-    assert decrypt_value_strict(encrypted_owner) == ACTOR_ALICE
+    assert json.loads(decrypt_value_strict(encrypted_owner)) == {
+        "owner": ACTOR_ALICE,
+        "version": 1,
+    }
     assert "governing_team_id" not in state
     cookie_name, cookie_value, parsed = _flow_cookie(response)
     morsel = parsed[cookie_name]
@@ -344,6 +355,35 @@ def test_actor_callback_rejects_missing_or_wrong_cookie_before_exchange(
     post.assert_not_called()
 
 
+def test_actor_provider_error_consumes_flow_without_exchange(
+    oauth_db, monkeypatch
+) -> None:
+    db, user = oauth_db
+    _catalog_link(db, user)
+    start = _start(db, user)
+    state = _state(start)
+    cookie = _flow_cookie(start)[:2]
+    post = Mock()
+    monkeypatch.setattr(auth_api.requests, "post", post)
+
+    denied = generic_oauth_callback(
+        "custom", _error_request(state, cookie), db, _provider()
+    )
+    replay = generic_oauth_callback(
+        "custom", _request(state, cookie=cookie), db, _provider()
+    )
+
+    assert denied.status_code == 400
+    assert replay.status_code == 400
+    post.assert_not_called()
+    flow_model = getattr(
+        __import__("xagent.web.models", fromlist=["ActorOAuthFlowState"]),
+        "ActorOAuthFlowState",
+    )
+    assert db.query(flow_model).count() == 0
+    assert db.query(UserOAuth).count() == 0
+
+
 def test_actor_callback_replay_fails_before_second_exchange(
     oauth_db, monkeypatch
 ) -> None:
@@ -418,6 +458,45 @@ def test_actor_callback_revalidates_link_and_catalog_before_exchange(
     assert response.status_code in {400, 409}
     post.assert_not_called()
     assert db.query(UserOAuth).count() == 0
+
+
+def test_actor_owner_ciphertext_round_trips_exact_namespace(
+    oauth_db, monkeypatch
+) -> None:
+    db, user = oauth_db
+    _catalog_link(db, user)
+    ciphertext_owner = encrypt_value(ACTOR_BOB)
+    db.add(
+        UserOAuth(
+            user_id=user.id,
+            provider="calendar",
+            resource_owner_key=ACTOR_BOB,
+            access_token="bob",
+        )
+    )
+    db.commit()
+
+    start = _start(db, user, owner=ciphertext_owner)
+    payload = auth_api.verify_token(_state(start))
+    assert payload is not None
+    assert payload["resource_owner_key"] != ciphertext_owner
+    _mock_exchange(monkeypatch)
+
+    response = generic_oauth_callback(
+        "custom",
+        _request(_state(start), cookie=_flow_cookie(start)[:2]),
+        db,
+        _provider(),
+    )
+
+    assert response.status_code == 200
+    credentials = {
+        row.resource_owner_key: row.access_token for row in db.query(UserOAuth).all()
+    }
+    assert credentials == {
+        ACTOR_BOB: "bob",
+        ciphertext_owner: "new-access",
+    }
 
 
 def test_actor_callback_rejects_tampered_state_before_exchange(

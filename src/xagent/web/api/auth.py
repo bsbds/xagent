@@ -72,6 +72,7 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MAX_USER_ID = 2_147_483_647
 _ACTOR_OAUTH_FLOW_TTL = timedelta(minutes=10)
 _ACTOR_OAUTH_COOKIE_PREFIX = "xagent_actor_oauth_"
+_ACTOR_OWNER_CLAIM_VERSION = 1
 
 
 def _best_effort_ensure_gmail_watches_for_user(db: Session, *, user_id: int) -> None:
@@ -1868,6 +1869,34 @@ def _actor_oauth_cookie_scope(provider: str, db_provider: Any) -> tuple[bool, st
     return redirect_uri.scheme.lower() == "https", redirect_uri.path or "/"
 
 
+def _encrypt_actor_owner_claim(owner_key: str) -> str:
+    """Encrypt one typed owner claim without ciphertext pass-through."""
+    from ...core.utils.encryption import get_cipher
+
+    envelope = json.dumps(
+        {"owner": owner_key, "version": _ACTOR_OWNER_CLAIM_VERSION},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return get_cipher().encrypt(envelope.encode()).decode()
+
+
+def _decrypt_actor_owner_claim(claim: str) -> str:
+    """Decrypt and validate one typed actor owner claim."""
+    from ...core.utils.encryption import decrypt_value_strict
+
+    envelope = json.loads(decrypt_value_strict(claim))
+    if (
+        not isinstance(envelope, dict)
+        or set(envelope) != {"owner", "version"}
+        or type(envelope.get("version")) is not int
+        or envelope.get("version") != _ACTOR_OWNER_CLAIM_VERSION
+        or not isinstance(envelope.get("owner"), str)
+    ):
+        raise ValueError("invalid actor owner envelope")
+    return cast(str, envelope["owner"])
+
+
 def _actor_link_query(db: Session, *, user_id: int, provider: str, app_id: str) -> Any:
     """Select the exact active personal link for one builtin app."""
     from ..mcp_apps import require_builtin_oauth_server_definition
@@ -2095,10 +2124,8 @@ def _generic_oauth_login(
     if actor_flow_nonce is not None:
         if resource_owner_key is None:
             raise RuntimeError("actor OAuth flow requires an owner key")
-        from ...core.utils.encryption import encrypt_value
-
         try:
-            encrypted_owner_key = encrypt_value(resource_owner_key)
+            encrypted_owner_key = _encrypt_actor_owner_claim(resource_owner_key)
         except ValueError:
             return HTMLResponse(
                 content=(
@@ -2343,13 +2370,17 @@ def generic_oauth_callback(
     code = request.query_params.get("code")
     state = request.query_params.get("state")
     error = request.query_params.get("error")
-
-    if error:
-        return HTMLResponse(
+    provider_error_response = (
+        HTMLResponse(
             content=f"<h1>Error: {html.escape(str(error))}</h1>", status_code=400
         )
+        if error
+        else None
+    )
 
-    if not code or not state:
+    if provider_error_response is not None and not state:
+        return provider_error_response
+    if not state or (not code and provider_error_response is None):
         return HTMLResponse(
             content="<h1>Error: Missing code or state</h1>", status_code=400
         )
@@ -2360,9 +2391,17 @@ def generic_oauth_callback(
         or payload.get("type") != "oauth_state"
         or payload.get("provider") != provider
     ):
+        if provider_error_response is not None:
+            return provider_error_response
         return HTMLResponse(
             content="<h1>Error: Invalid or expired state</h1>", status_code=400
         )
+
+    actor_flow_nonce = payload.get("actor_flow_nonce")
+    actor_owner_claim = payload.get("resource_owner_key")
+    is_actor_flow = actor_flow_nonce is not None or actor_owner_claim is not None
+    if provider_error_response is not None and not is_actor_flow:
+        return provider_error_response
 
     user_id_claim = payload.get("user_id")
     if user_id_claim is not None and (
@@ -2400,9 +2439,6 @@ def generic_oauth_callback(
                 ),
                 status_code=400,
             )
-    actor_flow_nonce = payload.get("actor_flow_nonce")
-    actor_owner_claim = payload.get("resource_owner_key")
-    is_actor_flow = actor_flow_nonce is not None or actor_owner_claim is not None
     resource_owner_key: str | None = None
 
     if is_actor_flow:
@@ -2421,13 +2457,8 @@ def generic_oauth_callback(
                 raise ValueError("invalid actor OAuth claims")
             if not isinstance(actor_owner_claim, str):
                 raise ValueError("missing actor owner")
-            from ...core.utils.encryption import decrypt_value_strict
-
-            decrypted_owner_key = decrypt_value_strict(actor_owner_claim)
-            if decrypted_owner_key == actor_owner_claim:
-                raise ValueError("actor owner claim is not encrypted")
             resource_owner_key = normalize_user_oauth_resource_owner_key(
-                decrypted_owner_key
+                _decrypt_actor_owner_claim(actor_owner_claim)
             )
             if resource_owner_key is None:
                 raise ValueError("missing actor owner")
@@ -2473,6 +2504,9 @@ def generic_oauth_callback(
         # The nonce claim is durable before any provider exchange. A failed
         # exchange cannot make the authorization code replayable.
         db.commit()
+
+        if provider_error_response is not None:
+            return provider_error_response
 
     if not app_id:
         from ..mcp_apps import requires_app_scoped_oauth_grant
