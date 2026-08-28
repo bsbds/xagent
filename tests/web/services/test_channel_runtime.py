@@ -83,6 +83,34 @@ def _add_agent(
         return int(agent.id)
 
 
+async def _create_waiting_actor_task(
+    SessionLocal,
+    *,
+    channel_id: int,
+    agent_id: int,
+) -> int:
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=None,
+        text="prepare approval",
+        channel_name="Trusted direct channel",
+        agent_id=agent_id,
+        new_task_is_visible=False,
+        mcp_runtime_authorization_policy_required=True,
+    )
+    assert prepared is not None
+    with SessionLocal() as db:
+        task = db.get(Task, prepared.task_id)
+        assert task is not None
+        task.source = "external"
+        db.commit()
+    assert await prepared.managed_lease.finalize_result(
+        status=TaskStatus.WAITING_FOR_USER
+    )
+    return prepared.task_id
+
+
 @pytest.mark.asyncio
 async def test_prepare_channel_task_binds_owned_agent(
     monkeypatch: pytest.MonkeyPatch,
@@ -156,6 +184,21 @@ async def test_trusted_direct_channel_path_creates_fresh_hidden_marked_tasks(
         assert await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
 
     assert task_ids[0] != task_ids[1]
+
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=task_ids[0],
+        text="third",
+        channel_name="Trusted direct channel",
+        new_task_is_visible=False,
+        mcp_runtime_authorization_policy_required=True,
+    )
+    assert prepared is not None
+    assert prepared.is_new_task is True
+    assert prepared.task_id not in task_ids
+    assert await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
+
     with pytest.raises(RuntimeError, match="channel reuse is unsupported"):
         await prepare_channel_task(
             channel_id=channel_id,
@@ -178,6 +221,204 @@ async def test_trusted_direct_channel_path_creates_fresh_hidden_marked_tasks(
             task_owner_user_id=_user_id,
             resolved_execution_scope=None,
         )
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_actor_interaction_reuses_exact_waiting_task(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Actor Agent")
+    monkeypatch.setattr(channel_runtime, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+    task_id = await _create_waiting_actor_task(
+        SessionLocal,
+        channel_id=channel_id,
+        agent_id=agent_id,
+    )
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        assert task is not None
+        previous_run_id = task.run_id
+        task.last_checkpoint_event_id = "waiting-checkpoint"
+        task.output = "waiting output"
+        task.error_message = "waiting error"
+        db.commit()
+
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=task_id,
+        text="approve",
+        channel_name="Trusted direct channel",
+        expected_owner_user_id=user_id,
+        agent_id=agent_id,
+        new_task_is_visible=False,
+        mcp_runtime_authorization_policy_required=True,
+        task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+    )
+
+    assert prepared is not None
+    assert prepared.task_id == task_id
+    assert prepared.is_new_task is False
+    assert prepared.requested_agent_missing is False
+    with SessionLocal() as db:
+        assert db.query(Task).count() == 1
+        task = db.get(Task, task_id)
+        assert task is not None
+        assert task.status == TaskStatus.RUNNING
+        assert task.run_id != previous_run_id
+        assert task.last_checkpoint_event_id is None
+        assert task.output is None
+        assert task.error_message is None
+    assert await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_field", ["source", "status", "policy"])
+async def test_actor_interaction_rejects_invalid_task_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+    invalid_field: str,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Actor Agent")
+    monkeypatch.setattr(channel_runtime, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+    task_id = await _create_waiting_actor_task(
+        SessionLocal,
+        channel_id=channel_id,
+        agent_id=agent_id,
+    )
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        assert task is not None
+        if invalid_field == "source":
+            task.source = None
+        elif invalid_field == "status":
+            task.status = TaskStatus.FAILED
+        else:
+            task.agent_config = None
+        db.commit()
+
+    with pytest.raises(ChannelAuthorizationError, match="actor interaction task"):
+        await prepare_channel_task(
+            channel_id=channel_id,
+            external_user_id="telegram-user",
+            active_task_id=task_id,
+            text="approve",
+            channel_name="Trusted direct channel",
+            expected_owner_user_id=user_id,
+            agent_id=agent_id,
+            new_task_is_visible=False,
+            mcp_runtime_authorization_policy_required=True,
+            task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+        )
+
+    with SessionLocal() as db:
+        assert db.query(Task).count() == 1
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_actor_interaction_requires_task_and_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Actor Agent")
+    monkeypatch.setattr(channel_runtime, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+
+    with pytest.raises(ValueError, match="active task"):
+        await prepare_channel_task(
+            channel_id=channel_id,
+            external_user_id="telegram-user",
+            active_task_id=None,
+            text="approve",
+            channel_name="Trusted direct channel",
+            expected_owner_user_id=user_id,
+            agent_id=agent_id,
+            new_task_is_visible=False,
+            mcp_runtime_authorization_policy_required=True,
+            task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+        )
+
+    with pytest.raises(ChannelAuthorizationError, match="actor interaction task"):
+        await prepare_channel_task(
+            channel_id=channel_id,
+            external_user_id="telegram-user",
+            active_task_id=1,
+            text="approve",
+            channel_name="Trusted direct channel",
+            expected_owner_user_id=user_id,
+            agent_id=agent_id,
+            new_task_is_visible=False,
+            mcp_runtime_authorization_policy_required=True,
+            task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+        )
+
+    with pytest.raises(ValueError, match="actor policy"):
+        await prepare_channel_task(
+            channel_id=channel_id,
+            external_user_id="telegram-user",
+            active_task_id=1,
+            text="approve",
+            channel_name="Trusted direct channel",
+            expected_owner_user_id=user_id,
+            agent_id=agent_id,
+            new_task_is_visible=False,
+            mcp_runtime_authorization_policy_required=False,
+            task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+        )
+
+    with SessionLocal() as db:
+        assert db.query(Task).count() == 0
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_actor_interaction_rejects_unavailable_agent_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Actor Agent")
+    monkeypatch.setattr(channel_runtime, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+    task_id = await _create_waiting_actor_task(
+        SessionLocal,
+        channel_id=channel_id,
+        agent_id=agent_id,
+    )
+
+    with pytest.raises(ChannelAuthorizationError, match="actor interaction task"):
+        await prepare_channel_task(
+            channel_id=channel_id,
+            external_user_id="telegram-user",
+            active_task_id=task_id,
+            text="approve",
+            channel_name="Trusted direct channel",
+            expected_owner_user_id=user_id,
+            agent_id=agent_id + 1,
+            new_task_is_visible=False,
+            mcp_runtime_authorization_policy_required=True,
+            task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+        )
+
+    with SessionLocal() as db:
+        assert db.query(Task).count() == 1
     engine.dispose()
 
 

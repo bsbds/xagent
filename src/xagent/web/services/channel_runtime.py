@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
@@ -56,6 +57,14 @@ from .workforce_runtime import sync_workforce_run_status
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TASK_LIST_LIMIT = 50
+ACTOR_TASK_SOURCE = "external"
+
+
+class ChannelTaskMode(StrEnum):
+    """The trusted task-selection contract for one channel turn."""
+
+    DEFAULT = "default"
+    ACTOR_INTERACTION = "actor_interaction"
 
 
 class ChannelConfigurationError(RuntimeError):
@@ -613,6 +622,40 @@ async def get_channel_owner_agent(
     )
 
 
+def _load_actor_interaction_task(
+    db: Any,
+    *,
+    owner_id: int,
+    active_task_id: int,
+    agent_id: int,
+) -> tuple[Task, Agent]:
+    """Load one exact waiting actor task without a fresh-task fallback."""
+
+    agent = (
+        _owned_channel_agents_query(db, owner_id).filter(Agent.id == agent_id).first()
+    )
+    task = (
+        db.query(Task)
+        .filter(
+            Task.id == active_task_id,
+            Task.user_id == owner_id,
+        )
+        .first()
+    )
+    if (
+        agent is None
+        or task is None
+        or task.agent_id is None
+        or int(task.agent_id) != int(agent.id)
+        or task.source != ACTOR_TASK_SOURCE
+        or task.status != TaskStatus.WAITING_FOR_USER
+        or not task_requires_mcp_actor_policy(task.agent_config)
+    ):
+        raise ChannelAuthorizationError("The actor interaction task is unavailable")
+
+    return task, agent
+
+
 def _prepare_channel_task_sync(
     *,
     channel_id: int | None,
@@ -624,7 +667,20 @@ def _prepare_channel_task_sync(
     agent_id: int | None = None,
     new_task_is_visible: bool = True,
     mcp_runtime_authorization_policy_required: bool = False,
+    task_mode: ChannelTaskMode = ChannelTaskMode.DEFAULT,
 ) -> _ChannelTaskClaimSnapshot | None:
+    if not isinstance(task_mode, ChannelTaskMode):
+        raise ValueError("Unsupported channel task mode")
+    if task_mode is ChannelTaskMode.ACTOR_INTERACTION:
+        if active_task_id is None or active_task_id <= 0:
+            raise ValueError("Actor interaction requires an active task")
+        if expected_owner_user_id is None:
+            raise ValueError("Actor interaction requires an expected owner")
+        if agent_id is None:
+            raise ValueError("Actor interaction requires an agent")
+        if not mcp_runtime_authorization_policy_required:
+            raise ValueError("Actor interaction requires an actor policy")
+
     SessionLocal = get_session_local()
     with SessionLocal() as db:
         try:
@@ -646,7 +702,7 @@ def _prepare_channel_task_sync(
                 )
 
             is_telegram = str(channel.channel_type) == "telegram"
-            if is_telegram:
+            if is_telegram and task_mode is ChannelTaskMode.DEFAULT:
                 claimed_legacy_task = _claim_legacy_active_telegram_task_sync(
                     db,
                     channel=channel,
@@ -663,12 +719,29 @@ def _prepare_channel_task_sync(
                     db.flush()
 
             task = None
-            # Actor-owned channel turns are fresh-only. Ignoring an active id
-            # on the trusted marked path prevents it from becoming an
-            # accidental resume API while preserving ordinary channel reuse.
-            if mcp_runtime_authorization_policy_required is True:
-                active_task_id = None
-            if active_task_id is not None and active_task_id != -1:
+            agent_row = None
+            requested_agent_missing = False
+            if task_mode is ChannelTaskMode.ACTOR_INTERACTION:
+                assert active_task_id is not None
+                assert agent_id is not None
+                task, agent_row = _load_actor_interaction_task(
+                    db,
+                    owner_id=owner_id,
+                    active_task_id=active_task_id,
+                    agent_id=agent_id,
+                )
+            else:
+                # Actor-owned channel turns are fresh-only. Ignoring an active
+                # id on the default marked path prevents it from becoming an
+                # accidental continuation API.
+                if mcp_runtime_authorization_policy_required is True:
+                    active_task_id = None
+
+            if (
+                task_mode is ChannelTaskMode.DEFAULT
+                and active_task_id is not None
+                and active_task_id != -1
+            ):
                 active_config = (
                     db.query(Task.agent_config)
                     .filter(
@@ -709,14 +782,9 @@ def _prepare_channel_task_sync(
                         f"Task {int(task.id)} is actor-marked; channel reuse is unsupported"
                     )
 
-            # Revalidate the requested selection on every turn, not only for
-            # new tasks. A conversation may only continue when its task binding
-            # still matches the selection: a stale selection (agent deleted or
-            # visibility revoked) or a drifted binding evicts to a fresh task
-            # instead of resuming with stale cached agent state.
-            agent_row = None
-            requested_agent_missing = False
-            if agent_id is not None:
+            # Revalidate the requested selection on every ordinary turn. Actor
+            # interaction mode uses the stricter exact-task check above.
+            if task_mode is ChannelTaskMode.DEFAULT and agent_id is not None:
                 agent_row = (
                     _owned_channel_agents_query(db, owner_id)
                     .filter(Agent.id == int(agent_id))
@@ -804,6 +872,7 @@ async def prepare_channel_task(
     agent_id: int | None = None,
     new_task_is_visible: bool = True,
     mcp_runtime_authorization_policy_required: bool = False,
+    task_mode: ChannelTaskMode = ChannelTaskMode.DEFAULT,
 ) -> ClaimedChannelTask | None:
     """Authorize, resolve or create, and claim one channel run atomically.
 
@@ -826,6 +895,7 @@ async def prepare_channel_task(
             mcp_runtime_authorization_policy_required=(
                 mcp_runtime_authorization_policy_required
             ),
+            task_mode=task_mode,
         )
     )
     snapshot, cancellation = await await_task_settlement(worker)
