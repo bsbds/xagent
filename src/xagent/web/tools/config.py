@@ -85,9 +85,9 @@ OAUTH_TOKEN_RESOLVER_FAILURE_CODE = "oauth_token_resolver_failed"
 OAUTH_TOKEN_RESOLVER_FAILURE_MESSAGE = "OAuth token resolver failed"
 UNAVAILABLE_MCP_MESSAGE = "MCP server is unavailable."
 UNAVAILABLE_MCP_CREDENTIAL_MESSAGE = "MCP server credentials are unavailable."
-_ACTOR_OAUTH_REFRESH_LOCKS: WeakValueDictionary[tuple[int, int], asyncio.Lock] = (
-    WeakValueDictionary()
-)
+_ACTOR_OAUTH_REFRESH_LOCKS: WeakValueDictionary[
+    tuple[int, int, str, str], asyncio.Lock
+] = WeakValueDictionary()
 # This web-runtime allowlist is intentionally narrower than the adapter-layer
 # public summary allowlist. It accepts only credential/config resolution reasons
 # produced at this boundary; adapter/list-tools phases are sanitized separately
@@ -580,8 +580,17 @@ def _oauth_launch_config_env_mapping(
     return {}
 
 
-def _actor_oauth_refresh_lock(account_id: int) -> asyncio.Lock:
-    key = (id(asyncio.get_running_loop()), account_id)
+def _actor_oauth_refresh_lock(
+    user_id: int,
+    resource_owner_key: str,
+    app_id: str,
+) -> asyncio.Lock:
+    key = (
+        id(asyncio.get_running_loop()),
+        user_id,
+        resource_owner_key,
+        app_id,
+    )
     lock = _ACTOR_OAUTH_REFRESH_LOCKS.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -3405,15 +3414,171 @@ class WebToolConfig(BaseToolConfig):
             },
         }
 
+    def _legacy_oauth_session_factory(self) -> Callable[[], Any]:
+        """Capture a factory before OAuth maintenance moves to a worker thread."""
+        if self._db_factory is not None:
+            return cast(Callable[[], Any], self._db_factory)
+        if self._live_db is not None:
+            from sqlalchemy.orm import sessionmaker
+
+            return sessionmaker(
+                bind=self._live_db.get_bind().engine,
+                autoflush=False,
+            )
+        return cast(Callable[[], Any], self.get_session_factory())
+
     def _new_legacy_oauth_session(self) -> Any:
         """Open the transaction owner for legacy OAuth token maintenance."""
-        if self._db_factory is not None:
-            return self._db_factory()
-        if self._live_db is not None:
-            from sqlalchemy.orm import Session
+        return self._legacy_oauth_session_factory()()
 
-            return Session(bind=self._live_db.get_bind().engine, autoflush=False)
-        return self.get_session_factory()()
+    async def _finish_legacy_oauth_access_token_resolution(
+        self,
+        *,
+        oauth_db: Any,
+        oauth_account: Any,
+        provider_name: object,
+        user_id: int,
+        resource_owner_key: str | None,
+    ) -> _LegacyOAuthTokenResolution:
+        if not oauth_account or not oauth_account.access_token:
+            return _LegacyOAuthTokenResolution(access_token=None)
+
+        logger.info(
+            "OAUTH CONFIG: Token found for '%s'. Refresh token present: %s, Expires: %s",
+            provider_name,
+            oauth_account.refresh_token is not None,
+            oauth_account.expires_at,
+        )
+        account_id = int(oauth_account.id)
+        is_valid = await refresh_oauth_token_if_needed(
+            oauth_db,
+            oauth_account,
+            str(provider_name) if provider_name else "",
+        )
+        if not is_valid:
+            logger.warning(
+                "OAUTH CONFIG: Token for '%s' is invalid and could not be refreshed. "
+                "Deleting OAuth record to prompt user for reconnection.",
+                provider_name,
+            )
+            if resource_owner_key is None:
+                # Ordinary flows preserve the existing recovery path for a
+                # failed flush. Actor flows retain their credential lock so a
+                # concurrent winner cannot be deleted after refresh.
+                oauth_db.rollback()
+                oauth_account = get_scoped_user_oauth_account(
+                    oauth_db,
+                    user_id=user_id,
+                    account_id=account_id,
+                    resource_owner_key=None,
+                )
+            if oauth_account is not None:
+                oauth_db.delete(oauth_account)
+                oauth_db.commit()
+            return _LegacyOAuthTokenResolution(
+                access_token=None,
+                refresh_failed=True,
+            )
+
+        access_token = str(oauth_account.access_token)
+        instance_url = getattr(oauth_account, "instance_url", None)
+        oauth_db.commit()
+        return _LegacyOAuthTokenResolution(
+            access_token=access_token,
+            instance_url=instance_url,
+        )
+
+    async def _resolve_actor_oauth_access_token_in_worker(
+        self,
+        *,
+        session_factory: Callable[[], Any],
+        provider_name: object,
+        app_id: str,
+        resource_owner_key: str,
+        user_id: int,
+    ) -> _LegacyOAuthTokenResolution:
+        """Resolve one actor namespace on a worker-thread event loop."""
+        from ...web.models.user_oauth import UserOAuth
+
+        oauth_db = session_factory()
+        try:
+            # Lock the current namespace, not a stale row id. Actor callbacks
+            # replace credentials with delete-and-insert, so the primary key
+            # can change while this resolver waits.
+            actor_query = scoped_user_oauth_query(
+                oauth_db,
+                user_id=user_id,
+                resource_owner_key=resource_owner_key,
+            ).filter(UserOAuth.provider == app_id)
+            if oauth_db.get_bind().dialect.name == "sqlite":
+                oauth_db.execute(
+                    text(
+                        "UPDATE user_oauth SET id = id "
+                        "WHERE user_id = :user_id "
+                        "AND resource_owner_key = :resource_owner_key "
+                        "AND provider = :provider"
+                    ),
+                    {
+                        "user_id": user_id,
+                        "resource_owner_key": resource_owner_key,
+                        "provider": app_id,
+                    },
+                )
+            else:
+                actor_query = actor_query.with_for_update()
+            oauth_account = actor_query.first()
+            logger.info(
+                "OAUTH CONFIG: Checked actor app credential for user %s. Found: %s",
+                user_id,
+                oauth_account is not None,
+            )
+            return await self._finish_legacy_oauth_access_token_resolution(
+                oauth_db=oauth_db,
+                oauth_account=oauth_account,
+                provider_name=provider_name,
+                user_id=user_id,
+                resource_owner_key=resource_owner_key,
+            )
+        except Exception:
+            oauth_db.rollback()
+            raise
+        finally:
+            oauth_db.close()
+
+    async def _resolve_actor_oauth_access_token(
+        self,
+        *,
+        provider_name: object,
+        app_id: str,
+        resource_owner_key: str,
+        user_id: int,
+    ) -> _LegacyOAuthTokenResolution:
+        from ..services.db_runtime import run_db_io_cancellation_safe
+
+        # Same-process waiters must not open a Session or reserve a pooled
+        # connection. The stable namespace also survives callback replacement
+        # of the credential row.
+        actor_refresh_lock = _actor_oauth_refresh_lock(
+            user_id,
+            resource_owner_key,
+            app_id,
+        )
+        await actor_refresh_lock.acquire()
+        try:
+            session_factory = self._legacy_oauth_session_factory()
+            return await run_db_io_cancellation_safe(
+                lambda: asyncio.run(
+                    self._resolve_actor_oauth_access_token_in_worker(
+                        session_factory=session_factory,
+                        provider_name=provider_name,
+                        app_id=app_id,
+                        resource_owner_key=resource_owner_key,
+                        user_id=user_id,
+                    )
+                )
+            )
+        finally:
+            actor_refresh_lock.release()
 
     async def _resolve_legacy_oauth_access_token(
         self,
@@ -3429,56 +3594,19 @@ class WebToolConfig(BaseToolConfig):
         if self._user_id is None:
             return _LegacyOAuthTokenResolution(access_token=None)
         user_id = int(self._user_id)
-        oauth_db = self._new_legacy_oauth_session()
-        actor_refresh_lock: asyncio.Lock | None = None
-        actor_refresh_lock_acquired = False
-        try:
-            if resource_owner_key is not None:
-                # Actor callbacks persist the canonical app id as the provider
-                # namespace. Do not widen this lookup to the provider-level
-                # ordinary credential or another actor namespace.
-                oauth_account = (
-                    scoped_user_oauth_query(
-                        oauth_db,
-                        user_id=user_id,
-                        resource_owner_key=resource_owner_key,
-                    )
-                    .filter(UserOAuth.provider == app_id)
-                    .first()
-                )
-                logger.info(
-                    "OAUTH CONFIG: Checked actor app credential for user %s. Found: %s",
-                    self._user_id,
-                    oauth_account is not None,
-                )
-                if oauth_account is not None:
-                    account_id = int(oauth_account.id)
-                    actor_refresh_lock = _actor_oauth_refresh_lock(account_id)
-                    await actor_refresh_lock.acquire()
-                    actor_refresh_lock_acquired = True
+        if resource_owner_key is not None:
+            if not isinstance(app_id, str):
+                return _LegacyOAuthTokenResolution(access_token=None)
+            return await self._resolve_actor_oauth_access_token(
+                provider_name=provider_name,
+                app_id=app_id,
+                resource_owner_key=resource_owner_key,
+                user_id=user_id,
+            )
 
-                    # Re-read after the process-local gate. PostgreSQL and
-                    # MySQL also serialize workers on the credential row.
-                    oauth_db.rollback()
-                    actor_query = scoped_user_oauth_query(
-                        oauth_db,
-                        user_id=user_id,
-                        resource_owner_key=resource_owner_key,
-                    ).filter(
-                        UserOAuth.id == account_id,
-                        UserOAuth.provider == app_id,
-                    )
-                    if oauth_db.get_bind().dialect.name == "sqlite":
-                        oauth_db.execute(
-                            text(
-                                "UPDATE user_oauth SET id = id WHERE id = :account_id"
-                            ),
-                            {"account_id": account_id},
-                        )
-                    else:
-                        actor_query = actor_query.with_for_update()
-                    oauth_account = actor_query.first()
-            elif app_id:
+        oauth_db = self._new_legacy_oauth_session()
+        try:
+            if app_id:
                 # A bare provider-level grant (e.g. UserOAuth.provider ==
                 # "meta") never requested this app's own oauth_scopes, so it
                 # can't be trusted to carry a permission added after that flow
@@ -3518,65 +3646,18 @@ class WebToolConfig(BaseToolConfig):
                     oauth_account is not None,
                 )
 
-            if not oauth_account or not oauth_account.access_token:
-                return _LegacyOAuthTokenResolution(access_token=None)
-
-            logger.info(
-                "OAUTH CONFIG: Token found for '%s'. Refresh token present: %s, Expires: %s",
-                provider_name,
-                oauth_account.refresh_token is not None,
-                oauth_account.expires_at,
-            )
-            account_id = int(oauth_account.id)
-            is_valid = await refresh_oauth_token_if_needed(
-                oauth_db,
-                oauth_account,
-                str(provider_name) if provider_name else "",
-            )
-            if not is_valid:
-                logger.warning(
-                    "OAUTH CONFIG: Token for '%s' is invalid and could not be refreshed. "
-                    "Deleting OAuth record to prompt user for reconnection.",
-                    provider_name,
-                )
-                if resource_owner_key is None:
-                    # Ordinary flows preserve the existing recovery path for a
-                    # failed flush. Actor flows retain their credential lock so
-                    # a concurrent winner cannot be deleted after refresh.
-                    oauth_db.rollback()
-                    oauth_account = get_scoped_user_oauth_account(
-                        oauth_db,
-                        user_id=user_id,
-                        account_id=account_id,
-                        resource_owner_key=None,
-                    )
-                if oauth_account is not None:
-                    oauth_db.delete(oauth_account)
-                    oauth_db.commit()
-                return _LegacyOAuthTokenResolution(
-                    access_token=None,
-                    refresh_failed=True,
-                )
-
-            access_token = str(oauth_account.access_token)
-            # Not direct attribute access: mypy infers oauth_account's
-            # instance_url as Column[str] here (get_scoped_user_oauth_account
-            # returns a type the SQLAlchemy plugin doesn't narrow the same
-            # way as a plain query result), so getattr's own 3-arg overload
-            # is what actually produces the correct `str | None` this
-            # function's return type declares.
-            instance_url = getattr(oauth_account, "instance_url", None)
-            oauth_db.commit()
-            return _LegacyOAuthTokenResolution(
-                access_token=access_token, instance_url=instance_url
+            return await self._finish_legacy_oauth_access_token_resolution(
+                oauth_db=oauth_db,
+                oauth_account=oauth_account,
+                provider_name=provider_name,
+                user_id=user_id,
+                resource_owner_key=None,
             )
         except Exception:
             oauth_db.rollback()
             raise
         finally:
             oauth_db.close()
-            if actor_refresh_lock_acquired and actor_refresh_lock is not None:
-                actor_refresh_lock.release()
 
     async def _build_mcp_server_config(
         self,
