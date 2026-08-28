@@ -41,6 +41,7 @@ DIRECTLY_VALIDATED_SERVER_FIELDS = {
     "restart_policy",
 }
 NONCANONICAL_SERVER_VALUES = {
+    "managed": "internal",
     "command": "foreign-command",
     "args": ["foreign-argument"],
     "url": "https://foreign.example",
@@ -180,6 +181,9 @@ def test_visibility_creates_canonical_nonowning_personal_link(catalog_db) -> Non
     links = db.query(UserMCPServer).all()
     assert len(links) == 1
     assert links[0].is_owner is False
+    assert links[0].can_edit is False
+    assert links[0].can_delete is False
+    assert links[0].is_shared is False
     assert links[0].is_active is True
     assert db.query(UserOAuth).count() == 0
 
@@ -315,6 +319,68 @@ def test_visibility_rejects_normalized_reserved_alias(catalog_db) -> None:
     ):
         mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
             db, user_id=int(user.id), app_id="google-calendar"
+        )
+
+
+def test_visibility_rejects_normalized_reserved_auth_alias(catalog_db) -> None:
+    db, user = catalog_db
+    execution, _optional_scopes = get_builtin_execution_fields_and_optional_scopes(
+        "google-calendar"
+    )
+    assert execution is not None
+    db.add_all(
+        [
+            PublicMCPApp(
+                app_id="google-calendar",
+                name=str(execution["name"]),
+                transport=str(execution["transport"]),
+                provider_name=str(execution["provider_name"]),
+                oauth_scopes=list(execution["oauth_scopes"]),
+                launch_config=dict(execution["launch_config"]),
+                is_visible_in_connector=True,
+            ),
+            MCPServer(
+                name="Foreign server",
+                managed="external",
+                transport="oauth",
+                auth={"app_id": " GOOGLE   CALENDAR "},
+            ),
+        ]
+    )
+    db.commit()
+
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="ambiguous reserved",
+    ):
+        mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
+            db, user_id=int(user.id), app_id="google-calendar"
+        )
+
+    assert db.query(MCPServer).count() == 1
+    assert db.query(UserMCPServer).count() == 0
+
+
+def test_visibility_rejects_padded_app_id(catalog_db) -> None:
+    db, user = catalog_db
+    _catalog_link(db, user)
+
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="exact|whitespace",
+    ):
+        mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
+            db, user_id=int(user.id), app_id=" calendar "
+        )
+
+
+def test_definition_rejects_padded_app_id(catalog_db) -> None:
+    db, user = catalog_db
+    _catalog_link(db, user)
+
+    with pytest.raises(mcp_apps.BuiltinOAuthServerDefinitionError):
+        mcp_apps.require_builtin_oauth_server_definition(
+            db, app_id=" calendar ", provider="custom"
         )
 
 

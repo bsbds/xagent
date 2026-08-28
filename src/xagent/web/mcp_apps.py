@@ -222,6 +222,11 @@ def _strict_catalog_app_by_id(
     used only to detect an administrator-authored collision that a looser route
     or UI lookup could otherwise resolve inconsistently.
     """
+    if not isinstance(app_id, str) or not app_id or app_id != app_id.strip():
+        raise BuiltinOAuthServerDefinitionError(
+            "builtin OAuth app_id must be an exact non-empty string"
+        )
+
     app = db.query(PublicMCPApp).filter(PublicMCPApp.app_id == app_id).one_or_none()
     if app is None:
         raise BuiltinOAuthServerDefinitionError(
@@ -422,9 +427,12 @@ def _builtin_server_candidates(db: Session, app_info: Mapping[str, Any]) -> list
         ):
             candidates.append(server)
             continue
-        if _normalized_catalog_key(server.name) in normalized_names:
+        if (
+            _normalized_catalog_key(server_app_id) in normalized_names
+            or _normalized_catalog_key(server.name) in normalized_names
+        ):
             raise BuiltinOAuthServerDefinitionError(
-                f"builtin OAuth app {app_id!r} has an ambiguous reserved server name"
+                f"builtin OAuth app {app_id!r} has an ambiguous reserved server identity"
             )
 
     if not legacy_name_is_unique and any(
@@ -477,7 +485,7 @@ def ensure_builtin_oauth_server_definition(db: Session, *, app_id: str) -> Any:
         )
     app_info = _strict_catalog_app_by_id(
         db,
-        app_id.strip(),
+        app_id,
         require_builtin_oauth=True,
         require_visible=True,
     )
