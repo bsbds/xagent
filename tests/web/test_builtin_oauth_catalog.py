@@ -112,6 +112,19 @@ def test_visibility_creates_canonical_nonowning_personal_link(catalog_db) -> Non
     assert db.query(UserOAuth).count() == 0
 
 
+def test_visibility_rejects_invalid_user_id_with_plain_value_error(
+    catalog_db,
+) -> None:
+    db, _user = catalog_db
+
+    with pytest.raises(ValueError, match="persisted positive integer") as exc_info:
+        mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
+            db, user_id=0, app_id="calendar"
+        )
+
+    assert type(exc_info.value) is ValueError
+
+
 @pytest.mark.parametrize("server_name", ["calendar", "Google Calendar"])
 @pytest.mark.parametrize(
     "auth",
@@ -189,7 +202,10 @@ def test_definition_rejects_duplicate_builtin_servers(catalog_db) -> None:
     )
     db.commit()
 
-    with pytest.raises(ValueError, match="exactly one|multiple"):
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="exactly one|multiple",
+    ):
         mcp_apps.require_builtin_oauth_server_definition(
             db, app_id="calendar", provider="custom"
         )
@@ -221,7 +237,10 @@ def test_visibility_rejects_normalized_reserved_alias(catalog_db) -> None:
     )
     db.commit()
 
-    with pytest.raises(ValueError, match="ambiguous reserved"):
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="ambiguous reserved",
+    ):
         mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
             db, user_id=int(user.id), app_id="google-calendar"
         )
@@ -249,7 +268,10 @@ def test_definition_rejects_app_missing_from_builtin_registry(catalog_db) -> Non
     )
     db.commit()
 
-    with pytest.raises(ValueError, match="builtin registry"):
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="builtin registry",
+    ):
         mcp_apps.require_builtin_oauth_server_definition(
             db, app_id="admin-calendar", provider="custom"
         )
@@ -285,7 +307,10 @@ def test_definition_rejects_seeded_catalog_execution_drift(catalog_db) -> None:
     )
     db.commit()
 
-    with pytest.raises(ValueError, match="catalog.*drift|persisted"):
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="catalog.*drift|persisted",
+    ):
         mcp_apps.require_builtin_oauth_server_definition(
             db,
             app_id="gmail",
