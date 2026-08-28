@@ -174,7 +174,7 @@ def test_concurrent_callbacks_exchange_and_persist_only_once(
         assert row.access_token == "actor-token"
 
 
-def test_disconnect_during_actor_exchange_does_not_recreate_link(
+def test_disconnect_during_actor_exchange_rejects_credential(
     postgresql_engine, monkeypatch
 ) -> None:
     tables = [
@@ -267,7 +267,7 @@ def test_disconnect_during_actor_exchange_does_not_recreate_link(
                 disconnect_db.commit()
         finally:
             release_exchange.set()
-        assert future.result(timeout=10) == 200
+        assert future.result(timeout=10) == 400
 
     with factory() as db:
         assert (
@@ -279,8 +279,7 @@ def test_disconnect_during_actor_exchange_does_not_recreate_link(
             .count()
             == 0
         )
-        credential = db.query(UserOAuth).one()
-        assert credential.resource_owner_key == "toby:slack:41:UALICE"
+        assert db.query(UserOAuth).count() == 0
 
 
 def test_independent_actor_flows_replace_one_credential(

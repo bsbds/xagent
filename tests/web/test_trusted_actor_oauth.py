@@ -140,7 +140,12 @@ def _request(state: str, *, cookie: tuple[str, str] | None = None, code: str = "
     )
 
 
-def _start(db: Session, user: User, owner: str = ACTOR_ALICE):
+def _start(
+    db: Session,
+    user: User,
+    owner: str = ACTOR_ALICE,
+    db_provider: SimpleNamespace | None = None,
+):
     start = getattr(auth_api, "start_builtin_oauth_for_resource_owner")
     return start(
         provider="custom",
@@ -149,7 +154,7 @@ def _start(db: Session, user: User, owner: str = ACTOR_ALICE):
         resource_owner_key=owner,
         redirect="https://toby.example/settings",
         db=db,
-        db_provider=_provider(),
+        db_provider=db_provider or _provider(),
     )
 
 
@@ -206,6 +211,30 @@ def test_actor_start_uses_browser_bound_cookie_and_minimal_nonce(oauth_db) -> No
         "expires_at",
     }
     assert db.query(flow_model).count() == 1
+
+
+def test_actor_cookie_allows_http_callback(oauth_db) -> None:
+    db, user = oauth_db
+    _catalog_link(db, user)
+    provider = _provider()
+    provider.redirect_uri = "http://xagent.example/api/auth/custom/callback"
+
+    response = _start(db, user, db_provider=provider)
+
+    cookie_name, _cookie_value, parsed = _flow_cookie(response)
+    assert not parsed[cookie_name]["secure"]
+
+
+def test_actor_cookie_uses_callback_path(oauth_db) -> None:
+    db, user = oauth_db
+    _catalog_link(db, user)
+    provider = _provider()
+    provider.redirect_uri = "https://xagent.example/proxy/api/auth/custom/callback"
+
+    response = _start(db, user, db_provider=provider)
+
+    cookie_name, _cookie_value, parsed = _flow_cookie(response)
+    assert parsed[cookie_name]["path"] == "/proxy/api/auth/custom/callback"
 
 
 @pytest.mark.parametrize("active", [False, None])

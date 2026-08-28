@@ -1860,30 +1860,55 @@ def _actor_oauth_cookie_name(nonce: str) -> str:
     return f"{_ACTOR_OAUTH_COOKIE_PREFIX}{nonce[:24]}"
 
 
-def _require_actor_oauth_personal_link(
-    db: Session, *, user_id: int, provider: str, app_id: str
-) -> None:
-    """Require one canonical builtin definition and its active personal link."""
+def _actor_oauth_cookie_scope(provider: str, db_provider: Any) -> tuple[bool, str]:
+    """Match the browser cookie to the configured callback URL."""
+    from urllib.parse import urlparse
+
+    redirect_uri = urlparse(_resolve_oauth_redirect_uri(provider, db_provider))
+    return redirect_uri.scheme.lower() == "https", redirect_uri.path or "/"
+
+
+def _actor_link_query(db: Session, *, user_id: int, provider: str, app_id: str) -> Any:
+    """Select the exact active personal link for one builtin app."""
     from ..mcp_apps import require_builtin_oauth_server_definition
     from ..models.mcp import UserMCPServer
 
     server = require_builtin_oauth_server_definition(
         db, app_id=app_id, provider=provider
     )
-    link_count = (
-        db.query(UserMCPServer)
-        .filter(
-            UserMCPServer.user_id == user_id,
-            UserMCPServer.mcpserver_id == int(server.id),
-            UserMCPServer.is_active.is_(True),
-        )
-        .count()
+    return db.query(UserMCPServer).filter(
+        UserMCPServer.user_id == user_id,
+        UserMCPServer.mcpserver_id == int(server.id),
+        UserMCPServer.is_active.is_(True),
     )
-    if link_count != 1:
+
+
+def _require_one_actor_link(links: list[Any], app_id: str) -> None:
+    if len(links) != 1:
         raise ValueError(
             f"actor builtin OAuth app {app_id!r} requires exactly one active "
             "personal MCP server link"
         )
+
+
+def _require_actor_oauth_personal_link(
+    db: Session, *, user_id: int, provider: str, app_id: str
+) -> None:
+    """Require one canonical builtin definition and its active personal link."""
+    links = _actor_link_query(
+        db, user_id=user_id, provider=provider, app_id=app_id
+    ).all()
+    _require_one_actor_link(links, app_id)
+
+
+def _lock_actor_link(db: Session, *, user_id: int, provider: str, app_id: str) -> None:
+    """Lock one active personal link before actor credential persistence."""
+    links = (
+        _actor_link_query(db, user_id=user_id, provider=provider, app_id=app_id)
+        .with_for_update()
+        .all()
+    )
+    _require_one_actor_link(links, app_id)
 
 
 def start_builtin_oauth_for_resource_owner(
@@ -1931,14 +1956,15 @@ def start_builtin_oauth_for_resource_owner(
         db.rollback()
         return response
     db.commit()
+    cookie_secure, cookie_path = _actor_oauth_cookie_scope(provider, db_provider)
     response.set_cookie(
         _actor_oauth_cookie_name(nonce_digest),
         browser_nonce,
         max_age=int(_ACTOR_OAUTH_FLOW_TTL.total_seconds()),
-        secure=True,
+        secure=cookie_secure,
         httponly=True,
         samesite="lax",
-        path=f"/api/auth/{provider}/callback",
+        path=cookie_path,
     )
     return response
 
@@ -2964,6 +2990,26 @@ def generic_oauth_callback(
                 )
             provider_user_id = info_data.get(db_provider.user_id_path or "id")
             email = info_data.get(db_provider.email_path or "email")
+
+        if is_actor_flow:
+            assert user_id is not None
+            assert isinstance(app_id, str)
+
+            try:
+                # Provider I/O can overlap a personal disconnect. Recheck and
+                # lock the exact link before persisting the actor credential.
+                _lock_actor_link(
+                    db,
+                    user_id=user_id,
+                    provider=provider,
+                    app_id=app_id,
+                )
+            except ValueError:
+                db.rollback()
+                return HTMLResponse(
+                    content="<h1>Error: Invalid or expired actor OAuth flow</h1>",
+                    status_code=400,
+                )
 
         if user_id:
             if is_actor_flow:
