@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 from tests.shared.postgres_disposable import disposable_database_factory
@@ -347,26 +346,13 @@ def test_independent_actor_flows_replace_one_credential(
             )
         )
 
-    delete_barrier = threading.Barrier(2)
+    exchange_barrier = threading.Barrier(2)
 
-    def synchronize_deletes(
-        _conn, _cursor, statement, _parameters, _context, _executemany
-    ) -> None:
-        if not statement.lstrip().upper().startswith("DELETE FROM USER_OAUTH"):
-            return
-        try:
-            delete_barrier.wait(timeout=1)
-        except threading.BrokenBarrierError:
-            pass
+    def exchange(*_args, **_kwargs) -> _Response:
+        exchange_barrier.wait(timeout=10)
+        return _Response({"access_token": "actor-token", "scope": "profile.read"})
 
-    event.listen(postgresql_engine, "before_cursor_execute", synchronize_deletes)
-    monkeypatch.setattr(
-        auth_api.requests,
-        "post",
-        lambda *_args, **_kwargs: _Response(
-            {"access_token": "actor-token", "scope": "profile.read"}
-        ),
-    )
+    monkeypatch.setattr(auth_api.requests, "post", exchange)
 
     def callback(request) -> int:
         with factory() as callback_db:
@@ -374,11 +360,8 @@ def test_independent_actor_flows_replace_one_credential(
                 "custom", request, callback_db, _provider()
             ).status_code
 
-    try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            statuses = sorted(executor.map(callback, requests))
-    finally:
-        event.remove(postgresql_engine, "before_cursor_execute", synchronize_deletes)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        statuses = sorted(executor.map(callback, requests))
 
     assert statuses == [200, 200]
     with factory() as db:

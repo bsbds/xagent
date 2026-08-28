@@ -455,7 +455,7 @@ def test_actor_callback_revalidates_link_and_catalog_before_exchange(
         _provider(),
     )
 
-    assert response.status_code in {400, 409}
+    assert response.status_code == 400
     post.assert_not_called()
     assert db.query(UserOAuth).count() == 0
 
@@ -506,7 +506,10 @@ def test_actor_callback_rejects_tampered_state_before_exchange(
     _catalog_link(db, user)
     start = _start(db, user)
     state = _state(start)
-    tampered = state[:-1] + ("a" if state[-1] != "a" else "b")
+    header, payload, signature = state.split(".")
+    tampered_signature = ("a" if signature[0] != "a" else "b") + signature[1:]
+    tampered = ".".join((header, payload, tampered_signature))
+    assert auth_api.verify_token(tampered) is None
     post = Mock()
     monkeypatch.setattr(auth_api.requests, "post", post)
 
@@ -518,7 +521,9 @@ def test_actor_callback_rejects_tampered_state_before_exchange(
     post.assert_not_called()
 
 
-@pytest.mark.parametrize("owner_claim_kind", ["plaintext", "foreign-ciphertext"])
+@pytest.mark.parametrize(
+    "owner_claim_kind", ["plaintext", "plaintext-envelope", "foreign-ciphertext"]
+)
 def test_actor_callback_rejects_unreadable_owner_claim_before_exchange(
     oauth_db, monkeypatch, owner_claim_kind: str
 ) -> None:
@@ -528,7 +533,9 @@ def test_actor_callback_rejects_unreadable_owner_claim_before_exchange(
     payload = auth_api.verify_token(_state(start))
     assert payload is not None
     owner_claim = ACTOR_ALICE
-    if owner_claim_kind == "foreign-ciphertext":
+    if owner_claim_kind == "plaintext-envelope":
+        owner_claim = json.dumps({"owner": ACTOR_ALICE, "version": 1})
+    elif owner_claim_kind == "foreign-ciphertext":
         owner_claim = (
             Fernet(Fernet.generate_key()).encrypt(ACTOR_ALICE.encode()).decode()
         )

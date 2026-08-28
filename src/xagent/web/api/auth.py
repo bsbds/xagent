@@ -1885,7 +1885,11 @@ def _decrypt_actor_owner_claim(claim: str) -> str:
     """Decrypt and validate one typed actor owner claim."""
     from ...core.utils.encryption import decrypt_value_strict
 
-    envelope = json.loads(decrypt_value_strict(claim))
+    decrypted = decrypt_value_strict(claim)
+    if decrypted == claim:
+        raise ValueError("actor owner claim is not encrypted")
+
+    envelope = json.loads(decrypted)
     if (
         not isinstance(envelope, dict)
         or set(envelope) != {"owner", "version"}
