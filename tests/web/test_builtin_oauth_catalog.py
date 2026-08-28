@@ -366,7 +366,7 @@ def test_owner_drift_fails_closed_at_strict_definition(catalog_db) -> None:
     assert link.can_delete is True
 
 
-def test_visibility_repairs_existing_nonowning_link(catalog_db) -> None:
+def test_visibility_preserves_existing_nonowning_policy(catalog_db) -> None:
     db, user = catalog_db
     _server, link = _catalog_link(db, user)
     link.is_owner = False
@@ -384,7 +384,7 @@ def test_visibility_repairs_existing_nonowning_link(catalog_db) -> None:
     db.refresh(link)
 
     assert link.is_owner is False
-    assert link.can_edit is False
-    assert link.can_delete is False
-    assert link.is_shared is False
+    assert link.can_edit is True
+    assert link.can_delete is True
+    assert link.is_shared is True
     assert link.is_active is True

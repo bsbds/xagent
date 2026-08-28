@@ -577,10 +577,6 @@ def ensure_builtin_oauth_server_visibility_for_user(
                     "builtin OAuth visibility race did not converge"
                 ) from exc
     cast_association: Any = association
-    if not cast_association.is_owner:
-        cast_association.can_edit = False
-        cast_association.can_delete = False
-        cast_association.is_shared = False
     cast_association.is_active = True
     db.flush()
     return server
