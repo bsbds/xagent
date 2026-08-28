@@ -307,6 +307,31 @@ _CANONICAL_EMPTY_SERVER_FIELDS = (
 )
 
 
+def _expected_builtin_auth(app_info: Mapping[str, Any]) -> dict[str, str]:
+    expected = {"app_id": str(app_info["id"])}
+    if app_info.get("provider"):
+        expected["provider"] = str(app_info["provider"])
+    return expected
+
+
+def _adopt_builtin_auth(server: Any, app_info: Mapping[str, Any]) -> None:
+    """Repair only missing canonical auth fields on a legacy server."""
+    expected = _expected_builtin_auth(app_info)
+    auth = getattr(server, "auth", None)
+    if auth is None:
+        server.auth = expected
+        return
+    if not isinstance(auth, Mapping):
+        return
+
+    unknown_keys = set(auth) - set(expected)
+    mismatched = any(
+        key in auth and str(auth[key]) != value for key, value in expected.items()
+    )
+    if not unknown_keys and not mismatched:
+        server.auth = expected
+
+
 def _validate_canonical_builtin_oauth_server(
     server: Any, app_info: Mapping[str, Any]
 ) -> None:
@@ -318,7 +343,7 @@ def _validate_canonical_builtin_oauth_server(
         failures.append("name")
     if getattr(server, "managed", None) != "external":
         failures.append("managed")
-    if str(getattr(server, "transport", "")).lower() != "oauth":
+    if getattr(server, "transport", None) != "oauth":
         failures.append("transport")
 
     for field_name in _CANONICAL_EMPTY_SERVER_FIELDS:
@@ -334,21 +359,9 @@ def _validate_canonical_builtin_oauth_server(
     if getattr(server, "restart_policy", None) not in (None, "no"):
         failures.append("restart_policy")
 
-    expected_auth = {"app_id": app_id}
-    provider = app_info.get("provider")
-    if provider:
-        expected_auth["provider"] = str(provider)
     auth = getattr(server, "auth", None)
-    if auth is not None and not isinstance(auth, Mapping):
+    if not isinstance(auth, Mapping) or dict(auth) != _expected_builtin_auth(app_info):
         failures.append("auth")
-    elif isinstance(auth, Mapping):
-        unknown_keys = set(auth) - set(expected_auth)
-        mismatched = any(
-            key in auth and str(auth[key]) != expected_value
-            for key, expected_value in expected_auth.items()
-        )
-        if unknown_keys or mismatched:
-            failures.append("auth")
 
     if failures:
         raise BuiltinOAuthServerDefinitionError(
@@ -476,9 +489,7 @@ def ensure_builtin_oauth_server_definition(db: Session, *, app_id: str) -> Any:
 
     server = candidates[0] if candidates else None
     if server is None:
-        expected_auth = {"app_id": str(app_info["id"])}
-        if app_info.get("provider"):
-            expected_auth["provider"] = str(app_info["provider"])
+        expected_auth = _expected_builtin_auth(app_info)
         proposed = MCPServer(
             name=str(app_info["name"]),
             description=app_info.get("description"),
@@ -506,11 +517,8 @@ def ensure_builtin_oauth_server_definition(db: Session, *, app_id: str) -> Any:
                 ) from exc
             server = candidates[0]
 
+    _adopt_builtin_auth(server, app_info)
     _validate_canonical_builtin_oauth_server(server, app_info)
-    expected_auth = {"app_id": str(app_info["id"])}
-    if app_info.get("provider"):
-        expected_auth["provider"] = str(app_info["provider"])
-    server.auth = expected_auth
     server.description = app_info.get("description") or server.description
     db.flush()
     return server

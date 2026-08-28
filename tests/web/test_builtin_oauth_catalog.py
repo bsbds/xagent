@@ -112,6 +112,70 @@ def test_visibility_creates_canonical_nonowning_personal_link(catalog_db) -> Non
     assert db.query(UserOAuth).count() == 0
 
 
+@pytest.mark.parametrize("server_name", ["calendar", "Google Calendar"])
+@pytest.mark.parametrize(
+    "auth",
+    [
+        None,
+        {},
+        {"provider": "custom"},
+        {"app_id": "calendar"},
+    ],
+)
+def test_definition_requires_exact_auth_metadata(catalog_db, server_name, auth) -> None:
+    db, user = catalog_db
+    server, _link = _catalog_link(db, user)
+    server.name = server_name
+    server.auth = auth
+    db.commit()
+
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="auth",
+    ):
+        mcp_apps.require_builtin_oauth_server_definition(
+            db, app_id="calendar", provider="custom"
+        )
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        None,
+        {},
+        {"provider": "custom"},
+        {"app_id": "calendar"},
+    ],
+)
+def test_visibility_repairs_incomplete_auth_metadata(catalog_db, auth) -> None:
+    db, user = catalog_db
+    server, _link = _catalog_link(db, user)
+    server.auth = auth
+    db.commit()
+
+    mcp_apps.ensure_builtin_oauth_server_visibility_for_user(
+        db, user_id=int(user.id), app_id="calendar"
+    )
+
+    db.refresh(server)
+    assert server.auth == {"app_id": "calendar", "provider": "custom"}
+
+
+def test_definition_rejects_mixed_case_transport(catalog_db) -> None:
+    db, user = catalog_db
+    server, _link = _catalog_link(db, user)
+    server.transport = "OAUTH"
+    db.commit()
+
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="transport",
+    ):
+        mcp_apps.require_builtin_oauth_server_definition(
+            db, app_id="calendar", provider="custom"
+        )
+
+
 def test_definition_rejects_duplicate_builtin_servers(catalog_db) -> None:
     db, user = catalog_db
     _catalog_link(db, user)
@@ -251,6 +315,30 @@ def test_visibility_preserves_existing_owning_link(catalog_db) -> None:
     assert link.can_delete is True
     assert link.is_shared is True
     assert link.is_active is True
+
+
+def test_owner_drift_fails_closed_at_strict_definition(catalog_db) -> None:
+    db, user = catalog_db
+    server, link = _catalog_link(db, user)
+    link.is_owner = True
+    link.can_edit = True
+    link.can_delete = True
+    server.transport = "stdio"
+    server.command = "/bin/foreign-command"
+    db.commit()
+
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match="canonical builtin OAuth definition",
+    ):
+        mcp_apps.require_builtin_oauth_server_definition(
+            db, app_id="calendar", provider="custom"
+        )
+
+    db.refresh(link)
+    assert link.is_owner is True
+    assert link.can_edit is True
+    assert link.can_delete is True
 
 
 def test_visibility_repairs_existing_nonowning_link(catalog_db) -> None:
