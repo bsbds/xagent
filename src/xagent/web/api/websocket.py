@@ -5438,7 +5438,11 @@ async def handle_chat_message(
             command_id=_client_message_id(message_data.get("client_message_id")),
             allow_missing_task=True,
         )
-    except (PermissionError, ValueError) as exc:
+    except (
+        MCPBuiltinOAuthActorPolicyRequiredError,
+        PermissionError,
+        ValueError,
+    ) as exc:
         log_client_facing_failure(exc, "Chat command rejected for task %s: %s", task_id)
         client_message_id = _client_message_id(message_data.get("client_message_id"))
         message = client_safe_error_message(exc)
