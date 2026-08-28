@@ -182,6 +182,41 @@ async def test_trusted_direct_channel_path_creates_fresh_hidden_marked_tasks(
 
 
 @pytest.mark.asyncio
+async def test_actor_marker_forces_new_channel_task_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, _user_id, channel_id = _create_channel_session_local(tmp_path)
+    monkeypatch.setattr(
+        "xagent.web.services.channel_runtime.get_session_local",
+        lambda: SessionLocal,
+    )
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=None,
+        text="trusted actor message",
+        channel_name="Trusted direct channel",
+        mcp_runtime_authorization_policy_required=True,
+    )
+
+    assert prepared is not None
+    with SessionLocal() as db:
+        task = db.get(Task, prepared.task_id)
+        assert task is not None
+        assert task.is_visible is False
+        assert task.agent_config == {
+            MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True
+        }
+    assert await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("foreign_owner", [False, True])
 async def test_prepare_channel_task_falls_back_when_agent_not_selectable(
     monkeypatch: pytest.MonkeyPatch,

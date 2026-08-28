@@ -71,7 +71,10 @@ from xagent.web.services.connector_runtime import (
     pop_ephemeral_runtime_values,
     store_ephemeral_runtime_values,
 )
-from xagent.web.services.mcp_runtime import MCPBuiltinOAuthActorPolicy
+from xagent.web.services.mcp_runtime import (
+    MCPBuiltinOAuthActorPolicy,
+    MCPBuiltinOAuthActorPolicyRequiredError,
+)
 from xagent.web.services.task_execution_controller import task_execution_controller
 from xagent.web.services.task_lease_service import (
     TaskLease,
@@ -2634,6 +2637,66 @@ async def test_schedule_bg_broadcasts_failure_only_after_exact_settlement(
 
 
 @pytest.mark.asyncio
+async def test_marked_append_rejects_before_persisting_turn(db_session) -> None:
+    user = _create_user(db_session)
+    task = _create_task(db_session, user.id, status=TaskStatus.COMPLETED)
+    task.agent_config = {MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True}
+    original_run_id = task.run_id
+    original_state_version = task.state_version
+    db_session.commit()
+
+    with pytest.raises(TaskTurnError, match="actor_task_reuse_unsupported"):
+        await TaskTurnOrchestrator.begin_turn(
+            task_id=int(task.id),
+            task_owner_user_id=int(user.id),
+            payload=TaskTurnPayload("generic append"),
+            kind=TurnKind.APPEND,
+        )
+
+    db_session.expire_all()
+    persisted = db_session.get(Task, int(task.id))
+    assert persisted is not None
+    assert persisted.status == TaskStatus.COMPLETED
+    assert persisted.run_id == original_run_id
+    assert persisted.state_version == original_state_version
+    assert (
+        db_session.query(TaskChatMessage)
+        .filter(TaskChatMessage.task_id == int(task.id))
+        .count()
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_marked_legacy_execution_rejects_before_scheduling(db_session) -> None:
+    user = _create_user(db_session)
+    task = _create_task(db_session, user.id, status=TaskStatus.COMPLETED)
+    task.agent_config = {MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True}
+    db_session.commit()
+
+    with (
+        patch("xagent.web.services.task_orchestrator._schedule_bg") as schedule,
+        pytest.raises(
+            MCPBuiltinOAuthActorPolicyRequiredError,
+            match="legacy execution is unsupported",
+        ),
+    ):
+        await TaskTurnOrchestrator.schedule_existing_task_execution(
+            task_id=int(task.id),
+            task_owner_user_id=int(user.id),
+            task_source=task.source,
+            payload=TaskTurnPayload("generic execute"),
+        )
+
+    schedule.assert_not_called()
+    db_session.expire_all()
+    persisted = db_session.get(Task, int(task.id))
+    assert persisted is not None
+    assert persisted.status == TaskStatus.COMPLETED
+    assert persisted.runner_id is None
+
+
+@pytest.mark.asyncio
 async def test_trusted_marked_create_schedule_forwards_actor_policy() -> None:
     policy = MCPBuiltinOAuthActorPolicy(resource_owner_key="actor:alice")
     lease = TaskLease(task_id=42, runner_id="trusted-direct", run_id="run-42")
@@ -2702,6 +2765,7 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
     _store_runtime_secret_for_turn(payload.turn_id)
     assert get_ephemeral_runtime_values(payload.turn_id) is not None
     actor_policy = MCPBuiltinOAuthActorPolicy(resource_owner_key="actor:alice")
+    agent_manager = MagicMock()
 
     with (
         patch(
@@ -2722,7 +2786,7 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
         patch.object(background_task_manager, "register_task"),
         patch(
             "xagent.web.services.task_orchestrator._get_agent_manager",
-            return_value=MagicMock(),
+            return_value=agent_manager,
         ),
     ):
         bg_task = _schedule_bg(
@@ -2750,6 +2814,7 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
     assert kwargs["context"]["turn_id"] == payload.turn_id
     assert kwargs["context"]["existing"] == "value"
     assert kwargs["mcp_runtime_authorization_policy"] is actor_policy
+    agent_manager.remove_agent.assert_called_once_with(int(task.id), int(user.id))
     assert get_ephemeral_runtime_values(payload.turn_id) is None
     assert pop_ephemeral_runtime_values(payload.turn_id) is None
 

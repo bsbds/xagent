@@ -506,6 +506,7 @@ def classify_actor_builtin_oauth_server(
     server_app_id = auth.get("app_id") if isinstance(auth, Mapping) else None
     server_name = str(getattr(server, "name", ""))
     normalized_name = _normalized_catalog_key(server_name)
+    normalized_app_id = _normalized_catalog_key(server_app_id)
 
     exact_app = next(
         (
@@ -524,11 +525,15 @@ def classify_actor_builtin_oauth_server(
     reserved_apps = [
         app_info
         for app_info in catalog_apps
-        if normalized_name
-        in {
+        if {
+            normalized_name,
+            normalized_app_id,
+        }
+        & {
             _normalized_catalog_key(app_info.get("id")),
             _normalized_catalog_key(app_info.get("name")),
         }
+        - {""}
     ]
 
     if has_app_id:

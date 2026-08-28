@@ -280,6 +280,9 @@ def _waiting_or_paused_event_fields(status: TaskStatus) -> tuple[str, str]:
 # default "busy" message tells the user to retry, which is actively
 # misleading for workforce rejections where retrying can never succeed.
 _TURN_REJECTION_MESSAGES = {
+    "actor_task_reuse_unsupported": (
+        "This actor task supports one trusted direct execution only."
+    ),
     "workforce_archived": (
         "This workforce has been archived; the conversation can no longer "
         "accept new messages."
@@ -8233,7 +8236,11 @@ async def handle_pause_task(
             kind=TaskCommandKind.PAUSE,
             command_id=_client_message_id(message_data.get("command_id")),
         )
-    except (PermissionError, ValueError) as exc:
+    except (
+        MCPBuiltinOAuthActorPolicyRequiredError,
+        PermissionError,
+        ValueError,
+    ) as exc:
         log_client_facing_failure(
             exc, "Pause command rejected for task %s: %s", task_id
         )
@@ -8503,7 +8510,11 @@ async def handle_resume_task(
             kind=TaskCommandKind.RESUME,
             command_id=_client_message_id(message_data.get("command_id")),
         )
-    except (PermissionError, ValueError) as exc:
+    except (
+        MCPBuiltinOAuthActorPolicyRequiredError,
+        PermissionError,
+        ValueError,
+    ) as exc:
         log_client_facing_failure(
             exc, "Resume command rejected for task %s: %s", task_id
         )

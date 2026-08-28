@@ -315,6 +315,16 @@ class TaskTurnOrchestrator:
         settlement.  Cross-worker duplicates are rejected by lease acquisition.
         """
         async with task_execution_controller.command(task_id):
+            actor_marked = await run_db_io_cancellation_safe(
+                lambda: _task_requires_actor_policy_sync(
+                    task_id,
+                    task_owner_user_id,
+                )
+            )
+            if actor_marked:
+                raise MCPBuiltinOAuthActorPolicyRequiredError(
+                    f"Task {task_id} is actor-marked; legacy execution is unsupported"
+                )
             _refuse_if_bg_inflight(task_id)
             background_task = _schedule_bg(
                 task_id=task_id,
@@ -1022,6 +1032,30 @@ def invalidate_task_cache_best_effort(task_id: int) -> None:
         )
 
 
+def _task_requires_actor_policy(
+    db: Session,
+    task_id: int,
+    task_owner_user_id: int,
+) -> bool:
+    row = (
+        db.query(Task.agent_config)
+        .filter(Task.id == task_id, Task.user_id == task_owner_user_id)
+        .first()
+    )
+    return bool(row is not None and mcp_runtime_authorization_policy_required(row[0]))
+
+
+def _task_requires_actor_policy_sync(
+    task_id: int,
+    task_owner_user_id: int,
+) -> bool:
+    from ..models.database import get_session_local
+
+    SessionLocal = get_session_local()
+    with SessionLocal() as db:
+        return _task_requires_actor_policy(db, task_id, task_owner_user_id)
+
+
 def _claim_turn_no_commit(
     db: Session,
     task_id: int,
@@ -1031,6 +1065,13 @@ def _claim_turn_no_commit(
     kind: TurnKind,
 ) -> _ClaimedTurn:
     """Stage one atomic turn claim; the caller owns commit and rollback."""
+
+    if kind == TurnKind.APPEND and _task_requires_actor_policy(
+        db,
+        task_id,
+        task_owner_user_id,
+    ):
+        raise TaskTurnError("actor_task_reuse_unsupported")
 
     if kind == TurnKind.CREATE:
         status_filter = Task.status == TaskStatus.PENDING
@@ -2065,6 +2106,22 @@ def _schedule_bg(
                     turn_id,
                     exc_info=True,
                 )
+            if mcp_runtime_authorization_policy is not None:
+                try:
+                    await run_db_io_cancellation_safe(
+                        lambda: _get_agent_manager().remove_agent(
+                            task_id,
+                            task_owner_user_id,
+                        )
+                    )
+                except asyncio.CancelledError as exc:
+                    cleanup_cancellation = cleanup_cancellation or exc
+                except Exception:
+                    logger.warning(
+                        "actor runtime cleanup failed for task %s",
+                        task_id,
+                        exc_info=True,
+                    )
             if cleanup_cancellation is not None:
                 raise cleanup_cancellation
 

@@ -5,6 +5,7 @@ Provides web-specific configuration classes that load from database
 and other web-specific sources.
 """
 
+import asyncio
 import copy
 import inspect
 import logging
@@ -28,8 +29,10 @@ from typing import (
     TypeVar,
     cast,
 )
+from weakref import WeakValueDictionary
 
 import httpx
+from sqlalchemy import text
 
 from ...config import get_uploads_dir
 from ...core.agent.result import (
@@ -82,6 +85,9 @@ OAUTH_TOKEN_RESOLVER_FAILURE_CODE = "oauth_token_resolver_failed"
 OAUTH_TOKEN_RESOLVER_FAILURE_MESSAGE = "OAuth token resolver failed"
 UNAVAILABLE_MCP_MESSAGE = "MCP server is unavailable."
 UNAVAILABLE_MCP_CREDENTIAL_MESSAGE = "MCP server credentials are unavailable."
+_ACTOR_OAUTH_REFRESH_LOCKS: WeakValueDictionary[tuple[int, int], asyncio.Lock] = (
+    WeakValueDictionary()
+)
 # This web-runtime allowlist is intentionally narrower than the adapter-layer
 # public summary allowlist. It accepts only credential/config resolution reasons
 # produced at this boundary; adapter/list-tools phases are sanitized separately
@@ -572,6 +578,15 @@ def _oauth_launch_config_env_mapping(
         "Ignoring OAuth MCP launch config env_mapping because env_mapping must be a mapping"
     )
     return {}
+
+
+def _actor_oauth_refresh_lock(account_id: int) -> asyncio.Lock:
+    key = (id(asyncio.get_running_loop()), account_id)
+    lock = _ACTOR_OAUTH_REFRESH_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ACTOR_OAUTH_REFRESH_LOCKS[key] = lock
+    return lock
 
 
 def _oauth_launch_config_mapping(
@@ -3415,6 +3430,8 @@ class WebToolConfig(BaseToolConfig):
             return _LegacyOAuthTokenResolution(access_token=None)
         user_id = int(self._user_id)
         oauth_db = self._new_legacy_oauth_session()
+        actor_refresh_lock: asyncio.Lock | None = None
+        actor_refresh_lock_acquired = False
         try:
             if resource_owner_key is not None:
                 # Actor callbacks persist the canonical app id as the provider
@@ -3434,6 +3451,33 @@ class WebToolConfig(BaseToolConfig):
                     self._user_id,
                     oauth_account is not None,
                 )
+                if oauth_account is not None:
+                    account_id = int(oauth_account.id)
+                    actor_refresh_lock = _actor_oauth_refresh_lock(account_id)
+                    await actor_refresh_lock.acquire()
+                    actor_refresh_lock_acquired = True
+
+                    # Re-read after the process-local gate. PostgreSQL and
+                    # MySQL also serialize workers on the credential row.
+                    oauth_db.rollback()
+                    actor_query = scoped_user_oauth_query(
+                        oauth_db,
+                        user_id=user_id,
+                        resource_owner_key=resource_owner_key,
+                    ).filter(
+                        UserOAuth.id == account_id,
+                        UserOAuth.provider == app_id,
+                    )
+                    if oauth_db.get_bind().dialect.name == "sqlite":
+                        oauth_db.execute(
+                            text(
+                                "UPDATE user_oauth SET id = id WHERE id = :account_id"
+                            ),
+                            {"account_id": account_id},
+                        )
+                    else:
+                        actor_query = actor_query.with_for_update()
+                    oauth_account = actor_query.first()
             elif app_id:
                 # A bare provider-level grant (e.g. UserOAuth.provider ==
                 # "meta") never requested this app's own oauth_scopes, so it
@@ -3495,15 +3539,17 @@ class WebToolConfig(BaseToolConfig):
                     "Deleting OAuth record to prompt user for reconnection.",
                     provider_name,
                 )
-                # A failed flush leaves the transaction unusable. Roll it back,
-                # reload the account, then persist the disconnection atomically.
-                oauth_db.rollback()
-                oauth_account = get_scoped_user_oauth_account(
-                    oauth_db,
-                    user_id=user_id,
-                    account_id=account_id,
-                    resource_owner_key=resource_owner_key,
-                )
+                if resource_owner_key is None:
+                    # Ordinary flows preserve the existing recovery path for a
+                    # failed flush. Actor flows retain their credential lock so
+                    # a concurrent winner cannot be deleted after refresh.
+                    oauth_db.rollback()
+                    oauth_account = get_scoped_user_oauth_account(
+                        oauth_db,
+                        user_id=user_id,
+                        account_id=account_id,
+                        resource_owner_key=None,
+                    )
                 if oauth_account is not None:
                     oauth_db.delete(oauth_account)
                     oauth_db.commit()
@@ -3529,6 +3575,8 @@ class WebToolConfig(BaseToolConfig):
             raise
         finally:
             oauth_db.close()
+            if actor_refresh_lock_acquired and actor_refresh_lock is not None:
+                actor_refresh_lock.release()
 
     async def _build_mcp_server_config(
         self,

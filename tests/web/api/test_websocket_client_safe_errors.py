@@ -23,6 +23,9 @@ from tests.web.api.client_safe_ast_guard import guard_offenders as _guard_offend
 from xagent.web.api import websocket as websocket_api
 from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.user import User
+from xagent.web.services.mcp_runtime import (
+    MCPBuiltinOAuthActorPolicyRequiredError,
+)
 from xagent.web.services.task_orchestrator import TaskTurnOrchestrator
 
 from .conftest import _direct_db_session
@@ -564,6 +567,41 @@ async def test_builder_chat_redacts_through_its_own_socket_sink(
     assert errors, "the handler must answer the builder client"
     assert SECRET not in repr(payloads)
     assert errors[-1]["message"] == websocket_api.CLIENT_SAFE_VALIDATION_ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler_name", ["handle_pause_task", "handle_resume_task"], ids=["pause", "resume"]
+)
+async def test_actor_policy_rejection_returns_websocket_error(
+    monkeypatch: pytest.MonkeyPatch,
+    handler_name: str,
+) -> None:
+    connection_manager = MagicMock()
+    connection_manager.send_personal_message = AsyncMock()
+    monkeypatch.setattr(websocket_api, "manager", connection_manager)
+    monkeypatch.setattr(
+        websocket_api,
+        "_enqueue_websocket_task_command",
+        AsyncMock(
+            side_effect=MCPBuiltinOAuthActorPolicyRequiredError(
+                "actor-marked task does not support generic control"
+            )
+        ),
+    )
+
+    await getattr(websocket_api, handler_name)(
+        MagicMock(),
+        42,
+        {"user": SimpleNamespace(id=7, is_admin=False)},
+    )
+
+    connection_manager.send_personal_message.assert_awaited_once()
+    payload = connection_manager.send_personal_message.await_args.args[0]
+    assert payload == {
+        "type": "error",
+        "message": websocket_api.CLIENT_SAFE_VALIDATION_ERROR,
+    }
 
 
 @pytest.mark.asyncio

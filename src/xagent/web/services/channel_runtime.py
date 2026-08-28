@@ -750,7 +750,11 @@ def _prepare_channel_task_sync(
                     channel_name=channel_name,
                     telegram_user_id=external_user_id if is_telegram else None,
                     agent_id=task_agent_id,
-                    is_visible=new_task_is_visible,
+                    is_visible=(
+                        False
+                        if mcp_runtime_authorization_policy_required is True
+                        else new_task_is_visible
+                    ),
                     agent_config=(
                         {MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True}
                         if mcp_runtime_authorization_policy_required is True

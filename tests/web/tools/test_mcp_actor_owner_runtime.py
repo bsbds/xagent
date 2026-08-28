@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import FrozenInstanceError, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from xagent.web import mcp_apps
 from xagent.web.models.database import Base
 from xagent.web.models.mcp import MCPServer, UserMCPServer
 from xagent.web.models.mcp_oauth import MCPOAuthClient, MCPOAuthGrant
+from xagent.web.models.oauth_provider import OAuthProvider
 from xagent.web.models.public_mcp import PublicMCPApp
 from xagent.web.models.user import User
 from xagent.web.models.user_oauth import UserOAuth
@@ -231,6 +233,88 @@ async def test_actor_builtin_refresh_remains_in_exact_owner_namespace(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_actor_refresh_keeps_rotated_credential(
+    db_session,
+    monkeypatch,
+) -> None:
+    _add_builtin_server(db_session.db, db_session.user)
+    db_session.db.add(
+        OAuthProvider(
+            provider_name="google",
+            name="Google",
+            client_id="client-id",
+            client_secret="client-secret",
+            auth_url="https://accounts.example/authorize",
+            token_url="https://accounts.example/token",
+        )
+    )
+    account = _add_actor_credential(
+        db_session.db,
+        db_session.user,
+        owner=OWNER_A,
+        token="expired-token",
+    )
+    account.refresh_token = "rotating-refresh-token"
+    account.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_session.db.commit()
+
+    class Response:
+        def __init__(self, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self._payload = payload or {}
+
+        def json(self) -> dict:
+            return self._payload
+
+    post_calls = 0
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            nonlocal post_calls
+            post_calls += 1
+            if post_calls == 1:
+                await asyncio.sleep(0.05)
+                return Response(
+                    200,
+                    {
+                        "access_token": "winner-token",
+                        "refresh_token": "winner-refresh-token",
+                        "expires_in": 3600,
+                    },
+                )
+
+            for _ in range(100):
+                with db_session.session_factory() as check_db:
+                    current = check_db.get(UserOAuth, int(account.id))
+                    if current is not None and current.access_token == "winner-token":
+                        break
+                await asyncio.sleep(0.01)
+            return Response(400)
+
+    monkeypatch.setattr(web_tools_config.httpx, "AsyncClient", Client)
+
+    first, second = await asyncio.gather(
+        _config(db_session, policy=_policy()).get_mcp_server_configs(),
+        _config(db_session, policy=_policy()).get_mcp_server_configs(),
+    )
+
+    assert post_calls == 1
+    assert _token(first[0]) == "winner-token"
+    assert _token(second[0]) == "winner-token"
+    db_session.db.expire_all()
+    persisted = db_session.db.get(UserOAuth, int(account.id))
+    assert persisted is not None
+    assert persisted.access_token == "winner-token"
+    assert persisted.refresh_token == "winner-refresh-token"
+
+
+@pytest.mark.asyncio
 async def test_actor_builtin_missing_exact_credential_does_not_fallback(
     db_session,
 ) -> None:
@@ -375,6 +459,24 @@ async def test_normalized_reserved_builtin_alias_cannot_run_as_native(
     assert configs[0]["transport"] == "unavailable"
     assert configs[0]["config"]["reason"] == "config_load_failed"
     assert "/bin/unsafe-alias" not in str(configs)
+
+
+@pytest.mark.asyncio
+async def test_normalized_reserved_auth_alias_cannot_run_as_native(
+    db_session,
+) -> None:
+    server = _add_builtin_server(db_session.db, db_session.user)
+    server.name = "Foreign native server"
+    server.auth = {"app_id": "  ACTOR   DRIVE  ", "provider": "google"}
+    server.transport = "stdio"
+    server.command = "/bin/unsafe-auth-alias"
+    db_session.db.commit()
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    assert configs[0]["transport"] == "unavailable"
+    assert configs[0]["config"]["reason"] == "config_load_failed"
+    assert "/bin/unsafe-auth-alias" not in str(configs)
 
 
 @pytest.mark.asyncio
