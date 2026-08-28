@@ -34,4 +34,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove actor OAuth flow state after entry points have been disabled."""
+    context = op.get_context()
+    if not context.as_sql and not sa.inspect(op.get_bind()).has_table(TABLE):
+        return
+
     op.drop_table(TABLE)
