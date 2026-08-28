@@ -24,6 +24,47 @@ TEST_BUILTIN_EXECUTION = {
     "oauth_scopes": [],
     "launch_config": {"command": "calendar"},
 }
+NON_EXECUTION_SERVER_FIELDS = {
+    "id",
+    "description",
+    "created_at",
+    "updated_at",
+}
+DIRECTLY_VALIDATED_SERVER_FIELDS = {
+    "name",
+    "managed",
+    "transport",
+    "auth",
+    "concurrency_safe",
+    "concurrent_tools",
+    "allow_delegated_authorization",
+    "restart_policy",
+}
+NONCANONICAL_SERVER_VALUES = {
+    "command": "foreign-command",
+    "args": ["foreign-argument"],
+    "url": "https://foreign.example",
+    "env": {"FOREIGN": "value"},
+    "cwd": "/foreign",
+    "headers": {"X-Foreign": "value"},
+    "timeout": 1,
+    "runtime_input_schema": {"type": "object"},
+    "runtime_bindings": {"token": "foreign"},
+    "docker_url": "unix:///foreign.sock",
+    "docker_image": "foreign/image",
+    "docker_environment": {"FOREIGN": "value"},
+    "docker_working_dir": "/foreign",
+    "volumes": ["/foreign:/foreign"],
+    "bind_ports": {"8080": 8080},
+    "auto_start": True,
+    "container_id": "foreign-container",
+    "container_name": "foreign-container",
+    "container_logs": ["foreign-log"],
+    "concurrency_safe": True,
+    "concurrent_tools": ["foreign-tool"],
+    "allow_delegated_authorization": True,
+    "restart_policy": "always",
+}
 
 
 @pytest.fixture
@@ -79,6 +120,37 @@ def _catalog_link(db: Session, user: User) -> tuple[MCPServer, UserMCPServer]:
     db.add(link)
     db.commit()
     return server, link
+
+
+def test_canonical_validation_covers_mcp_server_schema() -> None:
+    covered_fields = (
+        NON_EXECUTION_SERVER_FIELDS
+        | DIRECTLY_VALIDATED_SERVER_FIELDS
+        | set(mcp_apps._CANONICAL_EMPTY_SERVER_FIELDS)
+    )
+
+    assert set(MCPServer.__table__.columns.keys()) == covered_fields
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    NONCANONICAL_SERVER_VALUES.items(),
+)
+def test_definition_rejects_noncanonical_server_fields(
+    catalog_db, field_name, value
+) -> None:
+    db, user = catalog_db
+    server, _link = _catalog_link(db, user)
+    setattr(server, field_name, value)
+    db.commit()
+
+    with pytest.raises(
+        mcp_apps.BuiltinOAuthServerDefinitionError,
+        match=field_name,
+    ):
+        mcp_apps.require_builtin_oauth_server_definition(
+            db, app_id="calendar", provider="custom"
+        )
 
 
 def test_visibility_creates_canonical_nonowning_personal_link(catalog_db) -> None:
