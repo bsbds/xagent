@@ -12,6 +12,7 @@ from xagent.core.tools.adapters.vibe.selection_spec import (
 )
 from xagent.web.api.chat import AgentServiceManager, _spec_wants_mcp
 from xagent.web.models.task import TaskStatus
+from xagent.web.services.channel_runtime import ChannelTaskMode
 from xagent.web.services.mcp_runtime import (
     MCPBuiltinOAuthActorPolicy,
     MCPBuiltinOAuthActorPolicyMismatchError,
@@ -218,6 +219,63 @@ async def test_marked_task_reconstruction_is_rejected_even_with_policy(
             ),
             task_owner_user_id=1,
             mcp_runtime_authorization_policy=actor_policy,
+            resolved_execution_scope=None,
+        )
+
+    reconstruct.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_actor_interaction_reconstructs_marked_running_task(
+    actor_policy: MCPBuiltinOAuthActorPolicy,
+) -> None:
+    manager = AgentServiceManager()
+    reconstructed = MagicMock()
+
+    async def reconstruct(*_args: Any, **_kwargs: Any) -> None:
+        manager._agents[42] = reconstructed
+
+    with patch.object(
+        manager,
+        "_reconstruct_agent_from_history",
+        new=AsyncMock(side_effect=reconstruct),
+    ) as reconstruct_agent:
+        result = await manager.get_agent_for_task(
+            42,
+            task_setup_snapshot=_snapshot(
+                status=TaskStatus.RUNNING,
+                has_reconstructable_history=True,
+            ),
+            task_owner_user_id=1,
+            mcp_runtime_authorization_policy=actor_policy,
+            task_mode=ChannelTaskMode.ACTOR_INTERACTION,
+            resolved_execution_scope=None,
+        )
+
+    assert result is reconstructed
+    reconstruct_agent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_actor_interaction_reconstruction_requires_running_claim(
+    actor_policy: MCPBuiltinOAuthActorPolicy,
+) -> None:
+    manager = AgentServiceManager()
+    reconstruct = AsyncMock()
+
+    with (
+        patch.object(manager, "_reconstruct_agent_from_history", new=reconstruct),
+        pytest.raises(MCPBuiltinOAuthActorPolicyRequiredError, match="reconstruction"),
+    ):
+        await manager.get_agent_for_task(
+            42,
+            task_setup_snapshot=_snapshot(
+                status=TaskStatus.WAITING_FOR_USER,
+                has_reconstructable_history=True,
+            ),
+            task_owner_user_id=1,
+            mcp_runtime_authorization_policy=actor_policy,
+            task_mode=ChannelTaskMode.ACTOR_INTERACTION,
             resolved_execution_scope=None,
         )
 

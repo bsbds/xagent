@@ -111,7 +111,6 @@ async def _create_waiting_actor_task(
     return prepared.task_id
 
 
-
 @pytest.mark.asyncio
 async def test_prepare_channel_task_binds_owned_agent(
     monkeypatch: pytest.MonkeyPatch,
@@ -441,7 +440,6 @@ async def test_actor_interaction_rejects_unavailable_agent_without_fallback(
     with SessionLocal() as db:
         assert db.query(Task).count() == 1
     engine.dispose()
-
 
 
 @pytest.mark.asyncio
