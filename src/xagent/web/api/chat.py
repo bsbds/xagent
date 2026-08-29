@@ -82,6 +82,7 @@ from ..services.agent_team_scope import (
     resolve_authorized_agent,
 )
 from ..services.assistant_history_safety import ASSISTANT_RESPONSE_MESSAGE_TYPE
+from ..services.channel_runtime import ChannelTaskMode
 from ..services.chat_history_service import (
     load_task_transcript,
     persist_assistant_message_no_commit,
@@ -2142,6 +2143,7 @@ class AgentServiceManager:
         task_owner_user_id: Optional[int] = None,
         connector_runtime_turn_id: Optional[str] = None,
         mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
+        task_mode: ChannelTaskMode = ChannelTaskMode.DEFAULT,
         resolved_execution_scope: Union[
             ExecutionScope, None, ExecutionScopeNotProvided
         ] = EXECUTION_SCOPE_NOT_PROVIDED,
@@ -2159,6 +2161,7 @@ class AgentServiceManager:
                 task_owner_user_id=task_owner_user_id,
                 connector_runtime_turn_id=connector_runtime_turn_id,
                 mcp_runtime_authorization_policy=(mcp_runtime_authorization_policy),
+                task_mode=task_mode,
                 resolved_execution_scope=resolved_execution_scope,
             )
 
@@ -2171,6 +2174,7 @@ class AgentServiceManager:
         task_owner_user_id: Optional[int] = None,
         connector_runtime_turn_id: Optional[str] = None,
         mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
+        task_mode: ChannelTaskMode = ChannelTaskMode.DEFAULT,
         resolved_execution_scope: Union[
             ExecutionScope, None, ExecutionScopeNotProvided
         ] = EXECUTION_SCOPE_NOT_PROVIDED,
@@ -2191,6 +2195,9 @@ class AgentServiceManager:
         user's task; callers that loaded/authorized the task should pass it.
         When omitted it falls back to the snapshot owner, then the task row's
         owner, then ``user.id``.
+
+        ``task_mode=ACTOR_INTERACTION`` permits reconstruction only after the
+        channel boundary claims the exact waiting actor task as a new run.
         """
         # Track whether this invocation already tried the worker-owned snapshot
         # boundary. Active-task reconstruction and normal creation must share
@@ -2252,7 +2259,11 @@ class AgentServiceManager:
                 marked_status == TaskStatus.RUNNING
                 and task_setup_snapshot.has_reconstructable_history
             )
-            if not fresh_direct_build:
+            actor_interaction_reconstruction = (
+                task_mode is ChannelTaskMode.ACTOR_INTERACTION
+                and marked_status == TaskStatus.RUNNING
+            )
+            if not (fresh_direct_build or actor_interaction_reconstruction):
                 raise MCPBuiltinOAuthActorPolicyRequiredError(
                     f"Task {task_id} actor-marked reuse or reconstruction is unsupported"
                 )
