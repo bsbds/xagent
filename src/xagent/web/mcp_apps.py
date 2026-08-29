@@ -533,7 +533,7 @@ def classify_actor_builtin_oauth_server(
             _normalized_catalog_key(app_info.get("id")),
             _normalized_catalog_key(app_info.get("name")),
         }
-        - {""}
+        - {None}
     ]
 
     if has_app_id:

@@ -7352,10 +7352,15 @@ async def handle_execute_task(
         # ordering while the scheduled coroutine owns all runtime DB work.
         await background_task
 
-    except (ValueError, KeyError, TypeError) as e:
-        # Data validation and format error
+    except (
+        MCPBuiltinOAuthActorPolicyRequiredError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as e:
+        # Data validation and actor-policy errors are never client-safe by default.
         message = client_safe_error_message(e)
-        log_client_facing_failure(e, "Data validation error in task execution: %s")
+        log_client_facing_failure(e, "Task execution rejected: %s")
         timestamp = datetime.now(timezone.utc).isoformat()
         if authorized_task_id is not None:
             error_payload = await _read_task_error_payload_offloop(

@@ -71,8 +71,11 @@ def _sent_text_payloads(websocket: MagicMock) -> list[dict]:
         ValueError(f"invalid payload while reading {SECRET}"),
         KeyError(f"missing key near {SECRET}"),
         TypeError(f"bad type from {SECRET}"),
+        MCPBuiltinOAuthActorPolicyRequiredError(
+            f"actor task policy loaded from {SECRET}"
+        ),
     ],
-    ids=["value", "key", "type"],
+    ids=["value", "key", "type", "actor-policy"],
 )
 async def test_execute_task_redacts_an_incidental_validation_error(
     _test_db: None,
