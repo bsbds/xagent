@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
+from sqlalchemy import or_
+
 from ...config import get_default_task_execution_mode
 from ...core.file_storage.keys import build_task_output_storage_key
 from ...core.workspace import WorkspaceFileRegistration
@@ -39,8 +41,9 @@ from .managed_task_lease import (
     start_managed_task_lease,
 )
 from .mcp_runtime import MCPBuiltinOAuthActorPolicyRequiredError
-from .task_lease_service import TaskLease, acquire_task_lease_no_commit
+from .task_lease_service import TaskLease, acquire_task_lease_no_commit, utc_now
 from .task_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_IDENTITY_KEY,
     MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
 )
 from .task_runtime import (
@@ -649,6 +652,7 @@ def _actor_interaction_claim_predicates(
     owner_id: int,
     agent_id: int,
 ) -> tuple[Any, ...]:
+    now = utc_now()
     return (
         Task.user_id == owner_id,
         Task.agent_id == agent_id,
@@ -657,6 +661,13 @@ def _actor_interaction_claim_predicates(
         Task.agent_config[MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY]
         .as_boolean()
         .is_(True),
+        # WAITING_FOR_USER can be visible before the prior run releases its
+        # lease. Do not let the same process overwrite that live lease.
+        or_(
+            Task.runner_id.is_(None),
+            Task.lease_expires_at.is_(None),
+            Task.lease_expires_at < now,
+        ),
     )
 
 
@@ -705,6 +716,7 @@ def _prepare_channel_task_sync(
     agent_id: int | None = None,
     new_task_is_visible: bool = True,
     mcp_runtime_authorization_policy_required: bool = False,
+    mcp_runtime_authorization_policy_identity: str | None = None,
     task_mode: ChannelTaskMode = ChannelTaskMode.DEFAULT,
 ) -> _ChannelTaskClaimSnapshot | None:
     if not isinstance(task_mode, ChannelTaskMode):
@@ -862,7 +874,18 @@ def _prepare_channel_task_sync(
                         else new_task_is_visible
                     ),
                     agent_config=(
-                        {MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True}
+                        {
+                            MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True,
+                            **(
+                                {
+                                    MCP_RUNTIME_AUTHORIZATION_POLICY_IDENTITY_KEY: (
+                                        mcp_runtime_authorization_policy_identity
+                                    )
+                                }
+                                if mcp_runtime_authorization_policy_identity
+                                else {}
+                            ),
+                        }
                         if mcp_runtime_authorization_policy_required is True
                         else None
                     ),
@@ -949,6 +972,7 @@ async def prepare_channel_task(
     agent_id: int | None = None,
     new_task_is_visible: bool = True,
     mcp_runtime_authorization_policy_required: bool = False,
+    mcp_runtime_authorization_policy_identity: str | None = None,
     task_mode: ChannelTaskMode = ChannelTaskMode.DEFAULT,
 ) -> ClaimedChannelTask | None:
     """Authorize, resolve or create, and claim one channel run atomically.
@@ -971,6 +995,9 @@ async def prepare_channel_task(
             new_task_is_visible=new_task_is_visible,
             mcp_runtime_authorization_policy_required=(
                 mcp_runtime_authorization_policy_required
+            ),
+            mcp_runtime_authorization_policy_identity=(
+                mcp_runtime_authorization_policy_identity
             ),
             task_mode=task_mode,
         )
