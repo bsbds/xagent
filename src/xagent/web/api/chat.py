@@ -1991,6 +1991,8 @@ class AgentServiceManager:
         parent_tracer: Optional[Any] = None,
         scope: Optional[ExecutionScope] = None,
         task_setup_snapshot: Optional[TaskSetupSnapshot] = None,
+        connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
     ) -> tuple[list[Any], Any]:
         """Build the tool set configured for a web task."""
         if task_setup_snapshot is not None:
@@ -2059,8 +2061,13 @@ class AgentServiceManager:
                         "agent tools"
                     )
 
+        actor_execution = mcp_runtime_authorization_policy is not None
         tool_selection_spec = _build_tool_selection_spec_for_task(
-            agent_config, workforce_runtime, task_id=task_id
+            agent_config,
+            workforce_runtime,
+            task_id=task_id,
+            omit_published_agent_tools=actor_execution,
+            include_mcp_tools=actor_execution,
         )
         workspace_owner_id = int(task.user_id)
         # Actor-logical access policy + CA mount intent, built by
@@ -2123,7 +2130,9 @@ class AgentServiceManager:
             agent_call_stack=workforce_runtime.agent_call_stack
             if workforce_runtime
             else None,
-            connector_runtime_turn_id=None,
+            connector_runtime_turn_id=connector_runtime_turn_id,
+            mcp_runtime_authorization_policy=mcp_runtime_authorization_policy,
+            force_mcp_tools=actor_execution,
             mcp_failure_policy=_mcp_failure_policy_for_task_source(task.source),
             mcp_load_summary_tracer=parent_tracer,
             mcp_load_summary_trace_task_id=str(task_id),
@@ -2525,6 +2534,10 @@ class AgentServiceManager:
                                 db,
                                 scope=scope,
                                 task_setup_snapshot=task_setup_snapshot,
+                                connector_runtime_turn_id=connector_runtime_turn_id,
+                                mcp_runtime_authorization_policy=(
+                                    mcp_runtime_authorization_policy
+                                ),
                             )
                             self._agent_owner_ids[task_id] = runtime_user_id
                             self._agent_scope_fingerprints[task_id] = fingerprint
@@ -3818,6 +3831,8 @@ class AgentServiceManager:
         db: Optional[Session],
         scope: Optional[ExecutionScope] = None,
         task_setup_snapshot: Optional[TaskSetupSnapshot] = None,
+        connector_runtime_turn_id: Optional[str] = None,
+        mcp_runtime_authorization_policy: MCPBuiltinOAuthActorPolicy | None = None,
     ) -> None:
         """Reconstruct from the detached task-runtime snapshot.
 
@@ -3884,6 +3899,8 @@ class AgentServiceManager:
                 parent_tracer=tracer,
                 scope=scope,
                 task_setup_snapshot=snapshot,
+                connector_runtime_turn_id=connector_runtime_turn_id,
+                mcp_runtime_authorization_policy=(mcp_runtime_authorization_policy),
             )
 
             from .agents import (

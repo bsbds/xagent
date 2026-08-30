@@ -23,6 +23,7 @@ from xagent.web.services.task_runtime import (
 )
 from xagent.web.services.task_setup_snapshot import (
     RuntimeUserFields,
+    TaskReconstructionSnapshot,
     TaskSetupSnapshot,
     _TaskFields,
 )
@@ -34,6 +35,7 @@ def _snapshot(
     status: TaskStatus = TaskStatus.PENDING,
     has_reconstructable_history: bool = False,
     agent_config: dict[str, Any] | None = None,
+    task_llm: Any = None,
 ) -> TaskSetupSnapshot:
     return TaskSetupSnapshot(
         task=_TaskFields(
@@ -51,13 +53,31 @@ def _snapshot(
         runtime_user=RuntimeUserFields(id=1, is_admin=False),
         has_reconstructable_history=has_reconstructable_history,
         task_pattern="single_call",
-        task_llm=None,
+        task_llm=task_llm,
         task_fast_llm=None,
         task_vision_llm=None,
         task_compact_llm=None,
         agent=None,
         agent_config=agent_config,
         excluded_agent_id=None,
+        reconstruction=TaskReconstructionSnapshot(
+            tracer_events=(
+                (
+                    {
+                        "id": "actor-event",
+                        "event_type": "agent_step",
+                        "task_id": "42",
+                        "step_id": None,
+                        "timestamp": None,
+                        "data": {},
+                        "parent_id": None,
+                    },
+                )
+                if has_reconstructable_history
+                else ()
+            ),
+            has_history=has_reconstructable_history,
+        ),
     )
 
 
@@ -72,6 +92,8 @@ class _Agent:
     def set_execution_context_messages(self, _messages: list[Any]) -> None: ...
 
     def set_recovered_skill_context(self, _context: Any) -> None: ...
+
+    async def reconstruct_from_history(self, *_args: Any) -> None: ...
 
     def cleanup_workspace(self) -> None: ...
 
@@ -226,34 +248,47 @@ async def test_marked_task_reconstruction_is_rejected_even_with_policy(
 
 
 @pytest.mark.asyncio
-async def test_actor_interaction_reconstructs_marked_running_task(
+async def test_actor_interaction_reconstruction_preserves_tool_context(
     actor_policy: MCPBuiltinOAuthActorPolicy,
 ) -> None:
     manager = AgentServiceManager()
-    reconstructed = MagicMock()
+    tool_config = MagicMock()
+    tool_config.set_execution_scope.return_value = False
+    create_tools = AsyncMock(return_value=([], tool_config))
+    reconstructed = _Agent(tool_config)
 
-    async def reconstruct(*_args: Any, **_kwargs: Any) -> None:
-        manager._agents[42] = reconstructed
-
-    with patch.object(
-        manager,
-        "_reconstruct_agent_from_history",
-        new=AsyncMock(side_effect=reconstruct),
-    ) as reconstruct_agent:
+    with (
+        patch("xagent.web.api.chat.create_default_tools", new=create_tools),
+        patch("xagent.web.api.chat.create_task_tracer", return_value=MagicMock()),
+        patch("xagent.web.sandbox_manager.get_sandbox_manager", return_value=None),
+        patch("xagent.web.api.chat.AgentService", return_value=reconstructed),
+    ):
         result = await manager.get_agent_for_task(
             42,
             task_setup_snapshot=_snapshot(
                 status=TaskStatus.RUNNING,
                 has_reconstructable_history=True,
+                agent_config={
+                    "knowledge_bases": [],
+                    "skills": [],
+                    "tool_categories": ["web_search", "file"],
+                },
+                task_llm=MagicMock(),
             ),
             task_owner_user_id=1,
+            connector_runtime_turn_id="approval-turn",
             mcp_runtime_authorization_policy=actor_policy,
             task_mode=ChannelTaskMode.ACTOR_INTERACTION,
             resolved_execution_scope=None,
         )
 
     assert result is reconstructed
-    reconstruct_agent.assert_awaited_once()
+    kwargs = create_tools.await_args.kwargs
+    assert kwargs["connector_runtime_turn_id"] == "approval-turn"
+    assert kwargs["mcp_runtime_authorization_policy"] is actor_policy
+    assert kwargs["force_mcp_tools"] is True
+    assert _spec_wants_mcp(kwargs["tool_selection_spec"])
+    assert not kwargs["tool_selection_spec"].includes_published_agent()
 
 
 @pytest.mark.asyncio
