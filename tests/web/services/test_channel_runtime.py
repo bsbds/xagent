@@ -353,6 +353,124 @@ async def test_actor_interaction_claim_rechecks_waiting_status(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("changed_field", ["agent_id", "source", "policy"])
+async def test_actor_interaction_claim_rechecks_task_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+    changed_field: str,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Actor Agent")
+    monkeypatch.setattr(channel_runtime, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+    task_id = await _create_waiting_actor_task(
+        SessionLocal,
+        channel_id=channel_id,
+        agent_id=agent_id,
+    )
+    load_task = channel_runtime._load_actor_interaction_task
+
+    def change_lineage_after_validation(db, **kwargs):
+        task, agent = load_task(db, **kwargs)
+        if changed_field == "agent_id":
+            task.agent_id = None
+        elif changed_field == "source":
+            task.source = None
+        else:
+            task.agent_config = {}
+        db.commit()
+        return task, agent
+
+    monkeypatch.setattr(
+        channel_runtime,
+        "_load_actor_interaction_task",
+        change_lineage_after_validation,
+    )
+
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=task_id,
+        text="approve",
+        channel_name="Trusted direct channel",
+        expected_owner_user_id=user_id,
+        agent_id=agent_id,
+        new_task_is_visible=False,
+        mcp_runtime_authorization_policy_required=True,
+        task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+    )
+
+    if prepared is not None:
+        await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
+        pytest.fail(f"Actor task with changed {changed_field} was claimed")
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        assert task is not None
+        assert task.status == TaskStatus.WAITING_FOR_USER
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_actor_interaction_claim_rechecks_agent_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Actor Agent")
+    with SessionLocal() as db:
+        other_user = User(username="other-owner", password_hash="hash")
+        db.add(other_user)
+        db.commit()
+        other_user_id = int(other_user.id)
+    monkeypatch.setattr(channel_runtime, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+    task_id = await _create_waiting_actor_task(
+        SessionLocal,
+        channel_id=channel_id,
+        agent_id=agent_id,
+    )
+    load_task = channel_runtime._load_actor_interaction_task
+
+    def hide_agent_after_validation(db, **kwargs):
+        task, agent = load_task(db, **kwargs)
+        agent.user_id = other_user_id
+        db.commit()
+        return task, agent
+
+    monkeypatch.setattr(
+        channel_runtime,
+        "_load_actor_interaction_task",
+        hide_agent_after_validation,
+    )
+
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=task_id,
+        text="approve",
+        channel_name="Trusted direct channel",
+        expected_owner_user_id=user_id,
+        agent_id=agent_id,
+        new_task_is_visible=False,
+        mcp_runtime_authorization_policy_required=True,
+        task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+    )
+
+    if prepared is not None:
+        await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
+        pytest.fail("Actor task with a hidden agent was claimed")
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        assert task is not None
+        assert task.status == TaskStatus.WAITING_FOR_USER
+    engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_field", ["source", "status", "policy"])
 async def test_actor_interaction_rejects_invalid_task_without_fallback(
     monkeypatch: pytest.MonkeyPatch,

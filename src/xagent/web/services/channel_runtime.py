@@ -622,6 +622,44 @@ async def get_channel_owner_agent(
     )
 
 
+def _actor_interaction_task_matches(
+    task: Task | None,
+    agent: Agent | None,
+    *,
+    owner_id: int,
+    agent_id: int,
+    status: TaskStatus,
+) -> bool:
+    return bool(
+        agent is not None
+        and task is not None
+        and int(task.user_id) == owner_id
+        and task.agent_id is not None
+        and int(task.agent_id) == agent_id
+        and int(agent.id) == agent_id
+        and task.source == ACTOR_TASK_SOURCE
+        and task.status == status
+        and task.is_visible is False
+        and task_requires_mcp_actor_policy(task.agent_config)
+    )
+
+
+def _actor_interaction_claim_predicates(
+    *,
+    owner_id: int,
+    agent_id: int,
+) -> tuple[Any, ...]:
+    return (
+        Task.user_id == owner_id,
+        Task.agent_id == agent_id,
+        Task.source == ACTOR_TASK_SOURCE,
+        Task.is_visible.is_(False),
+        Task.agent_config[MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY]
+        .as_boolean()
+        .is_(True),
+    )
+
+
 def _load_actor_interaction_task(
     db: Any,
     *,
@@ -642,17 +680,17 @@ def _load_actor_interaction_task(
         )
         .first()
     )
-    if (
-        agent is None
-        or task is None
-        or task.agent_id is None
-        or int(task.agent_id) != int(agent.id)
-        or task.source != ACTOR_TASK_SOURCE
-        or task.status != TaskStatus.WAITING_FOR_USER
-        or not task_requires_mcp_actor_policy(task.agent_config)
+    if not _actor_interaction_task_matches(
+        task,
+        agent,
+        owner_id=owner_id,
+        agent_id=agent_id,
+        status=TaskStatus.WAITING_FOR_USER,
     ):
         raise ChannelAuthorizationError("The actor interaction task is unavailable")
 
+    assert task is not None
+    assert agent is not None
     return task, agent
 
 
@@ -841,6 +879,14 @@ def _prepare_channel_task_sync(
                 db.flush()
 
             task_id = int(task.id)
+            claim_predicates = ()
+            if task_mode is ChannelTaskMode.ACTOR_INTERACTION:
+                assert agent_id is not None
+                claim_predicates = _actor_interaction_claim_predicates(
+                    owner_id=owner_id,
+                    agent_id=agent_id,
+                )
+
             lease = acquire_task_lease_no_commit(
                 db,
                 task_id,
@@ -850,6 +896,7 @@ def _prepare_channel_task_sync(
                     else None
                 ),
                 new_run=True,
+                claim_predicates=claim_predicates,
             )
             if lease is None:
                 db.rollback()
@@ -860,6 +907,23 @@ def _prepare_channel_task_sync(
             # PENDING row before its RUNNING owner is durable.
             db.expire_all()
             claimed_task = db.query(Task).filter(Task.id == task_id).one()
+            if task_mode is ChannelTaskMode.ACTOR_INTERACTION:
+                assert agent_id is not None
+                claimed_agent = (
+                    _owned_channel_agents_query(db, owner_id)
+                    .filter(Agent.id == agent_id)
+                    .with_for_update()
+                    .first()
+                )
+                if not _actor_interaction_task_matches(
+                    claimed_task,
+                    claimed_agent,
+                    owner_id=owner_id,
+                    agent_id=agent_id,
+                    status=TaskStatus.RUNNING,
+                ):
+                    db.rollback()
+                    return None
             sync_workforce_run_status(db, claimed_task, TaskStatus.RUNNING)
             db.commit()
             return _ChannelTaskClaimSnapshot(
