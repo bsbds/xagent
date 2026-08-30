@@ -747,6 +747,7 @@ def acquire_task_lease_no_commit(
     *,
     runner_id: str | None = None,
     expected_run_id: str | None = None,
+    expected_status: TaskStatus | None = None,
     new_run: bool = False,
 ) -> TaskLease | None:
     """Stage one atomic lease claim; the caller owns commit/rollback."""
@@ -807,6 +808,8 @@ def acquire_task_lease_no_commit(
         stmt = stmt.where(task_status_predicate.ne(TaskStatus.RUNNING))
     if expected_run_id is not None:
         stmt = stmt.where(Task.run_id == expected_run_id)
+    if expected_status is not None:
+        stmt = stmt.where(task_status_predicate.eq(expected_status))
     result = db.execute(
         stmt.returning(Task.run_id).execution_options(synchronize_session=False)
     )

@@ -841,7 +841,16 @@ def _prepare_channel_task_sync(
                 db.flush()
 
             task_id = int(task.id)
-            lease = acquire_task_lease_no_commit(db, task_id, new_run=True)
+            lease = acquire_task_lease_no_commit(
+                db,
+                task_id,
+                expected_status=(
+                    TaskStatus.WAITING_FOR_USER
+                    if task_mode is ChannelTaskMode.ACTOR_INTERACTION
+                    else None
+                ),
+                new_run=True,
+            )
             if lease is None:
                 db.rollback()
                 return None

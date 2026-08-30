@@ -300,6 +300,59 @@ async def test_actor_interaction_reuses_exact_waiting_task(
 
 
 @pytest.mark.asyncio
+async def test_actor_interaction_claim_rechecks_waiting_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_workspace_db,
+) -> None:
+    del mock_workspace_db
+    engine, SessionLocal, user_id, channel_id = _create_channel_session_local(tmp_path)
+    agent_id = _add_agent(SessionLocal, user_id=user_id, name="Actor Agent")
+    monkeypatch.setattr(channel_runtime, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
+    task_id = await _create_waiting_actor_task(
+        SessionLocal,
+        channel_id=channel_id,
+        agent_id=agent_id,
+    )
+    load_task = channel_runtime._load_actor_interaction_task
+
+    def terminate_after_validation(db, **kwargs):
+        task, agent = load_task(db, **kwargs)
+        task.status = TaskStatus.COMPLETED
+        db.commit()
+        return task, agent
+
+    monkeypatch.setattr(
+        channel_runtime,
+        "_load_actor_interaction_task",
+        terminate_after_validation,
+    )
+
+    prepared = await prepare_channel_task(
+        channel_id=channel_id,
+        external_user_id="telegram-user",
+        active_task_id=task_id,
+        text="approve",
+        channel_name="Trusted direct channel",
+        expected_owner_user_id=user_id,
+        agent_id=agent_id,
+        new_task_is_visible=False,
+        mcp_runtime_authorization_policy_required=True,
+        task_mode=channel_runtime.ChannelTaskMode.ACTOR_INTERACTION,
+    )
+
+    if prepared is not None:
+        await prepared.managed_lease.finalize_result(status=TaskStatus.FAILED)
+        pytest.fail("The terminal actor task was claimed again")
+    with SessionLocal() as db:
+        task = db.get(Task, task_id)
+        assert task is not None
+        assert task.status == TaskStatus.COMPLETED
+    engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_field", ["source", "status", "policy"])
 async def test_actor_interaction_rejects_invalid_task_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
