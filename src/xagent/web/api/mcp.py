@@ -2983,7 +2983,7 @@ def _ensure_catalog_mcp_oauth_server(
                 if value and isinstance(value, str):
                     encrypted_auth[key] = encrypt_value(value)
             cast(Any, server).auth = encrypted_auth
-            db.commit()
+            db.flush()
     if not server:
         try:
             config = _build_server_config(
@@ -2999,7 +2999,20 @@ def _ensure_catalog_mcp_oauth_server(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid app configuration: {str(e)}",
             )
-        server = _add_catalog_server_with_race_recovery(db, config, server_name)
+
+        candidate = MCPServer.from_config(config.model_dump())
+        try:
+            with db.begin_nested():
+                db.add(candidate)
+                db.flush()
+            server = candidate
+        except IntegrityError as exc:
+            server = db.query(MCPServer).filter(MCPServer.name == server_name).first()
+            if server is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to create catalog server: {str(exc)}",
+                ) from exc
     return server, app_info
 
 
@@ -3156,7 +3169,7 @@ def _ensure_mcp_oauth_app_user(
         .first()
     )
     if assoc is None:
-        assoc = UserMCPServer(
+        candidate = UserMCPServer(
             user_id=user_id,
             mcpserver_id=server.id,
             is_active=True,
@@ -3164,11 +3177,12 @@ def _ensure_mcp_oauth_app_user(
             can_edit=False,
             can_delete=True,
         )
-        db.add(assoc)
         try:
-            db.commit()
+            with db.begin_nested():
+                db.add(candidate)
+                db.flush()
+            assoc = candidate
         except IntegrityError:
-            db.rollback()
             assoc = (
                 db.query(UserMCPServer)
                 .filter(
@@ -3181,7 +3195,7 @@ def _ensure_mcp_oauth_app_user(
                 raise
     elif not assoc.is_active:
         assoc.is_active = True
-        db.commit()
+        db.flush()
     return server, app_info
 
 
@@ -3220,8 +3234,14 @@ async def connect_mcp_oauth_app_for_owner(
     resource_owner_key: str,
     accept: str | None = None,
 ) -> RedirectResponse | JSONResponse:
-    """Start catalog MCP OAuth for a trusted server-owned resource owner."""
+    """Start catalog MCP OAuth for a trusted server-owned resource owner.
 
+    The caller commits or rolls back the returned flow and catalog visibility.
+    """
+
+    # Keep nested race-recovery savepoints inside one caller-owned transaction,
+    # including on SQLite where releasing a top-level savepoint commits it.
+    db.begin_nested()
     user_id = cast(int, current_user.id)
     server, app_info = _ensure_mcp_oauth_app_user(
         db,
@@ -4301,7 +4321,7 @@ async def connect_mcp_oauth(
 ) -> RedirectResponse | JSONResponse:
     """Start MCP OAuth Authorization Code + PKCE for the current user."""
 
-    return await _connect_mcp_oauth_for_owner(
+    response = await _connect_mcp_oauth_for_owner(
         server_id,
         request_data,
         current_user,
@@ -4309,6 +4329,8 @@ async def connect_mcp_oauth(
         resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
         accept=accept,
     )
+    db.commit()
+    return response
 
 
 async def _connect_mcp_oauth_for_owner(
@@ -4463,7 +4485,7 @@ async def _connect_mcp_oauth_for_owner(
         expires_at=_utc_now() + MCP_OAUTH_STATE_TTL,
     )
     db.add(flow_state)
-    db.commit()
+    db.flush()
 
     params = {
         "response_type": "code",

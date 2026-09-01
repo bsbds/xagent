@@ -1530,6 +1530,41 @@ async def test_trusted_connect_app_stores_exact_resource_owner(db_session, monke
 
 
 @pytest.mark.asyncio
+async def test_trusted_connect_app_can_roll_back_all_local_state(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    _add_remote_oauth_catalog_app(db)
+
+    async def fake_discover(*args, **kwargs):
+        return _discovery()
+
+    async def register_client(*_args, **_kwargs):
+        return SimpleNamespace(
+            client_id="dynamic-client-123",
+            token_endpoint_auth_method="none",
+        )
+
+    monkeypatch.setattr(mcp_api, "discover_mcp_oauth_metadata", fake_discover)
+    monkeypatch.setattr(mcp_api, "register_mcp_oauth_public_client", register_client)
+
+    await mcp_api.connect_mcp_oauth_app_for_owner(
+        "remote-notes",
+        MCPOAuthConnectRequest(redirect_after="/settings/mcp"),
+        user,
+        db,
+        resource_owner_key="toby:slack:workspace:alice",
+        accept="application/json",
+    )
+    db.rollback()
+
+    assert db.query(MCPServer).filter(MCPServer.name == "remote-notes").count() == 0
+    assert db.query(UserMCPServer).filter(UserMCPServer.user_id == user.id).count() == 0
+    assert db.query(MCPOAuthClient).count() == 0
+    assert db.query(MCPOAuthFlowState).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_connect_app_is_idempotent_across_repeated_connects(
     db_session, monkeypatch
 ):

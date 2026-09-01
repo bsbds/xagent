@@ -299,6 +299,23 @@ async def test_actor_remote_falls_back_to_workspace_grant(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_actor_remote_never_uses_another_actor_grant(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        server,
+        owner=OWNER_B,
+        token="other-actor-token",
+    )
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    assert configs[0]["transport"] == "unavailable"
+    assert "other-actor-token" not in str(configs)
+
+
+@pytest.mark.asyncio
 async def test_actor_remote_rejects_task_supplied_owner(db_session) -> None:
     server = _add_remote_server(db_session.db, db_session.user)
     _add_remote_grant(
