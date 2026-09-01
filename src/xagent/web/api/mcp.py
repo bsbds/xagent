@@ -882,7 +882,6 @@ def _claim_mcp_oauth_flow_state(
         db.rollback()
         return "state_already_consumed", "OAuth state consumed"
     db.commit()
-    db.refresh(flow_state)
     return None
 
 
@@ -3724,6 +3723,14 @@ async def delete_mcp_server(
                             providers=[provider],
                         )
 
+        # Invalidate flows before scanning grants. A callback that already
+        # locked its flow must commit first; this scan then sees and removes
+        # the grant it created.
+        db.query(MCPOAuthFlowState).filter(
+            MCPOAuthFlowState.mcp_server_id == server_id,
+            MCPOAuthFlowState.user_id == user_id,
+        ).delete(synchronize_session=False)
+
         # Revoke and purge this user's MCP OAuth grants for the server. On a
         # shared (multi-user) row the server outlives this disconnect, so
         # without this the grant's refresh token would stay usable — and its
@@ -3747,15 +3754,6 @@ async def delete_mcp_server(
                     client=grant.oauth_client, grant=grant
                 )
             db.delete(grant)
-
-        # This user's own flow-state rows (code_verifier etc.) are per-user,
-        # unlike MCPOAuthClient which a shared server's other users may still
-        # reference — safe to purge outright rather than only on server
-        # deletion's cascade.
-        db.query(MCPOAuthFlowState).filter(
-            MCPOAuthFlowState.mcp_server_id == server_id,
-            MCPOAuthFlowState.user_id == user_id,
-        ).delete(synchronize_session=False)
 
         # Remove user-server association
         db.delete(user_mcp)
@@ -4238,39 +4236,39 @@ async def mcp_oauth_callback(
                 or "Authorization response issuer did not match flow state"
             ),
         )
+    flow_id = int(flow_state.id)
+    encrypted_code_verifier = str(flow_state.code_verifier)
+    resource = str(flow_state.resource)
+    redirect_after = (
+        str(flow_state.redirect_after) if flow_state.redirect_after else None
+    )
     claim_error = _claim_mcp_oauth_flow_state(db, flow_state)
     if claim_error is not None:
         error_code, message = claim_error
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code=error_code,
             message=message,
         )
     if error:
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code="token_exchange_failed",
             message=oauth_error_message(
                 {"error": error}, "MCP OAuth authorization failed"
             ),
         )
     if not code:
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code="invalid_state",
             message="Missing authorization code",
         )
-    flow_id = int(flow_state.id)
-    code_verifier = decrypt_value(str(flow_state.code_verifier))
-    resource = str(flow_state.resource)
-    redirect_after = (
-        str(flow_state.redirect_after) if flow_state.redirect_after else None
-    )
     try:
         token_data = await _exchange_mcp_oauth_code(
             client=client,
             code=code,
-            code_verifier=code_verifier,
+            code_verifier=decrypt_value(encrypted_code_verifier),
             resource=resource,
         )
         locked_flow = (

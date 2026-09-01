@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
@@ -2377,6 +2377,58 @@ async def test_callback_exchanges_code_and_stores_encrypted_grant(
 
 
 @pytest.mark.asyncio
+async def test_callback_handles_flow_deleted_after_claim_commit(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    _server, _client, _flow = _add_callback_client_and_state(
+        db,
+        user,
+        state="deleted-after-claim",
+        redirect_after="/mcp",
+    )
+    session_factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False
+    )
+    real_commit = db.commit
+    deleted = False
+
+    def commit_then_delete_flow():
+        nonlocal deleted
+        real_commit()
+        if deleted:
+            return
+        deleted = True
+        disconnect_db = session_factory()
+        try:
+            disconnect_db.query(MCPOAuthFlowState).filter(
+                MCPOAuthFlowState.state == "deleted-after-claim"
+            ).delete(synchronize_session=False)
+            disconnect_db.commit()
+        finally:
+            disconnect_db.close()
+
+    async def fake_exchange(**kwargs):
+        return {
+            "access_token": "must-not-persist",
+            "token_type": "Bearer",
+            "scope": "records.read",
+        }
+
+    monkeypatch.setattr(db, "commit", commit_then_delete_flow)
+    monkeypatch.setattr(mcp_api, "_exchange_mcp_oauth_code", fake_exchange)
+
+    response = await mcp_oauth_callback(
+        _request("/api/mcp/oauth/callback?code=auth-code&state=deleted-after-claim"),
+        db,
+    )
+
+    assert response.status_code == 307
+    assert _redirect_query(response)["mcp_oauth_error"] == ["invalid_state"]
+    assert db.query(MCPOAuthGrant).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_callback_discards_token_when_disconnect_removes_claimed_flow(
     db_session, monkeypatch
 ):
@@ -3312,6 +3364,63 @@ async def test_delete_mcp_server_purges_the_users_own_flow_state_rows(db_session
         .one_or_none()
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_invalidates_flows_before_scanning_grants(db_session):
+    db, user, _ = db_session
+    server = _add_mcp_oauth_server(db, user)
+    client = _add_oauth_client(db, server)
+    db.add_all(
+        [
+            MCPOAuthGrant(
+                mcp_server_id=server.id,
+                user_id=user.id,
+                mcp_oauth_client_id=client.id,
+                resource_owner_key=f"xagent:user:{user.id}",
+                issuer="https://auth.example.com",
+                resource="https://mcp.example.com/mcp",
+                scope="records.read",
+                access_token=encrypt_value("access-token"),
+            ),
+            MCPOAuthFlowState(
+                state="disconnect-order",
+                mcp_server_id=server.id,
+                user_id=user.id,
+                mcp_oauth_client_id=client.id,
+                resource_owner_key=f"xagent:user:{user.id}",
+                issuer="https://auth.example.com",
+                resource="https://mcp.example.com/mcp",
+                scope="records.read",
+                code_verifier=encrypt_value("verifier"),
+                expires_at=mcp_api._utc_now() + timedelta(minutes=10),
+            ),
+        ]
+    )
+    db.commit()
+    statements: list[str] = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lower())
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        await delete_mcp_server(server.id, current_user=user, db=db)
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    flow_delete = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith("delete from mcp_oauth_flow_states")
+    )
+    grant_scan = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith("select") and "from mcp_oauth_grants" in statement
+    )
+    assert flow_delete < grant_scan
 
 
 @pytest.mark.asyncio
