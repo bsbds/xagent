@@ -4587,7 +4587,7 @@ async def revoke_mcp_oauth_grants_for_owner(
             )
         setattr(grant, "status", "revoked")
         setattr(grant, "revoked_at", now)
-    db.commit()
+    db.flush()
     return len(grants)
 
 

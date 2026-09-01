@@ -3067,6 +3067,14 @@ async def test_trusted_revoke_removes_only_exact_resource_owner(db_session):
         "toby:slack:workspace:bob"
     ]
 
+    db.rollback()
+    db.expire_all()
+    assert [grant.status for grant in grants] == ["active", "active", "active"]
+    assert [row.resource_owner_key for row in db.query(MCPOAuthFlowState).all()] == [
+        "toby:slack:workspace:alice",
+        "toby:slack:workspace:bob",
+    ]
+
 
 @pytest.mark.asyncio
 async def test_delete_grant_revokes_external_tokens_when_endpoint_is_advertised(
