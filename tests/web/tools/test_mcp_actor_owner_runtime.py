@@ -21,7 +21,11 @@ from xagent.web.models.user_oauth import UserOAuth
 from xagent.web.services import connector_team_scope
 from xagent.web.services.mcp_runtime import MCPBuiltinOAuthActorPolicy
 from xagent.web.tools import config as web_tools_config
-from xagent.web.tools.config import WebToolConfig
+from xagent.web.tools.config import (
+    ResolvedToken,
+    WebToolConfig,
+    set_oauth_token_resolver_hook,
+)
 
 OWNER_A = "toby:slack:team:actor-a"
 OWNER_B = "toby:slack:team:actor-b"
@@ -422,6 +426,72 @@ async def test_actor_remote_rejects_task_supplied_owner(db_session) -> None:
     assert configs[0]["transport"] == "unavailable"
     assert configs[0]["config"]["reason"] == "config_load_failed"
     assert "other-actor-token" not in str(configs)
+
+
+@pytest.mark.asyncio
+async def test_actor_remote_ignores_delegated_authorization(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        server,
+        owner=OWNER_A,
+        token="actor-token",
+    )
+    server.runtime_bindings = [
+        {
+            "source": {"input_type": "secrets", "key": "authorization"},
+            "target": {
+                "target_type": "transport_headers",
+                "key": "Authorization",
+            },
+        }
+    ]
+    server.allow_delegated_authorization = True
+    db_session.db.commit()
+    tool_config = _config(db_session, policy=_policy())
+    tool_config._connector_runtime_view = {
+        f"mcp:{server.id}": {
+            "context": {"account": "task-context"},
+            "secrets": {"authorization": "Bearer task-token"},
+            "auth_selector": {},
+        }
+    }
+
+    configs = await tool_config.get_mcp_server_configs()
+
+    assert configs[0]["config"]["headers"]["Authorization"] == "Bearer actor-token"
+    assert "task-token" not in str(configs)
+    assert "connector_runtime" not in configs[0]
+    assert "runtime_bindings" not in configs[0]
+
+
+@pytest.mark.asyncio
+async def test_actor_remote_ignores_resolver_hook(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        server,
+        owner=OWNER_A,
+        token="actor-token",
+    )
+    calls = 0
+
+    async def resolver(_request) -> ResolvedToken:
+        nonlocal calls
+        calls += 1
+        return ResolvedToken(access_token="resolver-token")
+
+    set_oauth_token_resolver_hook(resolver)
+    try:
+        configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+    finally:
+        set_oauth_token_resolver_hook(None)
+
+    assert calls == 0
+    assert configs[0]["config"]["headers"]["Authorization"] == "Bearer actor-token"
+    assert "resolver-token" not in str(configs)
 
 
 @pytest.mark.asyncio

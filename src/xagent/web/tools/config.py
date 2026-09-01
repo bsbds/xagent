@@ -3924,6 +3924,17 @@ class WebToolConfig(BaseToolConfig):
                 and app_info is not None
                 and app_info.get("auth_type") == "mcp_oauth"
             )
+            if actor_remote_oauth:
+                runtime_bindings = None
+                allow_delegated_authorization = False
+                runtime_values = None
+                for key in (
+                    "runtime_input_schema",
+                    "runtime_bindings",
+                    "allow_delegated_authorization",
+                    "connector_runtime",
+                ):
+                    config.pop(key, None)
             if actor_remote_oauth and (self._mcp_auth_context or {}).get(
                 str(server.id)
             ):
@@ -3964,7 +3975,7 @@ class WebToolConfig(BaseToolConfig):
             remote_providers_to_resolve: list[str] = []
             remote_configured_resource: str | None = None
             remote_hook_token: _ResolvedHookToken | None = None
-            if resolver is not None:
+            if resolver is not None and not actor_remote_oauth:
                 remote_providers_to_resolve = (
                     _oauth_token_provider_candidates(app_info)
                     if app_info
