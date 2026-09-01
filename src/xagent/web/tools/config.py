@@ -3912,9 +3912,15 @@ class WebToolConfig(BaseToolConfig):
                 effective_mcp_oauth_resource,
             )
 
-            app_info = get_app_for_mcp_server(self.db, server)
+            resolver, registration_generation = _get_oauth_token_resolver_hook()
+            policy = self._mcp_runtime_authorization_policy
+            app_info = (
+                get_app_for_mcp_server(self.db, server)
+                if policy is not None or resolver is not None
+                else None
+            )
             actor_remote_oauth = bool(
-                self._mcp_runtime_authorization_policy is not None
+                policy is not None
                 and app_info is not None
                 and app_info.get("auth_type") == "mcp_oauth"
             )
@@ -3955,7 +3961,6 @@ class WebToolConfig(BaseToolConfig):
                     }
                 }
 
-            resolver, registration_generation = _get_oauth_token_resolver_hook()
             remote_providers_to_resolve: list[str] = []
             remote_configured_resource: str | None = None
             remote_hook_token: _ResolvedHookToken | None = None
