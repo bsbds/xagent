@@ -819,6 +819,30 @@ async def _refresh_runtime_grant_in_dedicated_session(  # noqa: PLR0913
         refresh_db.close()
 
 
+def select_mcp_oauth_owner(
+    db: Any,
+    *,
+    server_id: int,
+    user_id: int,
+    actor_owner_key: str,
+) -> str:
+    """Prefer an active exact actor grant, otherwise use the workspace owner."""
+
+    from ..models.mcp_oauth import MCPOAuthGrant
+
+    actor_grant = (
+        db.query(MCPOAuthGrant.id)
+        .filter(
+            MCPOAuthGrant.mcp_server_id == server_id,
+            MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key == actor_owner_key,
+            MCPOAuthGrant.status == "active",
+        )
+        .first()
+    )
+    return actor_owner_key if actor_grant is not None else f"xagent:user:{user_id}"
+
+
 def select_mcp_oauth_grants(  # noqa: PLR0913
     db: Any,
     *,

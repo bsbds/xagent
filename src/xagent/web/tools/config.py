@@ -3905,22 +3905,60 @@ class WebToolConfig(BaseToolConfig):
 
         elif server.transport in ["sse", "websocket", "streamable_http"]:
             from ...web.mcp_apps import get_app_for_mcp_server
+            from ...web.services.mcp_oauth import select_mcp_oauth_owner
             from ...web.services.mcp_runtime import (
                 build_mcp_runtime_connection,
                 connection_to_transport_config,
                 effective_mcp_oauth_resource,
             )
 
+            app_info = get_app_for_mcp_server(self.db, server)
+            actor_remote_oauth = bool(
+                self._mcp_runtime_authorization_policy is not None
+                and app_info is not None
+                and app_info.get("auth_type") == "mcp_oauth"
+            )
+            if actor_remote_oauth and (self._mcp_auth_context or {}).get(
+                str(server.id)
+            ):
+                policy_diagnostic = {
+                    "code": "config_load_failed",
+                    "message": "Task-supplied MCP authorization is not accepted",
+                    "server_id": int(server.id),
+                    "server_name": server.name,
+                }
+                self._mcp_oauth_diagnostics.append(policy_diagnostic)
+                return self._build_unavailable_mcp_config(
+                    server=server,
+                    reason="config_load_failed",
+                    diagnostic=policy_diagnostic,
+                )
+
             auth_context = self._mcp_auth_context_for_server(
                 server_id=int(server.id),
                 runtime_values=runtime_values,
             )
+            if actor_remote_oauth:
+                policy = cast(
+                    Any,
+                    self._mcp_runtime_authorization_policy,
+                )
+                auth_context = {
+                    str(server.id): {
+                        "resource_owner_key": select_mcp_oauth_owner(
+                            self.db,
+                            server_id=int(server.id),
+                            user_id=int(cast(int, self._user_id)),
+                            actor_owner_key=policy.resource_owner_key,
+                        )
+                    }
+                }
+
             resolver, registration_generation = _get_oauth_token_resolver_hook()
             remote_providers_to_resolve: list[str] = []
             remote_configured_resource: str | None = None
             remote_hook_token: _ResolvedHookToken | None = None
             if resolver is not None:
-                app_info = get_app_for_mcp_server(self.db, server)
                 remote_providers_to_resolve = (
                     _oauth_token_provider_candidates(app_info)
                     if app_info

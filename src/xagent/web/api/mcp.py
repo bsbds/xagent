@@ -3138,35 +3138,26 @@ def connect_mcp_app(
     )
 
 
-@mcp_router.post("/apps/{app_id}/oauth/connect", response_model=None)
-async def connect_mcp_oauth_app(
+def _ensure_mcp_oauth_app_user(
+    db: Session,
+    *,
     app_id: str,
-    request_data: MCPOAuthConnectRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    accept: Annotated[str | None, Header()] = None,
-) -> RedirectResponse | JSONResponse:
-    """Connect a remote-MCP OAuth (DCR-capable) catalog app for the current user.
+    user_id: int,
+) -> tuple[MCPServer, dict]:
+    """Ensure one catalog server and active non-owning user link."""
 
-    Ensures the shared server row and this user's association exist, then
-    delegates to connect_mcp_oauth's Authorization Code + PKCE flow — the
-    per-user DCR/token machinery is identical to a self-added custom MCP
-    server; only the server row's origin (catalog vs. a user-typed URL)
-    differs.
-    """
     server, app_info = _ensure_catalog_mcp_oauth_server(db, app_id)
-
     assoc: Any = (
         db.query(UserMCPServer)
         .filter(
-            UserMCPServer.user_id == current_user.id,
+            UserMCPServer.user_id == user_id,
             UserMCPServer.mcpserver_id == server.id,
         )
         .first()
     )
     if assoc is None:
         assoc = UserMCPServer(
-            user_id=current_user.id,
+            user_id=user_id,
             mcpserver_id=server.id,
             is_active=True,
             is_owner=False,
@@ -3177,13 +3168,11 @@ async def connect_mcp_oauth_app(
         try:
             db.commit()
         except IntegrityError:
-            # Concurrent same-user connect (double-click/client retry): another
-            # request already inserted the (user_id, mcpserver_id) association.
             db.rollback()
             assoc = (
                 db.query(UserMCPServer)
                 .filter(
-                    UserMCPServer.user_id == current_user.id,
+                    UserMCPServer.user_id == user_id,
                     UserMCPServer.mcpserver_id == server.id,
                 )
                 .first()
@@ -3191,16 +3180,66 @@ async def connect_mcp_oauth_app(
             if assoc is None:
                 raise
     elif not assoc.is_active:
-        # A reconnect after the user previously disconnected their own
-        # association — re-activate it rather than leaving it dormant.
         assoc.is_active = True
         db.commit()
+    return server, app_info
 
+
+@mcp_router.post("/apps/{app_id}/oauth/connect", response_model=None)
+async def connect_mcp_oauth_app(
+    app_id: str,
+    request_data: MCPOAuthConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    accept: Annotated[str | None, Header()] = None,
+) -> RedirectResponse | JSONResponse:
+    """Connect a remote-MCP OAuth catalog app for the current user."""
+
+    user_id = cast(int, current_user.id)
+    server, app_info = _ensure_mcp_oauth_app_user(
+        db,
+        app_id=app_id,
+        user_id=user_id,
+    )
     logger.info(
-        f"User {current_user.id} starting OAuth connect for MCP app '{app_info['id']}'"
+        "User %s starting OAuth connect for MCP app %r",
+        user_id,
+        app_info["id"],
     )
     return await connect_mcp_oauth(
         cast(int, server.id), request_data, current_user, db, accept
+    )
+
+
+async def connect_mcp_oauth_app_for_owner(
+    app_id: str,
+    request_data: MCPOAuthConnectRequest,
+    current_user: User,
+    db: Session,
+    *,
+    resource_owner_key: str,
+    accept: str | None = None,
+) -> RedirectResponse | JSONResponse:
+    """Start catalog MCP OAuth for a trusted server-owned resource owner."""
+
+    user_id = cast(int, current_user.id)
+    server, app_info = _ensure_mcp_oauth_app_user(
+        db,
+        app_id=app_id,
+        user_id=user_id,
+    )
+    logger.info(
+        "User %s starting trusted OAuth connect for MCP app %r",
+        user_id,
+        app_info["id"],
+    )
+    return await _connect_mcp_oauth_for_owner(
+        cast(int, server.id),
+        request_data,
+        current_user,
+        db,
+        resource_owner_key=resource_owner_key,
+        accept=accept,
     )
 
 
@@ -4261,6 +4300,28 @@ async def connect_mcp_oauth(
     accept: Annotated[str | None, Header()] = None,
 ) -> RedirectResponse | JSONResponse:
     """Start MCP OAuth Authorization Code + PKCE for the current user."""
+
+    return await _connect_mcp_oauth_for_owner(
+        server_id,
+        request_data,
+        current_user,
+        db,
+        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
+        accept=accept,
+    )
+
+
+async def _connect_mcp_oauth_for_owner(
+    server_id: int,
+    request_data: MCPOAuthConnectRequest,
+    current_user: User,
+    db: Session,
+    *,
+    resource_owner_key: str,
+    accept: str | None,
+) -> RedirectResponse | JSONResponse:
+    """Start one OAuth flow in an exact trusted resource-owner namespace."""
+
     user_id = cast(int, current_user.id)
     _, server = _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
@@ -4335,7 +4396,7 @@ async def connect_mcp_oauth(
             token_endpoint_auth_method = registration.token_endpoint_auth_method
     selected_scope = _scope_string(auth_config.get("scope") or discovery.scopes)
     resource_owner_key = _bounded_mcp_oauth_value(
-        _default_resource_owner_key(user_id),
+        resource_owner_key,
         field_name="resource_owner_key",
         max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
     )
@@ -4456,6 +4517,56 @@ async def get_mcp_oauth_status(
         scope=auth_config.get("scope") if isinstance(auth_config, dict) else None,
         grants=[_mcp_oauth_grant_response(grant) for grant in grants],
     )
+
+
+async def revoke_mcp_oauth_grants_for_owner(
+    server_id: int,
+    current_user: User,
+    db: Session,
+    *,
+    resource_owner_key: str,
+) -> int:
+    """Revoke active grants for one trusted resource-owner namespace."""
+
+    user_id = cast(int, current_user.id)
+    _get_user_mcp_server_or_404(
+        db,
+        user_id=user_id,
+        server_id=server_id,
+        require_active=True,
+    )
+    owner_key = _bounded_mcp_oauth_value(
+        resource_owner_key,
+        field_name="resource_owner_key",
+        max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
+    )
+    db.query(MCPOAuthFlowState).filter(
+        MCPOAuthFlowState.mcp_server_id == server_id,
+        MCPOAuthFlowState.user_id == user_id,
+        MCPOAuthFlowState.resource_owner_key == owner_key,
+        MCPOAuthFlowState.consumed_at.is_(None),
+    ).delete(synchronize_session=False)
+    grants = (
+        db.query(MCPOAuthGrant)
+        .filter(
+            MCPOAuthGrant.mcp_server_id == server_id,
+            MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key == owner_key,
+            MCPOAuthGrant.status == "active",
+        )
+        .all()
+    )
+    now = _utc_now()
+    for grant in grants:
+        if isinstance(grant.oauth_client, MCPOAuthClient):
+            await _revoke_mcp_oauth_grant_externally(
+                client=grant.oauth_client,
+                grant=grant,
+            )
+        setattr(grant, "status", "revoked")
+        setattr(grant, "revoked_at", now)
+    db.commit()
+    return len(grants)
 
 
 @mcp_router.delete(
