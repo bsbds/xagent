@@ -825,22 +825,22 @@ def select_mcp_oauth_owner(
     server_id: int,
     user_id: int,
     actor_owner_key: str,
+    auth_config: dict[str, Any],
 ) -> str:
-    """Prefer an active exact actor grant, otherwise use the workspace owner."""
+    """Prefer one usable exact actor grant, otherwise use the workspace owner."""
 
-    from ..models.mcp_oauth import MCPOAuthGrant
-
-    actor_grant = (
-        db.query(MCPOAuthGrant.id)
-        .filter(
-            MCPOAuthGrant.mcp_server_id == server_id,
-            MCPOAuthGrant.user_id == user_id,
-            MCPOAuthGrant.resource_owner_key == actor_owner_key,
-            MCPOAuthGrant.status == "active",
-        )
-        .first()
+    actor_grants = select_mcp_oauth_grants(
+        db,
+        server_id=server_id,
+        user_id=user_id,
+        auth_config=auth_config,
+        resource_owner_key=actor_owner_key,
     )
-    return actor_owner_key if actor_grant is not None else f"xagent:user:{user_id}"
+    try:
+        _select_runtime_grant(actor_grants, set())
+    except MCPOAuthRuntimeError:
+        return f"xagent:user:{user_id}"
+    return actor_owner_key
 
 
 def select_mcp_oauth_grants(  # noqa: PLR0913

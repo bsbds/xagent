@@ -483,15 +483,12 @@ def _redirect_after_with_params(
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
 
 
-def _mcp_oauth_callback_error_redirect(
-    flow_state: MCPOAuthFlowState,
+def _mcp_oauth_callback_error_redirect_after(
+    raw_redirect_after: str | None,
     *,
     error_code: str,
     message: str,
 ) -> RedirectResponse:
-    raw_redirect_after = (
-        str(flow_state.redirect_after) if flow_state.redirect_after else None
-    )
     redirect_path = _redirect_after_with_params(
         raw_redirect_after,
         (
@@ -505,6 +502,19 @@ def _mcp_oauth_callback_error_redirect(
     response = RedirectResponse(_mcp_oauth_redirect_after_url(redirect_path))
     _clear_mcp_oauth_state_cookie(response)
     return response
+
+
+def _mcp_oauth_callback_error_redirect(
+    flow_state: MCPOAuthFlowState,
+    *,
+    error_code: str,
+    message: str,
+) -> RedirectResponse:
+    return _mcp_oauth_callback_error_redirect_after(
+        str(flow_state.redirect_after) if flow_state.redirect_after else None,
+        error_code=error_code,
+        message=message,
+    )
 
 
 def _validate_mcp_oauth_state_cookie(request: Request, state_value: str) -> None:
@@ -3013,6 +3023,8 @@ def _ensure_catalog_mcp_oauth_server(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Failed to create catalog server: {str(exc)}",
                 ) from exc
+            # Apply the same catalog and ownership checks to the concurrent winner.
+            return _ensure_catalog_mcp_oauth_server(db, app_id)
     return server, app_info
 
 
@@ -4248,30 +4260,51 @@ async def mcp_oauth_callback(
             error_code="invalid_state",
             message="Missing authorization code",
         )
+    flow_id = int(flow_state.id)
+    code_verifier = decrypt_value(str(flow_state.code_verifier))
+    resource = str(flow_state.resource)
+    redirect_after = (
+        str(flow_state.redirect_after) if flow_state.redirect_after else None
+    )
     try:
         token_data = await _exchange_mcp_oauth_code(
             client=client,
             code=code,
-            code_verifier=decrypt_value(str(flow_state.code_verifier)),
-            resource=str(flow_state.resource),
+            code_verifier=code_verifier,
+            resource=resource,
         )
-        _upsert_mcp_oauth_grant(db, flow_state=flow_state, token_data=token_data)
+        locked_flow = (
+            db.query(MCPOAuthFlowState)
+            .filter(MCPOAuthFlowState.id == flow_id)
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if locked_flow is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "invalid_state",
+                    "message": "OAuth flow was revoked before completion",
+                },
+            )
+        _upsert_mcp_oauth_grant(db, flow_state=locked_flow, token_data=token_data)
         db.commit()
     except HTTPException as exc:
         db.rollback()
         detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
         error_code = str(detail.get("code") or "token_exchange_failed")
         message = str(detail.get("message") or "MCP OAuth authorization failed")
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code=error_code,
             message=message,
         )
     except Exception:
         db.rollback()
         logger.exception("MCP OAuth callback failed after state claim")
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code="token_exchange_failed",
             message="MCP OAuth authorization failed",
         )
@@ -4283,7 +4316,7 @@ async def mcp_oauth_callback(
     response = RedirectResponse(
         _mcp_oauth_redirect_after_url(
             _redirect_after_with_params(
-                str(flow_state.redirect_after) if flow_state.redirect_after else None,
+                redirect_after,
                 (("mcp_oauth_success", "1"),),
             )
         )
@@ -4555,7 +4588,7 @@ async def revoke_mcp_oauth_grants_for_owner(
         db,
         user_id=user_id,
         server_id=server_id,
-        require_active=True,
+        require_active=False,
     )
     owner_key = _bounded_mcp_oauth_value(
         resource_owner_key,
@@ -4566,7 +4599,6 @@ async def revoke_mcp_oauth_grants_for_owner(
         MCPOAuthFlowState.mcp_server_id == server_id,
         MCPOAuthFlowState.user_id == user_id,
         MCPOAuthFlowState.resource_owner_key == owner_key,
-        MCPOAuthFlowState.consumed_at.is_(None),
     ).delete(synchronize_session=False)
     grants = (
         db.query(MCPOAuthGrant)

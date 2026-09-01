@@ -226,6 +226,10 @@ class BuiltinOAuthServerDefinitionError(ValueError):
     """Raised when trusted builtin OAuth identity is absent or ambiguous."""
 
 
+class RemoteOAuthServerDefinitionError(ValueError):
+    """Raised when a remote catalog OAuth server is not canonical."""
+
+
 def _normalized_catalog_key(value: object) -> str | None:
     """Normalize only for collision detection, never for persisted identity."""
     if value is None:
@@ -778,3 +782,66 @@ def get_app_for_mcp_server(db: Session, server: Any) -> Dict[str, Any] | None:
     if len(owners) != 1:
         return None
     return _app_to_dict(candidates[0])
+
+
+def classify_actor_remote_oauth_server(
+    db: Session, server: Any
+) -> Dict[str, Any] | None:
+    """Require one non-owned server that exactly matches remote catalog data."""
+
+    from .models.mcp import MCPServer, UserMCPServer
+
+    app_info = get_app_for_mcp_server(db, server)
+    if app_info is None or app_info.get("auth_type") != "mcp_oauth":
+        return None
+    if not app_info.get("is_visible_in_connector", True):
+        raise RemoteOAuthServerDefinitionError("remote OAuth app is hidden")
+
+    app_id = str(app_info["id"])
+    app_name = str(app_info["name"])
+    candidates: list[Any] = []
+    for candidate in db.query(MCPServer).all():
+        auth: Mapping[str, Any] = (
+            candidate.auth if isinstance(candidate.auth, Mapping) else {}
+        )
+        if auth.get("app_id") == app_id or (
+            "app_id" not in auth and candidate.name in {app_id, app_name}
+        ):
+            candidates.append(candidate)
+    if len(candidates) != 1 or int(candidates[0].id) != int(server.id):
+        raise RemoteOAuthServerDefinitionError(
+            "remote OAuth app must have exactly one server definition"
+        )
+
+    launch = app_info.get("launch_config") or {}
+    expected_auth = launch.get("auth") or {}
+    actual_auth = dict(server._decrypt_auth_config(server.auth))
+    actual_auth.pop("app_id", None)
+    failures = []
+    if str(server.managed or "") != "external":
+        failures.append("managed")
+    if (
+        str(server.transport or "").lower()
+        != str(app_info.get("transport") or "").lower()
+    ):
+        failures.append("transport")
+    if server.url != launch.get("url"):
+        failures.append("url")
+    if actual_auth != expected_auth:
+        failures.append("auth")
+    if (
+        db.query(UserMCPServer.id)
+        .filter(
+            UserMCPServer.mcpserver_id == int(server.id),
+            UserMCPServer.is_owner,
+        )
+        .first()
+        is not None
+    ):
+        failures.append("ownership")
+    if failures:
+        raise RemoteOAuthServerDefinitionError(
+            f"remote OAuth app {app_id!r} has non-canonical fields: "
+            f"{', '.join(sorted(failures))}"
+        )
+    return app_info

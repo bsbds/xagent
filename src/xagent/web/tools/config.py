@@ -3950,6 +3950,7 @@ class WebToolConfig(BaseToolConfig):
                             server_id=int(server.id),
                             user_id=int(cast(int, self._user_id)),
                             actor_owner_key=policy.resource_owner_key,
+                            auth_config=server._decrypt_auth_config(server.auth),
                         )
                     }
                 }
@@ -4201,18 +4202,26 @@ class WebToolConfig(BaseToolConfig):
             if self._mcp_runtime_authorization_policy is not None:
                 from ...web.mcp_apps import (
                     BuiltinOAuthServerDefinitionError,
+                    RemoteOAuthServerDefinitionError,
                     classify_actor_builtin_oauth_server,
+                    classify_actor_remote_oauth_server,
                 )
 
                 for visible_server in servers:
                     try:
+                        builtin_app = classify_actor_builtin_oauth_server(
+                            self.db, visible_server
+                        )
+                        if builtin_app is None:
+                            classify_actor_remote_oauth_server(self.db, visible_server)
                         actor_classifications[int(visible_server.id)] = (
-                            classify_actor_builtin_oauth_server(
-                                self.db, visible_server
-                            ),
+                            builtin_app,
                             False,
                         )
-                    except BuiltinOAuthServerDefinitionError:
+                    except (
+                        BuiltinOAuthServerDefinitionError,
+                        RemoteOAuthServerDefinitionError,
+                    ):
                         actor_classifications[int(visible_server.id)] = (None, True)
 
             # Prefetch shared runtime state once before entering the isolated

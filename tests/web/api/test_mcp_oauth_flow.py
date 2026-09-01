@@ -1436,6 +1436,46 @@ def _add_remote_oauth_catalog_app(db, *, app_id: str = "remote-notes") -> None:
     db.commit()
 
 
+def test_catalog_oauth_server_revalidates_concurrent_winner(db_session, monkeypatch):
+    db, _user, _ = db_session
+    _add_remote_oauth_catalog_app(db)
+    session_factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False
+    )
+    real_flush = db.flush
+    inserted = False
+
+    def insert_drifted_winner(*args, **kwargs):
+        nonlocal inserted
+        if not inserted and any(isinstance(row, MCPServer) for row in db.new):
+            inserted = True
+            concurrent_db = session_factory()
+            try:
+                concurrent_db.add(
+                    MCPServer.from_config(
+                        {
+                            "name": "remote-notes",
+                            "managed": "external",
+                            "transport": "streamable_http",
+                            "url": "https://attacker.example/mcp",
+                            "auth": {"type": "mcp_oauth"},
+                        }
+                    )
+                )
+                concurrent_db.commit()
+            finally:
+                concurrent_db.close()
+            raise IntegrityError("insert", {}, Exception("duplicate server"))
+        return real_flush(*args, **kwargs)
+
+    monkeypatch.setattr(db, "flush", insert_drifted_winner)
+
+    with pytest.raises(HTTPException) as exc_info:
+        mcp_api._ensure_catalog_mcp_oauth_server(db, "remote-notes")
+
+    assert exc_info.value.status_code == 409
+
+
 @pytest.mark.asyncio
 async def test_connect_app_creates_server_and_association_then_starts_dcr_flow(
     db_session, monkeypatch
@@ -2337,6 +2377,50 @@ async def test_callback_exchanges_code_and_stores_encrypted_grant(
 
 
 @pytest.mark.asyncio
+async def test_callback_discards_token_when_disconnect_removes_claimed_flow(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    _server, _client, _flow = _add_callback_client_and_state(
+        db,
+        user,
+        state="disconnected-during-exchange",
+        redirect_after="/mcp",
+    )
+    session_factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False
+    )
+
+    async def fake_exchange(**kwargs):
+        disconnect_db = session_factory()
+        try:
+            disconnect_db.query(MCPOAuthFlowState).filter(
+                MCPOAuthFlowState.state == "disconnected-during-exchange"
+            ).delete(synchronize_session=False)
+            disconnect_db.commit()
+        finally:
+            disconnect_db.close()
+        return {
+            "access_token": "must-not-persist",
+            "token_type": "Bearer",
+            "scope": "records.read",
+        }
+
+    monkeypatch.setattr(mcp_api, "_exchange_mcp_oauth_code", fake_exchange)
+
+    response = await mcp_oauth_callback(
+        _request(
+            "/api/mcp/oauth/callback?code=auth-code&state=disconnected-during-exchange"
+        ),
+        db,
+    )
+
+    assert response.status_code == 307
+    assert _redirect_query(response)["mcp_oauth_error"] == ["invalid_state"]
+    assert db.query(MCPOAuthGrant).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_exchange_code_sanitizes_transport_exception(db_session, monkeypatch):
     db, user, _ = db_session
     _, client, _ = _add_callback_client_and_state(
@@ -3031,26 +3115,35 @@ async def test_trusted_revoke_removes_only_exact_resource_owner(db_session):
     ]
     db.add_all(grants)
     db.flush()
-    db.add_all(
-        [
-            MCPOAuthFlowState(
-                state=f"pending-{owner.rsplit(':', 1)[-1]}",
-                mcp_server_id=server.id,
-                user_id=user.id,
-                mcp_oauth_client_id=client.id,
-                resource_owner_key=owner,
-                issuer="https://auth.example.com",
-                resource="https://mcp.example.com/mcp",
-                scope="records.read",
-                code_verifier=encrypt_value("verifier"),
-                expires_at=mcp_api._utc_now() + timedelta(minutes=10),
-            )
-            for owner in (
-                "toby:slack:workspace:alice",
-                "toby:slack:workspace:bob",
-            )
-        ]
+    flows = [
+        MCPOAuthFlowState(
+            state=f"pending-{owner.rsplit(':', 1)[-1]}",
+            mcp_server_id=server.id,
+            user_id=user.id,
+            mcp_oauth_client_id=client.id,
+            resource_owner_key=owner,
+            issuer="https://auth.example.com",
+            resource="https://mcp.example.com/mcp",
+            scope="records.read",
+            code_verifier=encrypt_value("verifier"),
+            expires_at=mcp_api._utc_now() + timedelta(minutes=10),
+        )
+        for owner in (
+            "toby:slack:workspace:alice",
+            "toby:slack:workspace:bob",
+        )
+    ]
+    flows[0].consumed_at = mcp_api._utc_now()
+    db.add_all(flows)
+    association = (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user.id,
+            UserMCPServer.mcpserver_id == server.id,
+        )
+        .one()
     )
+    association.is_active = False
     db.commit()
 
     revoked = await mcp_api.revoke_mcp_oauth_grants_for_owner(
