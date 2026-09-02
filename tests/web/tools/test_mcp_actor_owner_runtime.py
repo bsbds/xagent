@@ -415,6 +415,54 @@ async def test_actor_remote_ignores_foreign_auth_app_id(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_actor_remote_rejects_unverifiable_catalog_identity(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    server.name = "renamed-remote"
+    db_session.db.commit()
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        server,
+        owner=f"xagent:user:{db_session.user.id}",
+        token="workspace-token",
+    )
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    assert configs[0]["transport"] == "unavailable"
+    assert configs[0]["config"]["reason"] == "config_load_failed"
+    assert "workspace-token" not in str(configs)
+
+
+@pytest.mark.asyncio
+async def test_actor_remote_rejects_catalog_auth_reclassification(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    app = (
+        db_session.db.query(PublicMCPApp)
+        .filter(PublicMCPApp.app_id == REMOTE_APP_ID)
+        .one()
+    )
+    app.launch_config = {
+        **app.launch_config,
+        "auth": {"type": "api_key"},
+    }
+    db_session.db.commit()
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        server,
+        owner=f"xagent:user:{db_session.user.id}",
+        token="workspace-token",
+    )
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    assert configs[0]["transport"] == "unavailable"
+    assert configs[0]["config"]["reason"] == "config_load_failed"
+    assert "workspace-token" not in str(configs)
+
+
+@pytest.mark.asyncio
 async def test_actor_remote_never_uses_another_actor_grant(db_session) -> None:
     server = _add_remote_server(db_session.db, db_session.user)
     _add_remote_grant(

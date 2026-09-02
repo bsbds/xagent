@@ -790,9 +790,31 @@ def classify_actor_remote_oauth_server(
     """Require one non-owned server that exactly matches remote catalog data."""
 
     from .models.mcp import MCPServer, UserMCPServer
+    from .services.mcp_runtime import HTTP_MCP_TRANSPORTS
 
+    auth = getattr(server, "auth", None)
+    is_remote_oauth = (
+        str(getattr(server, "transport", "") or "").lower() in HTTP_MCP_TRANSPORTS
+        and isinstance(auth, Mapping)
+        and auth.get("type") == "mcp_oauth"
+    )
     app_info = get_app_for_mcp_server(db, server)
     if app_info is None or app_info.get("auth_type") != "mcp_oauth":
+        if is_remote_oauth:
+            # Native OAuth servers have an owner. Catalog rows do not.
+            has_owner = (
+                db.query(UserMCPServer.id)
+                .filter(
+                    UserMCPServer.mcpserver_id == int(server.id),
+                    UserMCPServer.is_owner,
+                )
+                .first()
+                is not None
+            )
+            if not has_owner:
+                raise RemoteOAuthServerDefinitionError(
+                    "remote OAuth catalog identity is unavailable"
+                )
         return None
     if not app_info.get("is_visible_in_connector", True):
         raise RemoteOAuthServerDefinitionError("remote OAuth app is hidden")

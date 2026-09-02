@@ -3258,6 +3258,8 @@ async def connect_mcp_oauth_app(
         app_id=app_id,
         user_id=user_id,
     )
+    # Release catalog and association writes before OAuth network I/O.
+    db.commit()
     logger.info(
         "User %s starting OAuth connect for MCP app %r",
         user_id,

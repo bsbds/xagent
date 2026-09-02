@@ -1538,6 +1538,44 @@ async def test_connect_app_creates_server_and_association_then_starts_dcr_flow(
 
 
 @pytest.mark.asyncio
+async def test_public_connect_commits_association_before_discovery(
+    db_session, monkeypatch
+):
+    db, user, _ = db_session
+    _add_remote_oauth_catalog_app(db)
+    commit_count = 0
+    real_commit = db.commit
+
+    def count_commit():
+        nonlocal commit_count
+        commit_count += 1
+        real_commit()
+
+    async def fake_discover(*args, **kwargs):
+        assert commit_count == 1
+        return _discovery()
+
+    async def register_client(*_args, **_kwargs):
+        return SimpleNamespace(
+            client_id="dynamic-client-123",
+            token_endpoint_auth_method="none",
+        )
+
+    monkeypatch.setattr(db, "commit", count_commit)
+    monkeypatch.setattr(mcp_api, "discover_mcp_oauth_metadata", fake_discover)
+    monkeypatch.setattr(mcp_api, "register_mcp_oauth_public_client", register_client)
+
+    await connect_mcp_oauth_app(
+        "remote-notes",
+        MCPOAuthConnectRequest(redirect_after="/settings/mcp"),
+        user,
+        db,
+    )
+
+    assert commit_count == 2
+
+
+@pytest.mark.asyncio
 async def test_trusted_connect_app_stores_exact_resource_owner(db_session, monkeypatch):
     db, user, _ = db_session
     _add_remote_oauth_catalog_app(db)
