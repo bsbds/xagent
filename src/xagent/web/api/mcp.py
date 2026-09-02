@@ -566,6 +566,7 @@ def _has_actor_owned_mcp_oauth_state(
             MCPOAuthGrant.mcp_server_id == server_id,
             MCPOAuthGrant.user_id == user_id,
             MCPOAuthGrant.resource_owner_key != default_owner,
+            MCPOAuthGrant.status == "active",
         )
         .first()
     )
@@ -578,6 +579,7 @@ def _has_actor_owned_mcp_oauth_state(
             MCPOAuthFlowState.mcp_server_id == server_id,
             MCPOAuthFlowState.user_id == user_id,
             MCPOAuthFlowState.resource_owner_key != default_owner,
+            MCPOAuthFlowState.expires_at > _utc_now(),
         )
         .first()
         is not None
@@ -3645,11 +3647,12 @@ async def delete_mcp_server(
         manager = DatabaseMCPServerManager(db)
         user_id = current_user.id
 
-        # Check user has access to this server
+        # Serialize deletion against OAuth flow creation for this association.
         result = (
             db.query(UserMCPServer, MCPServer)
             .join(MCPServer, UserMCPServer.mcpserver_id == MCPServer.id)
             .filter(UserMCPServer.user_id == user_id, MCPServer.id == server_id)
+            .with_for_update()
             .first()
         )
 
@@ -4501,6 +4504,22 @@ async def _connect_mcp_oauth_for_owner(
         str(discovery.resource), field_name="resource"
     )
 
+    association = (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user_id,
+            UserMCPServer.mcpserver_id == server_id,
+            UserMCPServer.is_active,
+        )
+        .with_for_update()
+        .first()
+    )
+    if association is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MCP server not found",
+        )
+
     oauth_client = _upsert_mcp_oauth_client(
         db,
         server_id=server_id,
@@ -4605,6 +4624,7 @@ async def get_mcp_oauth_status(
         server_id=server_id,
         user_id=user_id,
         auth_config=auth_config if isinstance(auth_config, dict) else {},
+        resource_owner_key=_default_resource_owner_key(user_id),
     )
     return MCPOAuthStatusResponse(
         server_id=server_id,
@@ -4686,6 +4706,7 @@ async def delete_mcp_oauth_grant(
             MCPOAuthGrant.id == grant_id,
             MCPOAuthGrant.mcp_server_id == server_id,
             MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key == _default_resource_owner_key(user_id),
         )
         .first()
     )
