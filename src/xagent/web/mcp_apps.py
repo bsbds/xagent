@@ -799,15 +799,10 @@ def classify_actor_remote_oauth_server(
 
     app_id = str(app_info["id"])
     app_name = str(app_info["name"])
-    candidates: list[Any] = []
-    for candidate in db.query(MCPServer).all():
-        auth: Mapping[str, Any] = (
-            candidate.auth if isinstance(candidate.auth, Mapping) else {}
-        )
-        if auth.get("app_id") == app_id or (
-            "app_id" not in auth and candidate.name in {app_id, app_name}
-        ):
-            candidates.append(candidate)
+    # Remote catalog identity is the reserved server name, not mutable auth.
+    candidates = (
+        db.query(MCPServer).filter(MCPServer.name.in_((app_id, app_name))).all()
+    )
     if len(candidates) != 1 or int(candidates[0].id) != int(server.id):
         raise RemoteOAuthServerDefinitionError(
             "remote OAuth app must have exactly one server definition"
@@ -815,7 +810,10 @@ def classify_actor_remote_oauth_server(
 
     launch = app_info.get("launch_config") or {}
     expected_auth = launch.get("auth") or {}
-    actual_auth = dict(server._decrypt_auth_config(server.auth))
+    decrypted_auth = server._decrypt_auth_config(server.auth)
+    if not isinstance(decrypted_auth, Mapping):
+        raise RemoteOAuthServerDefinitionError("remote OAuth auth is invalid")
+    actual_auth = dict(decrypted_auth)
     actual_auth.pop("app_id", None)
     failures = []
     if str(server.managed or "") != "external":

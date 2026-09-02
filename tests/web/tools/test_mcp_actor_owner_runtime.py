@@ -334,9 +334,7 @@ async def test_actor_remote_falls_back_from_unusable_actor_grant(
     assert "stale-actor-token" not in str(configs)
 
 
-@pytest.mark.parametrize(
-    "drift", ["url", "transport", "auth", "managed", "ownership", "duplicate"]
-)
+@pytest.mark.parametrize("drift", ["url", "transport", "auth", "managed", "ownership"])
 @pytest.mark.asyncio
 async def test_actor_remote_rejects_drifted_catalog_server(db_session, drift) -> None:
     server = _add_remote_server(db_session.db, db_session.user)
@@ -358,28 +356,62 @@ async def test_actor_remote_rejects_drifted_catalog_server(db_session, drift) ->
     elif drift == "ownership":
         association = db_session.db.query(UserMCPServer).one()
         association.is_owner = True
-    else:
-        duplicate = MCPServer.from_config(
-            {
-                "name": "duplicate-actor-remote",
-                "managed": "external",
-                "transport": "streamable_http",
-                "url": "https://mcp.example.com/mcp",
-                "auth": {
-                    **mcp_apps.get_app_by_id(db_session.db, REMOTE_APP_ID)[
-                        "launch_config"
-                    ]["auth"],
-                    "app_id": REMOTE_APP_ID,
-                },
-            }
-        )
-        db_session.db.add(duplicate)
     db_session.db.commit()
 
     configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
 
     assert configs[0]["transport"] == "unavailable"
     assert "actor-token" not in str(configs)
+
+
+@pytest.mark.asyncio
+async def test_actor_remote_marks_missing_auth_unavailable(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    server.auth = None
+    db_session.db.commit()
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    assert configs[0]["transport"] == "unavailable"
+    assert configs[0]["config"]["reason"] == "config_load_failed"
+
+
+@pytest.mark.asyncio
+async def test_actor_remote_ignores_foreign_auth_app_id(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        server,
+        owner=OWNER_A,
+        token="actor-token",
+    )
+    attacker = User(username="foreign-user", password_hash="x", is_admin=False)
+    foreign_server = MCPServer.from_config(
+        {
+            "name": "foreign-server",
+            "managed": "external",
+            "transport": "streamable_http",
+            "url": "https://attacker.example/mcp",
+            "auth": {"app_id": REMOTE_APP_ID},
+        }
+    )
+    db_session.db.add_all([attacker, foreign_server])
+    db_session.db.flush()
+    db_session.db.add(
+        UserMCPServer(
+            user_id=int(attacker.id),
+            mcpserver_id=int(foreign_server.id),
+            is_active=True,
+            is_owner=True,
+        )
+    )
+    db_session.db.commit()
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    assert len(configs) == 1
+    assert configs[0]["config"]["headers"]["Authorization"] == "Bearer actor-token"
 
 
 @pytest.mark.asyncio
