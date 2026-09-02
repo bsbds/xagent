@@ -2204,6 +2204,76 @@ async def test_local_mcp_oauth_listing_omits_auth_type_when_deactivated(db_sessi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("actor_state", ["grant", "flow"])
+async def test_delete_mcp_server_rejects_actor_owned_oauth_state(
+    db_session, actor_state
+):
+    db, user, _ = db_session
+    server = _add_mcp_oauth_server(db, user)
+    client = _add_oauth_client(db, server)
+    default_owner = mcp_api._default_resource_owner_key(user.id)
+    actor_owner = "toby:slack:workspace:alice"
+    state_rows: list[MCPOAuthGrant | MCPOAuthFlowState] = [
+        MCPOAuthGrant(
+            mcp_server_id=server.id,
+            user_id=user.id,
+            mcp_oauth_client_id=client.id,
+            resource_owner_key=default_owner,
+            issuer="https://auth.example.com",
+            resource="https://mcp.example.com/mcp",
+            scope="records.read",
+            access_token=encrypt_value("default-access-token"),
+        )
+    ]
+    if actor_state == "grant":
+        state_rows.append(
+            MCPOAuthGrant(
+                mcp_server_id=server.id,
+                user_id=user.id,
+                mcp_oauth_client_id=client.id,
+                resource_owner_key=actor_owner,
+                issuer="https://auth.example.com",
+                resource="https://mcp.example.com/mcp",
+                scope="records.read",
+                access_token=encrypt_value("actor-access-token"),
+            )
+        )
+    else:
+        state_rows.append(
+            MCPOAuthFlowState(
+                state="actor-flow",
+                mcp_server_id=server.id,
+                user_id=user.id,
+                mcp_oauth_client_id=client.id,
+                resource_owner_key=actor_owner,
+                issuer="https://auth.example.com",
+                resource="https://mcp.example.com/mcp",
+                scope="records.read",
+                code_verifier=encrypt_value("verifier"),
+                expires_at=mcp_api._utc_now() + timedelta(minutes=10),
+            )
+        )
+    db.add_all(state_rows)
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_mcp_server(server.id, current_user=user, db=db)
+
+    assert exc.value.status_code == 409
+    assert db.query(MCPOAuthGrant).count() == (2 if actor_state == "grant" else 1)
+    assert db.query(MCPOAuthFlowState).count() == (1 if actor_state == "flow" else 0)
+    assert (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user.id,
+            UserMCPServer.mcpserver_id == server.id,
+        )
+        .one_or_none()
+        is not None
+    )
+
+
+@pytest.mark.asyncio
 async def test_delete_mcp_server_revokes_only_the_disconnecting_users_grant(
     db_session, monkeypatch
 ):
@@ -3415,10 +3485,16 @@ async def test_delete_mcp_server_invalidates_flows_before_scanning_grants(db_ses
         for index, statement in enumerate(statements)
         if statement.startswith("delete from mcp_oauth_flow_states")
     )
+    # Ownership preflight can read actor grants. Cleanup must still wait until
+    # flow invalidation before it scans active grants for revocation.
     grant_scan = next(
         index
         for index, statement in enumerate(statements)
-        if statement.startswith("select") and "from mcp_oauth_grants" in statement
+        if (
+            statement.startswith("select")
+            and "from mcp_oauth_grants" in statement
+            and "mcp_oauth_grants.status" in statement
+        )
     )
     assert flow_delete < grant_scan
 
