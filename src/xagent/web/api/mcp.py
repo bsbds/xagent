@@ -483,15 +483,12 @@ def _redirect_after_with_params(
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
 
 
-def _mcp_oauth_callback_error_redirect(
-    flow_state: MCPOAuthFlowState,
+def _mcp_oauth_callback_error_redirect_after(
+    raw_redirect_after: str | None,
     *,
     error_code: str,
     message: str,
 ) -> RedirectResponse:
-    raw_redirect_after = (
-        str(flow_state.redirect_after) if flow_state.redirect_after else None
-    )
     redirect_path = _redirect_after_with_params(
         raw_redirect_after,
         (
@@ -505,6 +502,19 @@ def _mcp_oauth_callback_error_redirect(
     response = RedirectResponse(_mcp_oauth_redirect_after_url(redirect_path))
     _clear_mcp_oauth_state_cookie(response)
     return response
+
+
+def _mcp_oauth_callback_error_redirect(
+    flow_state: MCPOAuthFlowState,
+    *,
+    error_code: str,
+    message: str,
+) -> RedirectResponse:
+    return _mcp_oauth_callback_error_redirect_after(
+        str(flow_state.redirect_after) if flow_state.redirect_after else None,
+        error_code=error_code,
+        message=message,
+    )
 
 
 def _validate_mcp_oauth_state_cookie(request: Request, state_value: str) -> None:
@@ -540,6 +550,40 @@ def _validate_mcp_oauth_state_cookie(request: Request, state_value: str) -> None
 
 def _default_resource_owner_key(user_id: int) -> str:
     return f"xagent:user:{user_id}"
+
+
+def _has_actor_owned_mcp_oauth_state(
+    db: Session,
+    *,
+    server_id: int,
+    user_id: int,
+) -> bool:
+    """Whether generic deletion would cross an actor ownership boundary."""
+    default_owner = _default_resource_owner_key(user_id)
+    actor_grant = (
+        db.query(MCPOAuthGrant.id)
+        .filter(
+            MCPOAuthGrant.mcp_server_id == server_id,
+            MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key != default_owner,
+            MCPOAuthGrant.status == "active",
+        )
+        .first()
+    )
+    if actor_grant is not None:
+        return True
+
+    return (
+        db.query(MCPOAuthFlowState.id)
+        .filter(
+            MCPOAuthFlowState.mcp_server_id == server_id,
+            MCPOAuthFlowState.user_id == user_id,
+            MCPOAuthFlowState.resource_owner_key != default_owner,
+            MCPOAuthFlowState.expires_at > _utc_now(),
+        )
+        .first()
+        is not None
+    )
 
 
 def _oauth_authorization_url(endpoint: str, params: dict[str, str]) -> str:
@@ -872,7 +916,6 @@ def _claim_mcp_oauth_flow_state(
         db.rollback()
         return "state_already_consumed", "OAuth state consumed"
     db.commit()
-    db.refresh(flow_state)
     return None
 
 
@@ -2983,7 +3026,7 @@ def _ensure_catalog_mcp_oauth_server(
                 if value and isinstance(value, str):
                     encrypted_auth[key] = encrypt_value(value)
             cast(Any, server).auth = encrypted_auth
-            db.commit()
+            db.flush()
     if not server:
         try:
             config = _build_server_config(
@@ -2999,7 +3042,22 @@ def _ensure_catalog_mcp_oauth_server(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid app configuration: {str(e)}",
             )
-        server = _add_catalog_server_with_race_recovery(db, config, server_name)
+
+        candidate = MCPServer.from_config(config.model_dump())
+        try:
+            with db.begin_nested():
+                db.add(candidate)
+                db.flush()
+            server = candidate
+        except IntegrityError as exc:
+            server = db.query(MCPServer).filter(MCPServer.name == server_name).first()
+            if server is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to create catalog server: {str(exc)}",
+                ) from exc
+            # Apply the same catalog and ownership checks to the concurrent winner.
+            return _ensure_catalog_mcp_oauth_server(db, app_id)
     return server, app_info
 
 
@@ -3138,6 +3196,54 @@ def connect_mcp_app(
     )
 
 
+def _ensure_mcp_oauth_app_user(
+    db: Session,
+    *,
+    app_id: str,
+    user_id: int,
+) -> tuple[MCPServer, dict]:
+    """Ensure one catalog server and active non-owning user link."""
+
+    server, app_info = _ensure_catalog_mcp_oauth_server(db, app_id)
+    assoc: Any = (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user_id,
+            UserMCPServer.mcpserver_id == server.id,
+        )
+        .first()
+    )
+    if assoc is None:
+        candidate = UserMCPServer(
+            user_id=user_id,
+            mcpserver_id=server.id,
+            is_active=True,
+            is_owner=False,
+            can_edit=False,
+            can_delete=True,
+        )
+        try:
+            with db.begin_nested():
+                db.add(candidate)
+                db.flush()
+            assoc = candidate
+        except IntegrityError:
+            assoc = (
+                db.query(UserMCPServer)
+                .filter(
+                    UserMCPServer.user_id == user_id,
+                    UserMCPServer.mcpserver_id == server.id,
+                )
+                .first()
+            )
+            if assoc is None:
+                raise
+    elif not assoc.is_active:
+        assoc.is_active = True
+        db.flush()
+    return server, app_info
+
+
 @mcp_router.post("/apps/{app_id}/oauth/connect", response_model=None)
 async def connect_mcp_oauth_app(
     app_id: str,
@@ -3146,58 +3252,20 @@ async def connect_mcp_oauth_app(
     db: Session = Depends(get_db),
     accept: Annotated[str | None, Header()] = None,
 ) -> RedirectResponse | JSONResponse:
-    """Connect a remote-MCP OAuth (DCR-capable) catalog app for the current user.
+    """Connect a remote-MCP OAuth catalog app for the current user."""
 
-    Ensures the shared server row and this user's association exist, then
-    delegates to connect_mcp_oauth's Authorization Code + PKCE flow — the
-    per-user DCR/token machinery is identical to a self-added custom MCP
-    server; only the server row's origin (catalog vs. a user-typed URL)
-    differs.
-    """
-    server, app_info = _ensure_catalog_mcp_oauth_server(db, app_id)
-
-    assoc: Any = (
-        db.query(UserMCPServer)
-        .filter(
-            UserMCPServer.user_id == current_user.id,
-            UserMCPServer.mcpserver_id == server.id,
-        )
-        .first()
+    user_id = cast(int, current_user.id)
+    server, app_info = _ensure_mcp_oauth_app_user(
+        db,
+        app_id=app_id,
+        user_id=user_id,
     )
-    if assoc is None:
-        assoc = UserMCPServer(
-            user_id=current_user.id,
-            mcpserver_id=server.id,
-            is_active=True,
-            is_owner=False,
-            can_edit=False,
-            can_delete=True,
-        )
-        db.add(assoc)
-        try:
-            db.commit()
-        except IntegrityError:
-            # Concurrent same-user connect (double-click/client retry): another
-            # request already inserted the (user_id, mcpserver_id) association.
-            db.rollback()
-            assoc = (
-                db.query(UserMCPServer)
-                .filter(
-                    UserMCPServer.user_id == current_user.id,
-                    UserMCPServer.mcpserver_id == server.id,
-                )
-                .first()
-            )
-            if assoc is None:
-                raise
-    elif not assoc.is_active:
-        # A reconnect after the user previously disconnected their own
-        # association — re-activate it rather than leaving it dormant.
-        assoc.is_active = True
-        db.commit()
-
+    # Release catalog and association writes before OAuth network I/O.
+    db.commit()
     logger.info(
-        f"User {current_user.id} starting OAuth connect for MCP app '{app_info['id']}'"
+        "User %s starting OAuth connect for MCP app %r",
+        user_id,
+        app_info["id"],
     )
     return await connect_mcp_oauth(
         cast(int, server.id), request_data, current_user, db, accept
@@ -3541,11 +3609,12 @@ async def delete_mcp_server(
         manager = DatabaseMCPServerManager(db)
         user_id = current_user.id
 
-        # Check user has access to this server
+        # Serialize deletion against OAuth flow creation for this association.
         result = (
             db.query(UserMCPServer, MCPServer)
             .join(MCPServer, UserMCPServer.mcpserver_id == MCPServer.id)
             .filter(UserMCPServer.user_id == user_id, MCPServer.id == server_id)
+            .with_for_update()
             .first()
         )
 
@@ -3564,6 +3633,16 @@ async def delete_mcp_server(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to delete this MCP server",
+            )
+
+        if _has_actor_owned_mcp_oauth_state(
+            db,
+            server_id=server_id,
+            user_id=int(user_id),
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="MCP server has actor-owned OAuth connections",
             )
 
         server_name = server.name
@@ -3653,6 +3732,14 @@ async def delete_mcp_server(
                             providers=[provider],
                         )
 
+        # Invalidate flows before scanning grants. A callback that already
+        # locked its flow must commit first; this scan then sees and removes
+        # the grant it created.
+        db.query(MCPOAuthFlowState).filter(
+            MCPOAuthFlowState.mcp_server_id == server_id,
+            MCPOAuthFlowState.user_id == user_id,
+        ).delete(synchronize_session=False)
+
         # Revoke and purge this user's MCP OAuth grants for the server. On a
         # shared (multi-user) row the server outlives this disconnect, so
         # without this the grant's refresh token would stay usable — and its
@@ -3676,15 +3763,6 @@ async def delete_mcp_server(
                     client=grant.oauth_client, grant=grant
                 )
             db.delete(grant)
-
-        # This user's own flow-state rows (code_verifier etc.) are per-user,
-        # unlike MCPOAuthClient which a shared server's other users may still
-        # reference — safe to purge outright rather than only on server
-        # deletion's cascade.
-        db.query(MCPOAuthFlowState).filter(
-            MCPOAuthFlowState.mcp_server_id == server_id,
-            MCPOAuthFlowState.user_id == user_id,
-        ).delete(synchronize_session=False)
 
         # Remove user-server association
         db.delete(user_mcp)
@@ -4167,25 +4245,31 @@ async def mcp_oauth_callback(
                 or "Authorization response issuer did not match flow state"
             ),
         )
+    flow_id = int(flow_state.id)
+    encrypted_code_verifier = str(flow_state.code_verifier)
+    resource = str(flow_state.resource)
+    redirect_after = (
+        str(flow_state.redirect_after) if flow_state.redirect_after else None
+    )
     claim_error = _claim_mcp_oauth_flow_state(db, flow_state)
     if claim_error is not None:
         error_code, message = claim_error
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code=error_code,
             message=message,
         )
     if error:
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code="token_exchange_failed",
             message=oauth_error_message(
                 {"error": error}, "MCP OAuth authorization failed"
             ),
         )
     if not code:
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code="invalid_state",
             message="Missing authorization code",
         )
@@ -4193,26 +4277,41 @@ async def mcp_oauth_callback(
         token_data = await _exchange_mcp_oauth_code(
             client=client,
             code=code,
-            code_verifier=decrypt_value(str(flow_state.code_verifier)),
-            resource=str(flow_state.resource),
+            code_verifier=decrypt_value(encrypted_code_verifier),
+            resource=resource,
         )
-        _upsert_mcp_oauth_grant(db, flow_state=flow_state, token_data=token_data)
+        locked_flow = (
+            db.query(MCPOAuthFlowState)
+            .filter(MCPOAuthFlowState.id == flow_id)
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if locked_flow is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "invalid_state",
+                    "message": "OAuth flow was revoked before completion",
+                },
+            )
+        _upsert_mcp_oauth_grant(db, flow_state=locked_flow, token_data=token_data)
         db.commit()
     except HTTPException as exc:
         db.rollback()
         detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
         error_code = str(detail.get("code") or "token_exchange_failed")
         message = str(detail.get("message") or "MCP OAuth authorization failed")
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code=error_code,
             message=message,
         )
     except Exception:
         db.rollback()
         logger.exception("MCP OAuth callback failed after state claim")
-        return _mcp_oauth_callback_error_redirect(
-            flow_state,
+        return _mcp_oauth_callback_error_redirect_after(
+            redirect_after,
             error_code="token_exchange_failed",
             message="MCP OAuth authorization failed",
         )
@@ -4224,7 +4323,7 @@ async def mcp_oauth_callback(
     response = RedirectResponse(
         _mcp_oauth_redirect_after_url(
             _redirect_after_with_params(
-                str(flow_state.redirect_after) if flow_state.redirect_after else None,
+                redirect_after,
                 (("mcp_oauth_success", "1"),),
             )
         )
@@ -4261,6 +4360,30 @@ async def connect_mcp_oauth(
     accept: Annotated[str | None, Header()] = None,
 ) -> RedirectResponse | JSONResponse:
     """Start MCP OAuth Authorization Code + PKCE for the current user."""
+
+    response = await _connect_mcp_oauth_for_owner(
+        server_id,
+        request_data,
+        current_user,
+        db,
+        resource_owner_key=_default_resource_owner_key(cast(int, current_user.id)),
+        accept=accept,
+    )
+    db.commit()
+    return response
+
+
+async def _connect_mcp_oauth_for_owner(
+    server_id: int,
+    request_data: MCPOAuthConnectRequest,
+    current_user: User,
+    db: Session,
+    *,
+    resource_owner_key: str,
+    accept: str | None,
+) -> RedirectResponse | JSONResponse:
+    """Start one OAuth flow in an exact trusted resource-owner namespace."""
+
     user_id = cast(int, current_user.id)
     _, server = _get_user_mcp_server_or_404(
         db, user_id=user_id, server_id=server_id, require_active=True
@@ -4335,13 +4458,29 @@ async def connect_mcp_oauth(
             token_endpoint_auth_method = registration.token_endpoint_auth_method
     selected_scope = _scope_string(auth_config.get("scope") or discovery.scopes)
     resource_owner_key = _bounded_mcp_oauth_value(
-        _default_resource_owner_key(user_id),
+        resource_owner_key,
         field_name="resource_owner_key",
         max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
     )
     selected_resource = _bounded_mcp_oauth_value(
         str(discovery.resource), field_name="resource"
     )
+
+    association = (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user_id,
+            UserMCPServer.mcpserver_id == server_id,
+            UserMCPServer.is_active,
+        )
+        .with_for_update()
+        .first()
+    )
+    if association is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MCP server not found",
+        )
 
     oauth_client = _upsert_mcp_oauth_client(
         db,
@@ -4402,7 +4541,7 @@ async def connect_mcp_oauth(
         expires_at=_utc_now() + MCP_OAUTH_STATE_TTL,
     )
     db.add(flow_state)
-    db.commit()
+    db.flush()
 
     params = {
         "response_type": "code",
@@ -4447,6 +4586,7 @@ async def get_mcp_oauth_status(
         server_id=server_id,
         user_id=user_id,
         auth_config=auth_config if isinstance(auth_config, dict) else {},
+        resource_owner_key=_default_resource_owner_key(user_id),
     )
     return MCPOAuthStatusResponse(
         server_id=server_id,
@@ -4479,6 +4619,7 @@ async def delete_mcp_oauth_grant(
             MCPOAuthGrant.id == grant_id,
             MCPOAuthGrant.mcp_server_id == server_id,
             MCPOAuthGrant.user_id == user_id,
+            MCPOAuthGrant.resource_owner_key == _default_resource_owner_key(user_id),
         )
         .first()
     )
