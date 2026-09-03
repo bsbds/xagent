@@ -4511,13 +4511,15 @@ async def _connect_mcp_oauth_for_owner(
     # user-facing transaction. Draining a fixed batch per connect keeps that
     # transaction short; the remainder is already dead, so later connects
     # clearing it costs nothing. Deleting by a bounded id subquery rather than
-    # an IN list of fetched ids keeps it to one statement and clear of any
-    # bound-parameter limit.
+    # an IN list keeps it to one statement without a parameter limit. Lock IDs
+    # in order and skip rows held by another cleanup to prevent deadlocks.
     stale_flow_state_ids = (
         db.query(MCPOAuthFlowState.id)
         .filter(
             MCPOAuthFlowState.expires_at < _utc_now() - MCP_OAUTH_FLOW_STATE_RETENTION
         )
+        .order_by(MCPOAuthFlowState.id)
+        .with_for_update(skip_locked=True)
         .limit(MCP_OAUTH_FLOW_STATE_SWEEP_BATCH)
         .scalar_subquery()
     )
