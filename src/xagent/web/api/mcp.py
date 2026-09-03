@@ -3614,7 +3614,7 @@ async def delete_mcp_server(
             db.query(UserMCPServer, MCPServer)
             .join(MCPServer, UserMCPServer.mcpserver_id == MCPServer.id)
             .filter(UserMCPServer.user_id == user_id, MCPServer.id == server_id)
-            .with_for_update()
+            .with_for_update(of=UserMCPServer)
             .first()
         )
 
