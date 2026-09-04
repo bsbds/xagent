@@ -79,6 +79,7 @@ from ..services.mcp_runtime import HTTP_MCP_TRANSPORTS
 from ..services.user_oauth import (
     delete_scoped_user_oauth_accounts,
     list_scoped_user_oauth_accounts,
+    normalize_user_oauth_resource_owner_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -956,7 +957,7 @@ def _lock_caller_oauth_lifecycle(
     *,
     association_identity: _MCPOAuthAssociationIdentity,
 ) -> tuple[MCPServer, UserMCPServer] | None:
-    """Lock a caller-owned transaction without resetting its pending writes."""
+    """Lock and activate a caller-owned lifecycle after provider I/O."""
     db.flush()
     server = (
         db.query(MCPServer)
@@ -973,13 +974,15 @@ def _lock_caller_oauth_lifecycle(
             UserMCPServer.mcpserver_id == association_identity.server_id,
             UserMCPServer.lifecycle_generation
             == association_identity.lifecycle_generation,
-            UserMCPServer.is_active.is_(True),
         )
         .with_for_update()
         .one_or_none()
     )
     if association is None:
         return None
+    if not association.is_active:
+        setattr(association, "is_active", True)
+        db.flush()
     return server, association
 
 
@@ -1569,6 +1572,35 @@ async def _revoke_mcp_oauth_grant_externally(
     await _revoke_mcp_oauth_grant_snapshot_externally(
         _mcp_oauth_grant_revocation_snapshot(client=client, grant=grant)
     )
+
+
+@dataclass(frozen=True)
+class MCPOAuthOwnerRevocation:
+    """Provider work staged by an exact-owner local transaction."""
+
+    grant_count: int
+    _snapshots: tuple[_MCPOAuthGrantRevocationSnapshot, ...]
+
+    async def revoke_tokens(self) -> None:
+        """Revoke provider tokens only after the caller commits local state."""
+        for snapshot in self._snapshots:
+            await _revoke_mcp_oauth_grant_snapshot_externally(snapshot)
+
+
+def _trusted_mcp_oauth_owner_key(resource_owner_key: str) -> str:
+    try:
+        owner_key = normalize_user_oauth_resource_owner_key(resource_owner_key)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    if owner_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="resource_owner_key must not be null",
+        )
+    return owner_key
 
 
 def _upsert_mcp_oauth_grant(
@@ -3538,8 +3570,9 @@ def _ensure_mcp_oauth_app_user(
     *,
     app_id: str,
     user_id: int,
+    persistence: _OAuthPersistence,
 ) -> tuple[MCPServer, dict]:
-    """Ensure one catalog server and active non-owning user link."""
+    """Ensure one catalog server and non-owning user link."""
     server, app_info = _ensure_catalog_mcp_oauth_server(db, app_id)
     association = (
         db.query(UserMCPServer)
@@ -3574,7 +3607,7 @@ def _ensure_mcp_oauth_app_user(
             )
             if association is None:
                 raise
-    elif not association.is_active:
+    elif not association.is_active and persistence is _OAuthPersistence.COMMIT:
         setattr(association, "is_active", True)
         db.flush()
     return server, app_info
@@ -3736,6 +3769,7 @@ async def connect_mcp_oauth_app(
         db,
         app_id=app_id,
         user_id=user_id,
+        persistence=_OAuthPersistence.COMMIT,
     )
     # Release durable catalog and association writes before provider I/O.
     db.commit()
@@ -3763,6 +3797,7 @@ async def connect_mcp_oauth_app_for_owner(
     The caller commits or rolls back the returned flow and catalog visibility.
     """
 
+    owner_key = _trusted_mcp_oauth_owner_key(resource_owner_key)
     # Keep nested race-recovery savepoints inside one caller-owned transaction,
     # including on SQLite where releasing a top-level savepoint commits it.
     db.begin_nested()
@@ -3771,6 +3806,7 @@ async def connect_mcp_oauth_app_for_owner(
         db,
         app_id=app_id,
         user_id=user_id,
+        persistence=_OAuthPersistence.CALLER,
     )
     logger.info(
         "User %s starting trusted OAuth connect for MCP app %r",
@@ -3782,7 +3818,7 @@ async def connect_mcp_oauth_app_for_owner(
         request_data,
         current_user,
         db,
-        resource_owner_key=resource_owner_key,
+        resource_owner_key=owner_key,
         accept=accept,
         persistence=_OAuthPersistence.CALLER,
     )
@@ -5492,7 +5528,10 @@ async def _connect_mcp_oauth_for_owner(
     """Start OAuth for one exact owner with an explicit transaction owner."""
     user_id = cast(int, current_user.id)
     association, server = _get_user_mcp_server_or_404(
-        db, user_id=user_id, server_id=server_id, require_active=True
+        db,
+        user_id=user_id,
+        server_id=server_id,
+        require_active=persistence is _OAuthPersistence.COMMIT,
     )
     association_generation = association.lifecycle_generation
     if not isinstance(association_generation, UUID):
@@ -5676,20 +5715,16 @@ async def revoke_mcp_oauth_grants_for_owner(
     db: Session,
     *,
     resource_owner_key: str,
-) -> int:
-    """Revoke active grants for one trusted resource-owner namespace."""
+) -> MCPOAuthOwnerRevocation:
+    """Stage exact-owner revocation in the caller-owned transaction."""
 
+    owner_key = _trusted_mcp_oauth_owner_key(resource_owner_key)
     user_id = cast(int, current_user.id)
     _get_user_mcp_server_or_404(
         db,
         user_id=user_id,
         server_id=server_id,
         require_active=False,
-    )
-    owner_key = _bounded_mcp_oauth_value(
-        resource_owner_key,
-        field_name="resource_owner_key",
-        max_length=MCP_OAUTH_RESOURCE_OWNER_KEY_MAX_LENGTH,
     )
     db.query(MCPOAuthFlowState).filter(
         MCPOAuthFlowState.mcp_server_id == server_id,
@@ -5706,17 +5741,20 @@ async def revoke_mcp_oauth_grants_for_owner(
         )
         .all()
     )
+    snapshots = tuple(
+        _mcp_oauth_grant_revocation_snapshot(client=grant.oauth_client, grant=grant)
+        for grant in grants
+        if isinstance(grant.oauth_client, MCPOAuthClient)
+    )
     now = _utc_now()
     for grant in grants:
-        if isinstance(grant.oauth_client, MCPOAuthClient):
-            await _revoke_mcp_oauth_grant_externally(
-                client=grant.oauth_client,
-                grant=grant,
-            )
         setattr(grant, "status", "revoked")
         setattr(grant, "revoked_at", now)
     db.flush()
-    return len(grants)
+    return MCPOAuthOwnerRevocation(
+        grant_count=len(grants),
+        _snapshots=snapshots,
+    )
 
 
 @mcp_router.delete(
