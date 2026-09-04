@@ -1008,68 +1008,75 @@ async def _exchange_mcp_oauth_code(
     return payload
 
 
-async def _revoke_mcp_oauth_grant_externally(
-    *,
+@dataclass(frozen=True)
+class _OAuthRevocationClient:
+    endpoint: str
+    client_id: str
+    client_secret: str | None
+    auth_method: str
+
+
+def _oauth_revocation_client(
     client: MCPOAuthClient,
-    grant: MCPOAuthGrant,
-) -> None:
+) -> _OAuthRevocationClient | None:
     metadata: dict[str, Any] = (
         client.metadata_json if isinstance(client.metadata_json, dict) else {}
     )
-    revocation_endpoint = metadata.get("revocation_endpoint")
-    if not isinstance(revocation_endpoint, str) or not revocation_endpoint:
+    endpoint = metadata.get("revocation_endpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        return None
+
+    return _OAuthRevocationClient(
+        endpoint=endpoint,
+        client_id=str(client.client_id),
+        client_secret=str(client.client_secret) if client.client_secret else None,
+        auth_method=str(client.token_endpoint_auth_method or "none"),
+    )
+
+
+async def _revoke_mcp_oauth_tokens(
+    *,
+    client: _OAuthRevocationClient | None,
+    tokens: Collection[tuple[str, str]],
+    grant_id: int | None,
+) -> None:
+    if client is None or not tokens:
         return
 
+    grant_label: int | str = grant_id if grant_id is not None else "unpersisted"
     try:
         client_secret = (
-            decrypt_value(str(client.client_secret)) if client.client_secret else ""
+            decrypt_value(client.client_secret) if client.client_secret else ""
         )
     except Exception as exc:
         logger.warning(
             "Skipping MCP OAuth token revocation for grant %s because client secret "
             "could not be decrypted: %s",
-            grant.id,
+            grant_label,
             exc,
         )
         return
-    auth_method = str(client.token_endpoint_auth_method or "none")
+
     auth: httpx.Auth | None = None
-    base_data: dict[str, str] = {"client_id": str(client.client_id)}
-    if auth_method == "client_secret_post" and client_secret:
+    base_data: dict[str, str] = {"client_id": client.client_id}
+    if client.auth_method == "client_secret_post" and client_secret:
         base_data["client_secret"] = client_secret
-    elif auth_method == "client_secret_basic" and client_secret:
-        auth = httpx.BasicAuth(str(client.client_id), client_secret)
-    elif auth_method not in {"none", "client_secret_post", "client_secret_basic"}:
+    elif client.auth_method == "client_secret_basic" and client_secret:
+        auth = httpx.BasicAuth(client.client_id, client_secret)
+    elif client.auth_method not in MCP_OAUTH_TOKEN_ENDPOINT_AUTH_METHODS:
         logger.warning(
             "Skipping MCP OAuth token revocation for unsupported auth method %s",
-            auth_method,
+            client.auth_method,
         )
         return
 
-    encrypted_tokens = (
-        (grant.access_token, "access_token"),
-        (grant.refresh_token, "refresh_token"),
-    )
     async with create_mcp_oauth_http_client(
         timeout=MCP_OAUTH_HTTP_TIMEOUT_SECONDS,
     ) as http_client:
-        for encrypted_token, token_type_hint in encrypted_tokens:
-            if not encrypted_token:
-                continue
-            try:
-                decrypted_token = decrypt_value(str(encrypted_token))
-            except Exception as exc:
-                logger.warning(
-                    "Skipping MCP OAuth %s revocation for grant %s because token "
-                    "could not be decrypted: %s",
-                    token_type_hint,
-                    grant.id,
-                    exc,
-                )
-                continue
+        for token, token_type_hint in tokens:
             data = {
                 **base_data,
-                "token": decrypted_token,
+                "token": token,
                 "token_type_hint": token_type_hint,
             }
             request_kwargs: dict[str, Any] = {
@@ -1080,7 +1087,7 @@ async def _revoke_mcp_oauth_grant_externally(
                 request_kwargs["auth"] = auth
             try:
                 response = await oauth_post(
-                    revocation_endpoint,
+                    client.endpoint,
                     client=http_client,
                     **request_kwargs,
                 )
@@ -1088,14 +1095,48 @@ async def _revoke_mcp_oauth_grant_externally(
                     logger.warning(
                         "MCP OAuth token revocation returned HTTP %s for grant %s",
                         response.status_code,
-                        grant.id,
+                        grant_label,
                     )
             except (MCPOAuthDiscoveryError, httpx.HTTPError) as exc:
                 logger.warning(
                     "MCP OAuth token revocation failed for grant %s: %s",
-                    grant.id,
+                    grant_label,
                     exc,
                 )
+
+
+async def _revoke_mcp_oauth_grant_externally(
+    *,
+    client: MCPOAuthClient,
+    grant: MCPOAuthGrant,
+) -> None:
+    revocation_client = _oauth_revocation_client(client)
+    if revocation_client is None:
+        return
+
+    tokens: list[tuple[str, str]] = []
+    for encrypted_token, token_type_hint in (
+        (grant.access_token, "access_token"),
+        (grant.refresh_token, "refresh_token"),
+    ):
+        if not encrypted_token:
+            continue
+        try:
+            tokens.append((decrypt_value(str(encrypted_token)), token_type_hint))
+        except Exception as exc:
+            logger.warning(
+                "Skipping MCP OAuth %s revocation for grant %s because token "
+                "could not be decrypted: %s",
+                token_type_hint,
+                grant.id,
+                exc,
+            )
+
+    await _revoke_mcp_oauth_tokens(
+        client=revocation_client,
+        tokens=tokens,
+        grant_id=cast(int, grant.id),
+    )
 
 
 def _upsert_mcp_oauth_grant(
@@ -4251,6 +4292,7 @@ async def mcp_oauth_callback(
     redirect_after = (
         str(flow_state.redirect_after) if flow_state.redirect_after else None
     )
+    revocation_client = _oauth_revocation_client(client)
     claim_error = _claim_mcp_oauth_flow_state(db, flow_state)
     if claim_error is not None:
         error_code, message = claim_error
@@ -4273,12 +4315,18 @@ async def mcp_oauth_callback(
             error_code="invalid_state",
             message="Missing authorization code",
         )
+    revocation_tokens: tuple[tuple[str, str], ...] = ()
     try:
         token_data = await _exchange_mcp_oauth_code(
             client=client,
             code=code,
             code_verifier=decrypt_value(encrypted_code_verifier),
             resource=resource,
+        )
+        revocation_tokens = tuple(
+            (str(token_data[key]), key)
+            for key in ("access_token", "refresh_token")
+            if token_data.get(key)
         )
         locked_flow = (
             db.query(MCPOAuthFlowState)
@@ -4299,6 +4347,11 @@ async def mcp_oauth_callback(
         db.commit()
     except HTTPException as exc:
         db.rollback()
+        await _revoke_mcp_oauth_tokens(
+            client=revocation_client,
+            tokens=revocation_tokens,
+            grant_id=None,
+        )
         detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
         error_code = str(detail.get("code") or "token_exchange_failed")
         message = str(detail.get("message") or "MCP OAuth authorization failed")
@@ -4309,6 +4362,11 @@ async def mcp_oauth_callback(
         )
     except Exception:
         db.rollback()
+        await _revoke_mcp_oauth_tokens(
+            client=revocation_client,
+            tokens=revocation_tokens,
+            grant_id=None,
+        )
         logger.exception("MCP OAuth callback failed after state claim")
         return _mcp_oauth_callback_error_redirect_after(
             redirect_after,

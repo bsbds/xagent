@@ -74,6 +74,22 @@ def db_session(tmp_path):
     engine.dispose()
 
 
+@pytest.fixture()
+def revocation_requests(monkeypatch) -> list[dict[str, list[str]]]:
+    requests: list[dict[str, list[str]]] = []
+    real_async_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(parse_qs(request.content.decode()))
+        return httpx.Response(200)
+
+    def async_client_factory(*args, **kwargs):
+        return real_async_client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(mcp_api, "create_mcp_oauth_http_client", async_client_factory)
+    return requests
+
+
 def _request(
     path: str,
     headers: list[tuple[bytes, bytes]] | None = None,
@@ -2552,8 +2568,8 @@ async def test_callback_handles_flow_deleted_after_claim_commit(
 
 
 @pytest.mark.asyncio
-async def test_callback_discards_token_when_disconnect_removes_claimed_flow(
-    db_session, monkeypatch
+async def test_callback_revokes_token_when_disconnect_removes_claimed_flow(
+    db_session, monkeypatch, revocation_requests
 ):
     db, user, _ = db_session
     _server, _client, _flow = _add_callback_client_and_state(
@@ -2561,6 +2577,7 @@ async def test_callback_discards_token_when_disconnect_removes_claimed_flow(
         user,
         state="disconnected-during-exchange",
         redirect_after="/mcp",
+        metadata_json={"revocation_endpoint": "https://auth.example.com/revoke"},
     )
     session_factory = sessionmaker(
         bind=db.get_bind(), autoflush=False, autocommit=False
@@ -2576,7 +2593,8 @@ async def test_callback_discards_token_when_disconnect_removes_claimed_flow(
         finally:
             disconnect_db.close()
         return {
-            "access_token": "must-not-persist",
+            "access_token": "discarded-access-token",
+            "refresh_token": "discarded-refresh-token",
             "token_type": "Bearer",
             "scope": "records.read",
         }
@@ -2593,6 +2611,57 @@ async def test_callback_discards_token_when_disconnect_removes_claimed_flow(
     assert response.status_code == 307
     assert _redirect_query(response)["mcp_oauth_error"] == ["invalid_state"]
     assert db.query(MCPOAuthGrant).count() == 0
+    assert [request["token"] for request in revocation_requests] == [
+        ["discarded-access-token"],
+        ["discarded-refresh-token"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_callback_revokes_token_when_grant_commit_fails(
+    db_session, monkeypatch, revocation_requests
+):
+    db, user, _ = db_session
+    _server, _client, _flow = _add_callback_client_and_state(
+        db,
+        user,
+        state="grant-commit-fails",
+        redirect_after="/mcp",
+        metadata_json={"revocation_endpoint": "https://auth.example.com/revoke"},
+    )
+    real_commit = db.commit
+    commit_count = 0
+
+    def fail_grant_commit():
+        nonlocal commit_count
+        commit_count += 1
+        if commit_count == 2:
+            raise RuntimeError("grant commit failed")
+        real_commit()
+
+    async def fake_exchange(**kwargs):
+        return {
+            "access_token": "discarded-access-token",
+            "refresh_token": "discarded-refresh-token",
+            "token_type": "Bearer",
+            "scope": "records.read",
+        }
+
+    monkeypatch.setattr(db, "commit", fail_grant_commit)
+    monkeypatch.setattr(mcp_api, "_exchange_mcp_oauth_code", fake_exchange)
+
+    response = await mcp_oauth_callback(
+        _request("/api/mcp/oauth/callback?code=auth-code&state=grant-commit-fails"),
+        db,
+    )
+
+    assert response.status_code == 307
+    assert _redirect_query(response)["mcp_oauth_error"] == ["token_exchange_failed"]
+    assert db.query(MCPOAuthGrant).count() == 0
+    assert [request["token"] for request in revocation_requests] == [
+        ["discarded-access-token"],
+        ["discarded-refresh-token"],
+    ]
 
 
 @pytest.mark.asyncio
