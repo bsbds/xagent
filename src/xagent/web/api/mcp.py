@@ -1587,7 +1587,7 @@ class MCPOAuthOwnerRevocation:
             await _revoke_mcp_oauth_grant_snapshot_externally(snapshot)
 
 
-def _trusted_mcp_oauth_owner_key(resource_owner_key: str) -> str:
+def _trusted_mcp_oauth_owner_key(resource_owner_key: str, *, user_id: int) -> str:
     try:
         owner_key = normalize_user_oauth_resource_owner_key(resource_owner_key)
     except ValueError as exc:
@@ -1599,6 +1599,11 @@ def _trusted_mcp_oauth_owner_key(resource_owner_key: str) -> str:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="resource_owner_key must not be null",
+        )
+    if owner_key == _default_resource_owner_key(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="resource_owner_key must not use the default user namespace",
         )
     return owner_key
 
@@ -3797,11 +3802,11 @@ async def connect_mcp_oauth_app_for_owner(
     The caller commits or rolls back the returned flow and catalog visibility.
     """
 
-    owner_key = _trusted_mcp_oauth_owner_key(resource_owner_key)
+    user_id = cast(int, current_user.id)
+    owner_key = _trusted_mcp_oauth_owner_key(resource_owner_key, user_id=user_id)
     # Keep nested race-recovery savepoints inside one caller-owned transaction,
     # including on SQLite where releasing a top-level savepoint commits it.
     db.begin_nested()
-    user_id = cast(int, current_user.id)
     server, app_info = _ensure_mcp_oauth_app_user(
         db,
         app_id=app_id,
@@ -5718,8 +5723,8 @@ async def revoke_mcp_oauth_grants_for_owner(
 ) -> MCPOAuthOwnerRevocation:
     """Stage exact-owner revocation in the caller-owned transaction."""
 
-    owner_key = _trusted_mcp_oauth_owner_key(resource_owner_key)
     user_id = cast(int, current_user.id)
+    owner_key = _trusted_mcp_oauth_owner_key(resource_owner_key, user_id=user_id)
     _get_user_mcp_server_or_404(
         db,
         user_id=user_id,

@@ -2236,6 +2236,22 @@ async def test_trusted_connect_app_normalizes_resource_owner(db_session, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_trusted_connect_rejects_default_resource_owner(db_session):
+    db, user, _ = db_session
+
+    with pytest.raises(HTTPException) as exc:
+        await mcp_api.connect_mcp_oauth_app_for_owner(
+            "remote-notes",
+            MCPOAuthConnectRequest(),
+            user,
+            db,
+            resource_owner_key=f"xagent:user:{user.id}",
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_trusted_connect_app_can_roll_back_all_local_state(
     db_session, monkeypatch
 ):
@@ -4533,6 +4549,21 @@ async def test_trusted_revoke_rejects_blank_resource_owner(db_session):
             user,
             db,
             resource_owner_key=" \t ",
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_trusted_revoke_rejects_default_resource_owner(db_session):
+    db, user, _ = db_session
+
+    with pytest.raises(HTTPException) as exc:
+        await mcp_api.revoke_mcp_oauth_grants_for_owner(
+            1,
+            user,
+            db,
+            resource_owner_key=f"xagent:user:{user.id}",
         )
 
     assert exc.value.status_code == 400
