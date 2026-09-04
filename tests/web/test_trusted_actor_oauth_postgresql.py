@@ -809,28 +809,29 @@ def test_mcp_callback_and_delete_do_not_deadlock(
         )
         db.add(client)
         db.flush()
-        db.add_all(
-            [
-                UserMCPServer(
-                    user_id=user.id,
-                    mcpserver_id=server.id,
-                    is_owner=True,
-                    is_active=True,
-                ),
-                MCPOAuthFlowState(
-                    state=state,
-                    mcp_server_id=server.id,
-                    user_id=user.id,
-                    mcp_oauth_client_id=client.id,
-                    resource_owner_key=f"xagent:user:{user.id}",
-                    issuer=client.issuer,
-                    resource="https://mcp.example.com/mcp",
-                    scope="records.read",
-                    code_verifier=encrypt_value("verifier"),
-                    redirect_after="/settings/mcp",
-                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-                ),
-            ]
+        association = UserMCPServer(
+            user_id=user.id,
+            mcpserver_id=server.id,
+            is_owner=True,
+            is_active=True,
+        )
+        db.add(association)
+        db.flush()
+        db.add(
+            MCPOAuthFlowState(
+                state=state,
+                mcp_server_id=server.id,
+                user_id=user.id,
+                association_lifecycle_generation=association.lifecycle_generation,
+                mcp_oauth_client_id=client.id,
+                resource_owner_key=f"xagent:user:{user.id}",
+                issuer=client.issuer,
+                resource="https://mcp.example.com/mcp",
+                scope="records.read",
+                code_verifier=encrypt_value("verifier"),
+                redirect_after="/settings/mcp",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            )
         )
         db.commit()
         user_id = int(user.id)
@@ -886,9 +887,10 @@ def test_mcp_callback_and_delete_do_not_deadlock(
         callback_future = executor.submit(callback)
         assert callback_has_flow_lock.wait(timeout=10)
         delete_future = executor.submit(delete)
-        assert delete_has_association_lock.wait(timeout=10)
+        assert not delete_has_association_lock.wait(timeout=0.2)
         release_callback.set()
         callback_response = callback_future.result(timeout=10)
+        assert delete_has_association_lock.wait(timeout=10)
         assert delete_future.result(timeout=10) is None
 
     callback_query = parse_qs(urlparse(callback_response.headers["location"]).query)
