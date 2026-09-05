@@ -7,6 +7,7 @@ their OAuth configurations, and server launch configurations.
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, List
 
 from sqlalchemy.exc import IntegrityError
@@ -237,6 +238,11 @@ class BuiltinOAuthServerDefinitionError(ValueError):
 
 class RemoteOAuthServerDefinitionError(ValueError):
     """Raised when a remote catalog OAuth server is not canonical."""
+
+
+class RemoteOAuthDefinitionOwnership(Enum):
+    UNKNOWN = "unknown"
+    TEAM = "team"
 
 
 def _normalized_catalog_key(value: object) -> str | None:
@@ -797,9 +803,14 @@ def get_app_for_mcp_server(db: Session, server: Any) -> Dict[str, Any] | None:
 
 
 def classify_actor_remote_oauth_server(
-    db: Session, server: Any
+    db: Session,
+    server: Any,
+    *,
+    definition_ownership: RemoteOAuthDefinitionOwnership = (
+        RemoteOAuthDefinitionOwnership.UNKNOWN
+    ),
 ) -> Dict[str, Any] | None:
-    """Require one non-owned server that exactly matches remote catalog data."""
+    """Validate catalog OAuth or preserve a proven custom definition."""
 
     from .models.mcp import MCPServer, UserMCPServer
     from .services.mcp_runtime import HTTP_MCP_TRANSPORTS
@@ -823,7 +834,10 @@ def classify_actor_remote_oauth_server(
                 .first()
                 is not None
             )
-            if not has_owner:
+            if (
+                not has_owner
+                and definition_ownership is not RemoteOAuthDefinitionOwnership.TEAM
+            ):
                 raise RemoteOAuthServerDefinitionError(
                     "remote OAuth catalog identity is unavailable"
                 )

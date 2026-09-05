@@ -4227,7 +4227,11 @@ class WebToolConfig(BaseToolConfig):
                 app_info = (
                     dict(actor_catalog_app_info)
                     if actor_catalog_app_info is not None
-                    else None
+                    else (
+                        get_app_for_mcp_server(self.db, server)
+                        if resolver is not None
+                        else None
+                    )
                 )
             else:
                 app_info = (
@@ -4497,13 +4501,16 @@ class WebToolConfig(BaseToolConfig):
         # for "the scope could not be resolved". The typed error is what
         # survives the tool-creator frame -- an untyped one is dropped there
         # with a WARNING and no tool set at all.
-        from ..services.connector_team_scope import resolve_team_connector_ids_or_raise
-
-        team_mcp_ids = frozenset(
-            resolve_team_connector_ids_or_raise(
-                self.db, team_id=self._connector_team_id, log_subject=self._user_id
-            )["mcp"]
+        from ..services.connector_team_scope import (
+            resolve_team_connector_selection_or_raise,
         )
+
+        team_selection = resolve_team_connector_selection_or_raise(
+            self.db,
+            team_id=self._connector_team_id,
+            log_subject=self._user_id,
+        )
+        team_mcp_ids = team_selection.mcp_ids
 
         try:
             from ..services.mcp_runtime import (
@@ -4532,6 +4539,7 @@ class WebToolConfig(BaseToolConfig):
             if self._mcp_runtime_authorization_policy is not None:
                 from ...web.mcp_apps import (
                     BuiltinOAuthServerDefinitionError,
+                    RemoteOAuthDefinitionOwnership,
                     RemoteOAuthServerDefinitionError,
                     classify_actor_builtin_oauth_server,
                     classify_actor_remote_oauth_server,
@@ -4544,7 +4552,14 @@ class WebToolConfig(BaseToolConfig):
                         )
                         if catalog_app is None:
                             catalog_app = classify_actor_remote_oauth_server(
-                                self.db, visible_server
+                                self.db,
+                                visible_server,
+                                definition_ownership=(
+                                    RemoteOAuthDefinitionOwnership.TEAM
+                                    if int(visible_server.id)
+                                    in team_selection.owned_mcp_definition_ids
+                                    else RemoteOAuthDefinitionOwnership.UNKNOWN
+                                ),
                             )
                         actor_classifications[int(visible_server.id)] = (
                             catalog_app,

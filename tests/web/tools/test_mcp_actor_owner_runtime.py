@@ -463,6 +463,124 @@ async def test_actor_policy_preserves_owned_custom_app_id_collision(db_session) 
 
 
 @pytest.mark.asyncio
+async def test_actor_policy_preserves_custom_resolver_candidates(db_session) -> None:
+    _add_remote_server(db_session.db, db_session.user)
+    app = (
+        db_session.db.query(PublicMCPApp)
+        .filter(PublicMCPApp.app_id == REMOTE_APP_ID)
+        .one()
+    )
+    app.provider_name = "records-provider"
+    custom_server = MCPServer.from_config(
+        {
+            "name": "custom-resolver-remote",
+            "managed": "external",
+            "transport": "streamable_http",
+            "url": "https://custom.example.com/mcp",
+            "auth": {"type": "mcp_oauth", "app_id": REMOTE_APP_ID},
+        }
+    )
+    db_session.db.add(custom_server)
+    db_session.db.flush()
+    db_session.db.add(
+        UserMCPServer(
+            user_id=int(db_session.user.id),
+            mcpserver_id=int(custom_server.id),
+            is_active=True,
+            is_owner=True,
+        )
+    )
+    db_session.db.commit()
+    providers = []
+
+    async def resolver(request) -> ResolvedToken | None:
+        providers.append(request.provider)
+        if request.provider == "records-provider":
+            return ResolvedToken(access_token="resolver-token")
+        return None
+
+    set_oauth_token_resolver_hook(resolver)
+    try:
+        configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+    finally:
+        set_oauth_token_resolver_hook(None)
+
+    custom_config = next(
+        config for config in configs if config["name"] == custom_server.name
+    )
+    assert providers == ["records-provider"]
+    assert custom_config["config"]["headers"]["Authorization"] == (
+        "Bearer resolver-token"
+    )
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_preserves_team_owned_custom_oauth(db_session) -> None:
+    custom_server = MCPServer.from_config(
+        {
+            "name": "retained-team-custom",
+            "managed": "external",
+            "transport": "streamable_http",
+            "url": "https://team.example.com/mcp",
+            "auth": {"type": "mcp_oauth"},
+        }
+    )
+    db_session.db.add(custom_server)
+    db_session.db.commit()
+    connector_team_scope.set_connector_team_hooks(
+        team_visibility=lambda _db, *, team_id: {
+            "mcp": {int(custom_server.id)} if team_id == 41 else set(),
+            "custom_api": set(),
+            "owned_mcp_definitions": {int(custom_server.id)},
+        }
+    )
+
+    async def resolver(request) -> ResolvedToken | None:
+        if request.provider == custom_server.name:
+            return ResolvedToken(access_token="team-custom-token")
+        return None
+
+    set_oauth_token_resolver_hook(resolver)
+    try:
+        configs = await _config(
+            db_session,
+            policy=_policy(),
+            connector_team_id=41,
+        ).get_mcp_server_configs()
+    finally:
+        set_oauth_token_resolver_hook(None)
+
+    assert configs[0]["name"] == custom_server.name
+    assert configs[0]["config"]["headers"]["Authorization"] == (
+        "Bearer team-custom-token"
+    )
+
+
+@pytest.mark.asyncio
+async def test_actor_policy_rejects_unowned_team_catalog_drift(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    db_session.db.query(UserMCPServer).delete()
+    server.name = "renamed-team-catalog"
+    db_session.db.commit()
+    connector_team_scope.set_connector_team_hooks(
+        team_visibility=lambda _db, *, team_id: {
+            "mcp": {int(server.id)} if team_id == 41 else set(),
+            "custom_api": set(),
+            "owned_mcp_definitions": set(),
+        }
+    )
+
+    configs = await _config(
+        db_session,
+        policy=_policy(),
+        connector_team_id=41,
+    ).get_mcp_server_configs()
+
+    assert configs[0]["transport"] == "unavailable"
+    assert configs[0]["config"]["reason"] == "config_load_failed"
+
+
+@pytest.mark.asyncio
 async def test_actor_remote_rejects_unverifiable_catalog_identity(db_session) -> None:
     server = _add_remote_server(db_session.db, db_session.user)
     server.name = "renamed-remote"
