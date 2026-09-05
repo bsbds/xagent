@@ -415,6 +415,54 @@ async def test_actor_remote_ignores_foreign_auth_app_id(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_actor_policy_preserves_owned_custom_app_id_collision(db_session) -> None:
+    _add_remote_server(db_session.db, db_session.user)
+    custom_server = MCPServer.from_config(
+        {
+            "name": "custom-remote",
+            "managed": "external",
+            "transport": "streamable_http",
+            "url": "https://custom.example.com/mcp",
+            "auth": {
+                "type": "mcp_oauth",
+                "app_id": REMOTE_APP_ID,
+                "resource": "https://mcp.example.com/mcp",
+                "issuer": "https://auth.example.com",
+                "scope": "records.read",
+                "client_id": "actor-client",
+            },
+        }
+    )
+    db_session.db.add(custom_server)
+    db_session.db.flush()
+    db_session.db.add(
+        UserMCPServer(
+            user_id=int(db_session.user.id),
+            mcpserver_id=int(custom_server.id),
+            is_active=True,
+            is_owner=True,
+        )
+    )
+    db_session.db.commit()
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        custom_server,
+        owner=f"xagent:user:{db_session.user.id}",
+        token="custom-token",
+    )
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    custom_config = next(
+        config for config in configs if config["name"] == custom_server.name
+    )
+    assert custom_config["config"]["headers"]["Authorization"] == (
+        "Bearer custom-token"
+    )
+
+
+@pytest.mark.asyncio
 async def test_actor_remote_rejects_unverifiable_catalog_identity(db_session) -> None:
     server = _add_remote_server(db_session.db, db_session.user)
     server.name = "renamed-remote"

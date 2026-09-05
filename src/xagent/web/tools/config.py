@@ -3972,11 +3972,14 @@ class WebToolConfig(BaseToolConfig):
         user_env_by_id: Mapping[int, Any],
         shared_env_by_id: Mapping[int, Any],
         env_source_by_id: Mapping[int, Any],
-        actor_builtin_app_info: Mapping[str, Any] | None = None,
+        actor_catalog_app_info: Mapping[str, Any] | None = None,
         actor_builtin_invalid: bool = False,
     ) -> Dict[str, Any]:
         """Build one MCP server config, preserving explicit unavailable outcomes."""
-        actor_builtin = actor_builtin_app_info is not None
+        actor_builtin = bool(
+            actor_catalog_app_info is not None
+            and actor_catalog_app_info.get("auth_type") == "builtin_oauth"
+        )
         if actor_builtin_invalid:
             policy_diagnostic = {
                 "code": "config_load_failed",
@@ -4026,8 +4029,8 @@ class WebToolConfig(BaseToolConfig):
             "name": server.name,
             "transport": server.transport,
             "description": (
-                actor_builtin_app_info.get("description")
-                if actor_builtin_app_info is not None
+                actor_catalog_app_info.get("description")
+                if actor_catalog_app_info is not None
                 else server.description
             ),
         }
@@ -4055,8 +4058,8 @@ class WebToolConfig(BaseToolConfig):
             from ...web.mcp_apps import get_app_for_mcp_server
 
             app_info = (
-                dict(actor_builtin_app_info)
-                if actor_builtin_app_info is not None
+                dict(actor_catalog_app_info)
+                if actor_catalog_app_info is not None
                 else get_app_for_mcp_server(self.db, server)
             )
             if app_info is None:
@@ -4220,15 +4223,20 @@ class WebToolConfig(BaseToolConfig):
 
             resolver, registration_generation = _get_oauth_token_resolver_hook()
             policy = self._mcp_runtime_authorization_policy
-            app_info = (
-                get_app_for_mcp_server(self.db, server)
-                if policy is not None or resolver is not None
-                else None
-            )
-            actor_remote_oauth = bool(
-                policy is not None
-                and app_info is not None
-                and app_info.get("auth_type") == "mcp_oauth"
+            if policy is not None:
+                app_info = (
+                    dict(actor_catalog_app_info)
+                    if actor_catalog_app_info is not None
+                    else None
+                )
+            else:
+                app_info = (
+                    get_app_for_mcp_server(self.db, server)
+                    if resolver is not None
+                    else None
+                )
+            actor_remote_oauth = (
+                policy is not None and actor_catalog_app_info is not None
             )
             if actor_remote_oauth:
                 runtime_bindings = None
@@ -4429,7 +4437,7 @@ class WebToolConfig(BaseToolConfig):
         user_env_by_id: Mapping[int, Any],
         shared_env_by_id: Mapping[int, Any],
         env_source_by_id: Mapping[int, Any],
-        actor_builtin_app_info: Mapping[str, Any] | None = None,
+        actor_catalog_app_info: Mapping[str, Any] | None = None,
         actor_builtin_invalid: bool = False,
     ) -> Dict[str, Any]:
         """Isolate unexpected failures while loading one MCP server config."""
@@ -4439,7 +4447,7 @@ class WebToolConfig(BaseToolConfig):
                 user_env_by_id=user_env_by_id,
                 shared_env_by_id=shared_env_by_id,
                 env_source_by_id=env_source_by_id,
-                actor_builtin_app_info=actor_builtin_app_info,
+                actor_catalog_app_info=actor_catalog_app_info,
                 actor_builtin_invalid=actor_builtin_invalid,
             )
         except ConnectorRuntimeError:
@@ -4531,13 +4539,15 @@ class WebToolConfig(BaseToolConfig):
 
                 for visible_server in servers:
                     try:
-                        builtin_app = classify_actor_builtin_oauth_server(
+                        catalog_app = classify_actor_builtin_oauth_server(
                             self.db, visible_server
                         )
-                        if builtin_app is None:
-                            classify_actor_remote_oauth_server(self.db, visible_server)
+                        if catalog_app is None:
+                            catalog_app = classify_actor_remote_oauth_server(
+                                self.db, visible_server
+                            )
                         actor_classifications[int(visible_server.id)] = (
-                            builtin_app,
+                            catalog_app,
                             False,
                         )
                     except (
@@ -4620,7 +4630,7 @@ class WebToolConfig(BaseToolConfig):
                 user_env_by_id=user_env_by_id,
                 shared_env_by_id=shared_env_by_id,
                 env_source_by_id=env_source_by_id,
-                actor_builtin_app_info=actor_classifications.get(
+                actor_catalog_app_info=actor_classifications.get(
                     int(server.id), (None, False)
                 )[0],
                 actor_builtin_invalid=actor_classifications.get(

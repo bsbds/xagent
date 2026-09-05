@@ -739,6 +739,17 @@ def ensure_builtin_oauth_server_visibility_for_user(
     return server
 
 
+def _get_app_for_server_name(db: Session, name: str) -> Dict[str, Any] | None:
+    candidates = (
+        db.query(PublicMCPApp)
+        .filter((PublicMCPApp.app_id == name) | (PublicMCPApp.name == name))
+        .all()
+    )
+    if len({str(candidate.app_id) for candidate in candidates}) != 1:
+        return None
+    return _app_to_dict(candidates[0])
+
+
 def get_app_for_mcp_server(db: Session, server: Any) -> Dict[str, Any] | None:
     """Resolve a server's catalog app by stable identity when it is available.
 
@@ -782,15 +793,7 @@ def get_app_for_mcp_server(db: Session, server: Any) -> Dict[str, Any] | None:
     # fails closed -- deletion keeps the credentials, listing and runtime
     # decline to name an app -- rather than acting on a coin flip. Only the
     # stamp settles it, which is what the branch above is for.
-    candidates = (
-        db.query(PublicMCPApp)
-        .filter((PublicMCPApp.app_id == name) | (PublicMCPApp.name == name))
-        .all()
-    )
-    owners = {str(candidate.app_id) for candidate in candidates}
-    if len(owners) != 1:
-        return None
-    return _app_to_dict(candidates[0])
+    return _get_app_for_server_name(db, name)
 
 
 def classify_actor_remote_oauth_server(
@@ -807,7 +810,7 @@ def classify_actor_remote_oauth_server(
         and isinstance(auth, Mapping)
         and auth.get("type") == "mcp_oauth"
     )
-    app_info = get_app_for_mcp_server(db, server)
+    app_info = _get_app_for_server_name(db, str(getattr(server, "name", "")))
     if app_info is None or app_info.get("auth_type") != "mcp_oauth":
         if is_remote_oauth:
             # Native OAuth servers have an owner. Catalog rows do not.
