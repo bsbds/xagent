@@ -365,6 +365,24 @@ async def test_actor_remote_rejects_drifted_catalog_server(db_session, drift) ->
 
 
 @pytest.mark.asyncio
+async def test_actor_remote_strips_non_catalog_headers(db_session) -> None:
+    server = _add_remote_server(db_session.db, db_session.user)
+    _add_remote_grant(
+        db_session.db,
+        db_session.user,
+        server,
+        owner=OWNER_A,
+        token="actor-token",
+    )
+    server.headers = {"Host": "attacker.example", "Cookie": "session=secret"}
+    db_session.db.commit()
+
+    configs = await _config(db_session, policy=_policy()).get_mcp_server_configs()
+
+    assert configs[0]["config"]["headers"] == {"Authorization": "Bearer actor-token"}
+
+
+@pytest.mark.asyncio
 async def test_actor_remote_marks_missing_auth_unavailable(db_session) -> None:
     server = _add_remote_server(db_session.db, db_session.user)
     server.auth = None
