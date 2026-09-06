@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import FrozenInstanceError, is_dataclass
 from datetime import datetime, timedelta
 from threading import Barrier, Event, get_ident
@@ -20,6 +21,7 @@ from sqlalchemy.pool import QueuePool
 from tests.web.pool_contention_shared import (
     GUARD_TIMEOUT,
     LOOP_LIVENESS_TICKS,
+    assert_pool_checkout_off_loop,
     gated_pool_checkout,
     wait_for_ticks,
 )
@@ -125,8 +127,7 @@ def low_timeout_sqlite_engine(tmp_path):
         f"sqlite:///{tmp_path / 'task-command-lock-path.db'}",
         connect_args={"check_same_thread": False},
     )
-    # Long enough to stay clear of thread-scheduling jitter under a loaded
-    # test run, short enough to keep the lock-path tests well under 2s.
+    # Keep SQLite lock waits short without asserting wall-clock performance.
     apply_sqlite_concurrency_pragmas(engine, busy_timeout_ms=200)
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -1349,14 +1350,7 @@ async def test_command_handler_pool_timeout_does_not_checkout_again(
 
     monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
     held_connections = []
-    ticker_stop = asyncio.Event()
-    ticks = 0
-
-    async def ticker() -> None:
-        nonlocal ticks
-        while not ticker_stop.is_set():
-            ticks += 1
-            await asyncio.sleep(0.01)
+    checkout_probe = ExitStack()
 
     def checkout_from_exhausted_pool() -> None:
         with SessionLocal() as db:
@@ -1364,27 +1358,24 @@ async def test_command_handler_pool_timeout_does_not_checkout_again(
 
     async def execute(_command: ClaimedTaskCommand) -> None:
         held_connections.append(engine.connect())
+        checkout_probe.enter_context(assert_pool_checkout_off_loop(engine))
         await asyncio.to_thread(checkout_from_exhausted_pool)
 
     caplog.set_level(
         logging.ERROR,
         logger="xagent.web.services.task_command_transport",
     )
-    ticker_task = asyncio.create_task(ticker())
     try:
         assert await dispatch_one_task_command(
             execute,
             command_db_id=enqueued.command_id,
         )
-        assert ticks >= 10, (
-            "command handler QueuePool timeout blocked the event loop; "
-            f"ticker advanced only {ticks} times"
-        )
     finally:
-        ticker_stop.set()
-        await ticker_task
-        for connection in held_connections:
-            connection.close()
+        try:
+            checkout_probe.close()
+        finally:
+            for connection in held_connections:
+                connection.close()
 
     with SessionLocal() as verify_db:
         stored = verify_db.get(TaskExecutionCommand, enqueued.command_id)
@@ -1509,38 +1500,28 @@ async def test_real_final_disposition_pool_timeout_stays_off_event_loop(
 
     monkeypatch.setattr(database_module, "get_session_local", lambda: SessionLocal)
     held_connections = []
-    ticker_stop = asyncio.Event()
-    ticks = 0
-
-    async def ticker() -> None:
-        nonlocal ticks
-        while not ticker_stop.is_set():
-            ticks += 1
-            await asyncio.sleep(0.01)
+    checkout_probe = ExitStack()
 
     async def execute(_command: ClaimedTaskCommand) -> dict[str, bool]:
         held_connections.append(engine.connect())
+        checkout_probe.enter_context(assert_pool_checkout_off_loop(engine))
         return {"ok": True}
 
     caplog.set_level(
         logging.ERROR,
         logger="xagent.web.services.task_command_transport",
     )
-    ticker_task = asyncio.create_task(ticker())
     try:
         assert await dispatch_one_task_command(
             execute,
             command_db_id=enqueued.command_id,
         )
-        assert ticks >= 10, (
-            "final disposition QueuePool timeout blocked the event loop; "
-            f"ticker advanced only {ticks} times"
-        )
     finally:
-        ticker_stop.set()
-        await ticker_task
-        for connection in held_connections:
-            connection.close()
+        try:
+            checkout_probe.close()
+        finally:
+            for connection in held_connections:
+                connection.close()
 
     with SessionLocal() as verify_db:
         stored = verify_db.get(TaskExecutionCommand, enqueued.command_id)
@@ -2783,6 +2764,7 @@ async def test_dispatch_with_staged_id_before_commit_is_noop_and_converges_after
         await stop_task_command_dispatcher()
 
 
+@pytest.mark.timeout(30)
 def test_owner_holding_a_flushed_command_blocks_a_concurrent_claim(
     low_timeout_sqlite_engine,
 ) -> None:
@@ -2791,7 +2773,8 @@ def test_owner_holding_a_flushed_command_blocks_a_concurrent_claim(
     transaction -- far longer than the microseconds an insert that committed
     itself holds it for. SQLite's writer lock is database-wide, so a concurrent claim
     of a different, already-committed command must still wait out
-    busy_timeout and fail with OperationalError rather than hang."""
+    busy_timeout and fail with OperationalError. Once the owner commits,
+    the same command must be claimable."""
 
     engine, SessionLocal = low_timeout_sqlite_engine
     with SessionLocal() as setup_db:
@@ -2820,18 +2803,25 @@ def test_owner_holding_a_flushed_command_blocks_a_concurrent_claim(
             payload={"agent_id": 1},
         )
         # Deliberately not committed yet -- this is the window under test.
-        started = time.monotonic()
         with SessionLocal() as claimant_db:
-            with pytest.raises(OperationalError):
+            with pytest.raises(OperationalError, match="database is locked"):
                 claim_task_command(
                     claimant_db,
                     runner_id="lock-path-claimant",
                     command_db_id=claimable.command_id,
                 )
-        elapsed = time.monotonic() - started
         owner_db.commit()
 
-    assert elapsed < 2.0
+    with SessionLocal() as claimant_db:
+        claimed = claim_task_command(
+            claimant_db,
+            runner_id="lock-path-claimant",
+            command_db_id=claimable.command_id,
+        )
+
+    assert claimed is not None
+    assert claimed.id == claimable.command_id
+    assert claimed.attempt_count == 1
 
 
 @pytest.mark.asyncio
