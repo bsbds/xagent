@@ -2146,6 +2146,10 @@ def sync_google_scope_policy(bind: Connection) -> None:
         for row in get_builtin_public_mcp_app_rows()
         if row["app_id"] in app_ids
     }
+    if not get_google_restricted_scopes():
+        # Narrow scopes without hiding an existing production Drive connector.
+        policies["google-drive"].pop("is_visible_in_connector")
+
     rows = bind.execute(
         sa.select(
             PUBLIC_MCP_APPS_TABLE.c.app_id,

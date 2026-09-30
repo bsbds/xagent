@@ -31,6 +31,7 @@ FLAG = "XAGENT_GOOGLE_RESTRICTED_SCOPES_ENABLED"
 DRIVE = "https://www.googleapis.com/auth/drive"
 DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
 GMAIL = "https://www.googleapis.com/auth/gmail.modify"
+ACTOR_OWNER = "toby:slack:41:UALICE"
 
 
 @pytest.fixture
@@ -90,7 +91,7 @@ def _login(db, user, app_id, flow, provider=None):
             provider="google",
             app_id=app_id,
             user=user,
-            resource_owner_key="toby:slack:41:UALICE",
+            resource_owner_key=ACTOR_OWNER,
             redirect=None,
             db=db,
             db_provider=provider,
@@ -149,7 +150,70 @@ def test_sync_google_catalog_rows(google_db, monkeypatch, enabled):
     assert gmail.oauth_scopes == ([GMAIL] if enabled else [])
     assert gmail.is_visible_in_connector is enabled
     assert drive.oauth_scopes == [DRIVE if enabled else DRIVE_FILE]
-    assert drive.is_visible_in_connector is enabled
+    assert drive.is_visible_in_connector is True
+
+
+@pytest.mark.parametrize("value", [None, "false"])
+@pytest.mark.parametrize("visible", [False, True])
+def test_keep_drive_visibility(tmp_path, monkeypatch, value, visible):
+    if value is None:
+        monkeypatch.delenv(FLAG, raising=False)
+    else:
+        monkeypatch.setenv(FLAG, value)
+    init_db(db_url=f"sqlite:///{tmp_path / 'existing.db'}")
+    engine = get_engine()
+    with Session(engine) as db:
+        drive = db.query(PublicMCPApp).filter_by(app_id="google-drive").one()
+        drive.is_visible_in_connector = visible
+        db.commit()
+
+    # SG exposes drive.file today; startup must not hide that connector.
+    assert _initialize_database_schema(engine) == []
+    with Session(engine) as db:
+        drive = db.query(PublicMCPApp).filter_by(app_id="google-drive").one()
+        assert drive.is_visible_in_connector is visible
+        assert drive.oauth_scopes == [DRIVE_FILE]
+
+
+@pytest.mark.parametrize("flow", ["ordinary", "actor"])
+def test_sg_drive_connect(google_db, flow):
+    db, user = google_db
+    drive = db.query(PublicMCPApp).filter_by(app_id="google-drive").one()
+    drive.is_visible_in_connector = True
+    oauth = UserOAuth(
+        user_id=user.id,
+        provider="google-drive",
+        access_token="existing-access",
+        refresh_token="existing-refresh",
+        scope=DRIVE,
+        resource_owner_key=ACTOR_OWNER if flow == "actor" else None,
+    )
+    db.add(oauth)
+    db.commit()
+    connections = db.query(UserMCPServer).count()
+
+    with db.get_bind().begin() as connection:
+        sync_google_scope_policy(connection)
+    db.expire_all()
+
+    apps = list_mcp_apps(
+        search=None,
+        category="All",
+        location="remote",
+        status="all",
+        current_user=user,
+        db=db,
+    )
+    assert any(app["id"] == "google-drive" for app in apps)
+    response = _login(db, user, "google-drive", flow)
+    assert response.status_code == 307
+    params = parse_qs(urlparse(response.headers["location"]).query)
+    assert set(params["scope"][0].split()) == {"openid", "email", DRIVE_FILE}
+    assert params["include_granted_scopes"] == ["false"]
+    assert oauth.access_token == "existing-access"
+    assert oauth.refresh_token == "existing-refresh"
+    assert oauth.scope == DRIVE
+    assert db.query(UserMCPServer).count() == connections
 
 
 def test_gmail_overlay_blocks_db(google_db):
