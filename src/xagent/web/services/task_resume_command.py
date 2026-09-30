@@ -16,6 +16,7 @@ from ...core.agent.checkpoint import (
     CheckpointAccessRefusedError,
     CheckpointCorruptError,
     CheckpointReadError,
+    UnknownToolEffectError,
 )
 from ..models.database import get_session_local
 from ..models.task import Task, TaskStatus
@@ -26,12 +27,14 @@ from .llm_utils import AutoModelUnavailableError
 from .task_command_transport import (
     COMMAND_COMPLETED,
     COMMAND_FAILED,
+    COMMAND_PENDING,
     COMMAND_PROCESSING,
     ClaimedTaskCommand,
     SettledTaskCommand,
     TaskCommandKind,
     TaskCommandRejected,
     command_identity_matches_task,
+    command_processing_predicates,
     finish_task_command_no_commit,
     notify_task_command_dispatcher,
     stage_task_command,
@@ -47,6 +50,7 @@ from .task_resume import (
     TaskReplyInput,
     TaskReplyResumeResult,
     TaskResumeBusyError,
+    TaskResumeNotAcceptedError,
     TaskResumeNotResumableError,
     TaskResumeOutcomeUnknownError,
     TaskResumeRetryableError,
@@ -120,6 +124,9 @@ def _admit_reply(
                     NAMESPACE_URL, f"a2a-reply-retry:{ctx.task_id}:{existing.id}"
                 ).hex
                 continue
+            # Every other stored outcome, including a not-accepted "busy"
+            # carrying ``retry_with_new_id``, is the answer for this identity:
+            # a retry replays it, and only a new message id is a new attempt.
             return int(existing.id)
         if ctx.status != TaskStatus.WAITING_FOR_USER and source == "sdk":
             if ctx.status == TaskStatus.RUNNING:
@@ -195,6 +202,11 @@ def _read_reply_outcome(command_db_id: int) -> dict | None:
         if result.get("outcome"):
             return result
         if row.status == COMMAND_FAILED:
+            if result.get("rejection_reason"):
+                # The handoff or a control rejected the command before any
+                # injection, so nothing was written: the same ID replays this
+                # answer and a new attempt needs a new ID.
+                return _outcome_fields("busy", True)
             return {"outcome": "unavailable"}
         if row.status == COMMAND_COMPLETED:
             task = db.get(Task, row.task_id)
@@ -220,6 +232,29 @@ def _read_reply_outcome(command_db_id: int) -> dict | None:
         return None
 
 
+def _read_capacity_wait(command_db_id: int) -> dict | None:
+    """The acceptance snapshot of a reply provably waiting for admission."""
+    from .task_execution_admission import waiting_for_capacity
+
+    with get_session_local()() as db:
+        row = db.get(TaskExecutionCommand, command_db_id)
+        if (
+            row is None
+            or row.status != COMMAND_PENDING
+            or row.target_run_id is None
+            or not waiting_for_capacity(db, command_db_id)
+        ):
+            return None
+        task = db.get(Task, row.task_id)
+        if task is None:
+            return None
+        return {
+            "run_id": str(row.target_run_id),
+            "state_version": int(row.target_state_version),
+            "control_state": str(task.control_state),
+        }
+
+
 async def enqueue_resume_input(
     ctx: TaskReplyInput,
     *,
@@ -228,6 +263,7 @@ async def enqueue_resume_input(
     command_id: str | None = None,
 ) -> TaskReplyResumeResult:
     from .task_event_bridge import get_task_event_bridge
+    from .task_execution_admission import admission_enabled
 
     get_task_event_bridge().require_ready()
     command_id = command_id or ctx.command_id or uuid4().hex
@@ -235,6 +271,9 @@ async def enqueue_resume_input(
         lambda: _admit_reply(ctx, source, message_id, command_id)
     )
     notify_task_command_dispatcher()
+    # Only SDK ingress projects a queued reply; A2A has no projection for it
+    # and keeps waiting, and a host without a classifier staged no ticket.
+    acknowledge_queued = source == "sdk" and admission_enabled()
     # These APIs already wait for checkpoint validation and local scheduling.
     # Preserve that response boundary while preparation now runs on a worker.
     deadline = asyncio.get_running_loop().time() + get_task_reply_wait_timeout_seconds()
@@ -243,11 +282,30 @@ async def enqueue_resume_input(
             lambda: _read_reply_outcome(command_db_id)
         )
     ) is None:
+        # Capacity waiting is durable acceptance, not an unknown outcome:
+        # acknowledge it now rather than holding the request for a slot.
+        queued = (
+            await run_db_io_cancellation_safe(
+                lambda: _read_capacity_wait(command_db_id)
+            )
+            if acknowledge_queued
+            else None
+        )
+        if queued is not None:
+            return TaskReplyResumeResult(
+                run_id=queued["run_id"],
+                state_version=queued["state_version"],
+                control_state=queued["control_state"],
+                command_id=command_id,
+                queued=True,
+            )
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             raise TaskResumeOutcomeUnknownError(command_id)
         await asyncio.sleep(min(0.25, remaining))
     if result["outcome"] == "busy":
+        if result.get("retry_with_new_id"):
+            raise TaskResumeNotAcceptedError
         raise TaskResumeBusyError
     if result["outcome"] == "not_resumable":
         raise TaskResumeNotResumableError
@@ -284,9 +342,13 @@ def _handoff(
         claim_predicates = (
             TaskExecutionCommand.id == command.id,
             TaskExecutionCommand.status == COMMAND_PROCESSING,
-            TaskExecutionCommand.claimed_by == runner,
-            TaskExecutionCommand.attempt_count == command.attempt_count,
-            TaskExecutionCommand.claim_expires_at > datetime.now(timezone.utc),
+            *command_processing_predicates(
+                db,
+                command.id,
+                runner,
+                expected_attempt_count=command.attempt_count,
+                owner_lease=owner_lease,
+            ),
         )
         row = db.execute(
             select(TaskExecutionCommand).where(*claim_predicates).with_for_update()
@@ -333,6 +395,7 @@ def _handoff(
             runner,
             result=state,
             expected_attempt_count=command.attempt_count,
+            owner_lease=owner_lease,
             require_live_claim=True,
         ):
             raise TaskCommandRejected("Reply claim changed", reason="stale_claim")
@@ -357,13 +420,36 @@ def _handoff(
         return payload, lease, owner_id, state
 
 
-def _record_outcome(command: ClaimedTaskCommand, state: dict, outcome: str) -> None:
+def _outcome_fields(outcome: str, retry_with_new_id: bool) -> dict[str, Any]:
+    """The stored reply outcome; the marker only accompanies a rejection."""
+    if retry_with_new_id:
+        return {"outcome": outcome, "retry_with_new_id": True}
+    return {"outcome": outcome}
+
+
+def _record_outcome(
+    command: ClaimedTaskCommand,
+    state: dict,
+    outcome: str,
+    owner_lease: TaskOwnerLease,
+    *,
+    retry_with_new_id: bool = False,
+) -> None:
     with get_session_local()() as db:
-        # The immutable handoff attempt, not the task's now-possibly-released
-        # lease, owns this command's preparation result.
+        # Preparation remains part of the owner-managed command lifecycle even
+        # though its atomic execution handoff already committed completion.
+        if not lock_task_lease_no_commit(db, owner_lease):
+            return
         row = db.get(TaskExecutionCommand, command.id)
-        if row is not None and row.status == COMMAND_COMPLETED and row.result == state:
-            setattr(row, "result", {**state, "outcome": outcome})
+        if (
+            row is not None
+            and row.status == COMMAND_COMPLETED
+            and row.attempt_count == command.attempt_count
+            and row.result == state
+        ):
+            setattr(
+                row, "result", {**state, **_outcome_fields(outcome, retry_with_new_id)}
+            )
             db.commit()
 
 
@@ -391,6 +477,7 @@ async def _execute_resume_input(command: ClaimedTaskCommand) -> SettledTaskComma
             lambda: _handoff(command, owner_lease)
         )
         outcome = "unavailable"
+        retry_with_new_id = False
         try:
             if payload.source == "sdk":
                 assert command.actor_user_id is not None
@@ -422,9 +509,19 @@ async def _execute_resume_input(command: ClaimedTaskCommand) -> SettledTaskComma
             outcome = "accepted"
         except TaskResumeOutcomeUnknownError:
             outcome = "unknown"
+        except TaskResumeNotAcceptedError:
+            # Nothing was written. The stored result is the answer for every
+            # retry of this command: "busy" with the resend-with-a-new-id
+            # instruction. No successor is minted for the same identity.
+            outcome = "busy"
+            retry_with_new_id = True
         except TaskResumeBusyError:
             outcome = "busy"
-        except (TaskResumeNotResumableError, CheckpointCorruptError):
+        except (
+            TaskResumeNotResumableError,
+            CheckpointCorruptError,
+            UnknownToolEffectError,
+        ):
             outcome = "not_resumable"
         except CheckpointAccessRefusedError as exc:
             outcome = "not_resumable" if exc.reason == "superseded_legacy" else "busy"
@@ -440,6 +537,14 @@ async def _execute_resume_input(command: ClaimedTaskCommand) -> SettledTaskComma
             )
         finally:
             await run_db_io_cancellation_safe(
-                lambda: _record_outcome(command, state, outcome)
+                lambda: _record_outcome(
+                    command,
+                    state,
+                    outcome,
+                    owner_lease,
+                    retry_with_new_id=retry_with_new_id,
+                )
             )
-        return SettledTaskCommand({**state, "outcome": outcome})
+        return SettledTaskCommand(
+            {**state, **_outcome_fields(outcome, retry_with_new_id)}
+        )

@@ -246,6 +246,7 @@ jobs:
 
   pre-commit:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
 
     steps:
@@ -327,6 +328,7 @@ jobs:
   pytest-fast:
     name: Pytest Fast (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     needs: [changes, pre-commit]
     strategy:
@@ -425,6 +427,7 @@ jobs:
   pytest-fast-deepdoc:
     name: Pytest Fast Deepdoc (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     needs: [changes, prepare-deepdoc-cache, pre-commit]
     strategy:
@@ -435,6 +438,8 @@ jobs:
             paths: >-
               tests/test_ci_summary_contract.py
               tests/test_docker_workflow_versions.py
+              tests/test_runtime_baseline.py
+              tests/test_shared_worker_benchmark.py
               tests/agent
               tests/alembic
               tests/core
@@ -593,6 +598,7 @@ jobs:
 
   pytest-slow:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     needs: [changes, prepare-deepdoc-cache, pre-commit]
 
@@ -730,10 +736,31 @@ jobs:
           python3 -m uv run python -m pytest -m "slow and not postgresql" -v
 
   e2e:
+    name: e2e (${{ matrix.shard }})
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     needs: [changes, pre-commit]
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      # Every shared-execution test cold-starts its own web and worker hosts,
+      # so the suite is split by file, balanced on recorded file durations.
+      matrix:
+        include:
+          - shard: shared-execution
+            paths: tests/e2e/test_shared_execution.py
+          - shard: shared-happy-paths
+            paths: >-
+              tests/e2e/test_shared_happy_paths.py
+              tests/e2e/test_shared_gmail.py
+              tests/e2e/test_shared_network_recovery.py
+          - shard: rest
+            paths: >-
+              tests/e2e
+              --ignore=tests/e2e/test_shared_execution.py
+              --ignore=tests/e2e/test_shared_happy_paths.py
+              --ignore=tests/e2e/test_shared_gmail.py
+              --ignore=tests/e2e/test_shared_network_recovery.py
 
     services:
       redis:
@@ -797,14 +824,14 @@ jobs:
         shell: bash
         run: |
           set -e
-          .github/scripts/docker-pull-retry.sh quay.io/minio/minio postgres:17-bookworm
+          .github/scripts/docker-pull-retry.sh cgr.dev/chainguard/minio postgres:17-bookworm
 
       - name: Run e2e tests
         if: needs.changes.outputs.code == 'true'
         shell: bash
         run: |
           set -e
-          python3 -m uv run python -m pytest tests/e2e --run-special -v --durations=20
+          python3 -m uv run python -m pytest ${{ matrix.paths }} --run-special -v --durations=20
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -927,6 +954,35 @@ jobs:
             || { echo "::error::wheel is missing the Python package (xagent/web/__main__.py)"; exit 1; }
           echo "Wheel bundles the frontend and the full Python package."
 
+  lancedb-memory-compatibility:
+    name: LanceDB Memory Compatibility (${{ matrix.lancedb }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    strategy:
+      fail-fast: false
+      matrix:
+        lancedb: ['0.32.0', '0.33.0', '0.37.1']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install locked test environment
+        shell: bash
+        run: |
+          python -m pip install uv
+          python -m uv sync --locked --no-default-groups --group test
+          python -m uv pip install "lancedb==${{ matrix.lancedb }}"
+
+      - name: Run storage admission compatibility tests
+        run: >-
+          python -m uv run --no-sync python -m pytest
+          tests/core/memory/test_storage_admission_matrix.py -q
+
   ci-summary:
     name: CI Summary
     runs-on: ubuntu-latest
@@ -940,6 +996,7 @@ jobs:
       - pytest-slow
       - e2e
       - frontend-build
+      - lancedb-memory-compatibility
 
     steps:
       - name: Check required jobs
@@ -965,6 +1022,7 @@ jobs:
           check_job "pytest-slow" "${{ needs['pytest-slow'].result }}"
           check_job "e2e" "${{ needs.e2e.result }}"
           check_job "frontend-build" "${{ needs['frontend-build'].result }}"
+          check_job "lancedb-memory-compatibility" "${{ needs['lancedb-memory-compatibility'].result }}"
 
           # On an empty outputs value every guarded work step skips, only
           # the Skip sentinel runs, and the job reports success -- so the

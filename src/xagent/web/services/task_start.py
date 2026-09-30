@@ -8,17 +8,22 @@ connector runtime values and background task handles stay inside the runner.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...config import get_shared_task_execution_enabled
 from ..models.agent import Agent
 from ..models.database import get_session_local
 from ..models.task import Task, TaskStatus
+from ..models.task_command import TaskExecutionCommand
+from ..models.task_input_receipt import TaskInputReceipt
 from ..models.workforce import WorkforceRun
 from .a2a_protocol import A2ATaskSnapshot, new_context_id, task_context_id
 from .a2a_task_read import load_a2a_task_snapshot
@@ -31,6 +36,7 @@ from .connector_runtime import (
     store_ephemeral_runtime_values,
 )
 from .db_runtime import drain_async_task_cancellation_safe, run_db_io_cancellation_safe
+from .expired_tasks import find_expired_task
 from .file_turn import (
     append_uploaded_files_context,
     build_uploaded_files_context,
@@ -42,6 +48,11 @@ from .managed_file_ref import (
     DurableStorageOperationError,
     log_durable_storage_fault,
 )
+from .task_command_transport import (
+    _resolve_actor_subject,
+    command_identity_matches_task,
+    notify_task_command_dispatcher,
+)
 from .task_execution_controller import task_execution_controller
 from .task_orchestrator import (
     TaskTurnError,
@@ -51,6 +62,7 @@ from .task_orchestrator import (
     TaskTurnPayload,
     TurnKind,
     TurnStarted,
+    _EnqueuedTurn,
     _PreparedTurn,
     _retire_turn_session_best_effort,
     commit_claimed_turn_or_reconcile,
@@ -67,15 +79,25 @@ class SdkCreateTurnRejected(TaskTurnError):
 
 
 class TaskStartRejected(Exception):
-    """A domain rejection for the API to translate to its protocol."""
+    """A domain rejection for the API to translate to its protocol.
+
+    ``expired_at`` is set only on a ``task_expired`` rejection (see
+    :func:`resolve_sdk_task`), together with ``task_id``.
+    """
 
     def __init__(
-        self, reason: str, *, task_id: int | None = None, context_id: str | None = None
+        self,
+        reason: str,
+        *,
+        task_id: int | None = None,
+        context_id: str | None = None,
+        expired_at: datetime | None = None,
     ):
         super().__init__(reason)
         self.reason = reason
         self.task_id = task_id
         self.context_id = context_id
+        self.expired_at = expired_at
 
 
 @dataclass(frozen=True)
@@ -486,15 +508,32 @@ def resolve_sdk_task(task_id: int, scope: SdkTaskScope, db: Session) -> Task:
     /v1/chat/tasks`` and ``POST /v1/workforces/{id}/runs`` both write
     ``source="sdk"`` so this is well-defined.
 
+    A task the retention purge expired raises ``task_expired`` instead,
+    but only when its tombstone passes this same predicate (see
+    :func:`_raise_if_expired_for_scope`). Every v1 route addressed by a
+    task id resolves through here, so each one tells "expired" apart
+    from "not found" identically, including the SSE readers that run
+    after the stream's headers are sent.
+
     Args:
         task_id: Path parameter from the route.
         scope: Detached owner IDs resolved by API-key authentication.
         db: SQLAlchemy session.
 
     Raises:
-        TaskStartRejected: task missing, not owned by
-            the calling key, or not created by the SDK.
+        TaskStartRejected: ``task_not_found`` when the task is missing,
+            not owned by the calling key, or not created by the SDK;
+            ``task_expired`` (with ``task_id`` and ``expired_at``) when
+            retention expired a task the calling key could have seen.
     """
+    # This predicate (source == "sdk", plus the key's agent or workforce)
+    # must stay column-for-column identical to the tombstone predicate in
+    # _raise_if_expired_for_scope below -- otherwise a key could see a task
+    # live that its tombstone would hide, or vice versa, after retention
+    # deletes the row. tests/web/api/v1/test_expired_tasks.py's
+    # test_resolve_sdk_task_live_and_tombstone_predicates_agree checks the
+    # two predicates against each other across agent/workforce keys and
+    # task sources; update it alongside either predicate.
     query = db.query(Task).filter(
         Task.id == task_id,
         Task.source == "sdk",
@@ -508,8 +547,43 @@ def resolve_sdk_task(task_id: int, scope: SdkTaskScope, db: Session) -> Task:
         )
     task = query.first()
     if task is None:
+        _raise_if_expired_for_scope(task_id, scope, db)
         raise TaskStartRejected("task_not_found")
     return task
+
+
+def _raise_if_expired_for_scope(task_id: int, scope: SdkTaskScope, db: Session) -> None:
+    """Raise ``task_expired`` if retention expired a task ``scope`` could see.
+
+    The tombstone is held to :func:`resolve_sdk_task`'s own predicate,
+    column for column: ``source == "sdk"``, and the key's agent or
+    workforce. The workforce is read from the tombstone rather than
+    through ``WorkforceRun``: the purge SETs ``WorkforceRun.task_id``
+    NULL, so the join the live lookup uses can no longer prove the
+    binding, and the tombstone recorded it before the delete for exactly
+    this read. A tombstone that fails the predicate returns silently, so
+    the caller answers the same ``task_not_found`` a missing task gets
+    and an id's existence is not disclosed to a key that could not have
+    seen it live.
+
+    Only the retention purge writes tombstones, so a task its owner
+    deleted still falls through to ``task_not_found``. A live task always
+    wins: :func:`find_expired_task` returns nothing while one holds the
+    id, including a live task the key simply does not own.
+    """
+    tombstone = find_expired_task(db, task_id)
+    if tombstone is None or tombstone.source != "sdk":
+        return
+    if scope.agent_id is not None:
+        if tombstone.agent_id != scope.agent_id:
+            return
+    elif tombstone.workforce_id != scope.workforce_id:
+        return
+    raise TaskStartRejected(
+        "task_expired",
+        task_id=int(tombstone.task_id),
+        expired_at=tombstone.expired_at,
+    )
 
 
 async def create_sdk_task(
@@ -637,20 +711,105 @@ class _A2ATurnPreparation:
     claimed_turn: _PreparedTurn | None
 
 
+def _input_hash(values: list[Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _replay_a2a_input(
+    db: Session,
+    receipt: TaskInputReceipt,
+    *,
+    payload_hash: str,
+    text: str,
+    context_id: str | None,
+    agent_id: int,
+    owner_id: int,
+) -> A2ATaskSnapshot:
+    task = db.get(Task, receipt.task_id) if receipt.task_id is not None else None
+    command = (
+        db.get(TaskExecutionCommand, receipt.command_db_id)
+        if receipt.command_db_id is not None
+        else None
+    )
+    if (
+        task is None
+        or command is None
+        or task.user_id != owner_id
+        or task.agent_id != agent_id
+        or task.source != "a2a"
+        or command.task_id != task.id
+        or not command_identity_matches_task(db, task, command)
+    ):
+        raise TaskStartRejected("a2a_input_unavailable")
+    if receipt.payload_hash != payload_hash and not (
+        context_id is not None
+        and context_id == task_context_id(task)
+        and receipt.payload_hash == _input_hash([text, None])
+    ):
+        raise TaskStartRejected("a2a_input_conflict")
+    return A2ATaskSnapshot.from_task(task)
+
+
 def _prepare_a2a_turn_sync(
     *,
     agent_id: int,
     task_owner_user_id: int,
     agent_execution_mode: str,
     text: str,
+    message_id: str,
+    key_prefix: str,
     context_id: str | None,
     task_id: int | None,
-) -> _A2ATurnPreparation:
+) -> _A2ATurnPreparation | A2ATaskSnapshot:
     """Create/claim or validate an A2A turn in one worker-owned transaction."""
 
     SessionLocal = get_session_local()
     with SessionLocal() as db:
         payload = TaskTurnPayload(transcript_message=text)
+        receipt = None
+        if task_id is None and get_shared_task_execution_enabled():
+            subject = _resolve_actor_subject(db, task_owner_user_id)
+            if subject is None:
+                raise TaskStartRejected("a2a_input_unavailable")
+            identity_hash = _input_hash(
+                ["a2a/start/v1", subject, agent_id, key_prefix, message_id]
+            )
+            payload_hash = _input_hash([text, context_id])
+            existing = db.get(TaskInputReceipt, identity_hash)
+            if existing is not None:
+                return _replay_a2a_input(
+                    db,
+                    existing,
+                    payload_hash=payload_hash,
+                    text=text,
+                    context_id=context_id,
+                    agent_id=agent_id,
+                    owner_id=task_owner_user_id,
+                )
+            receipt = TaskInputReceipt(
+                identity_hash=identity_hash, payload_hash=payload_hash
+            )
+            db.add(receipt)
+            try:
+                # Serialize first acceptance before creating a Task. The row
+                # remains invisible until the complete acceptance graph commits.
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                existing = db.get(TaskInputReceipt, identity_hash)
+                if existing is None:
+                    raise
+                return _replay_a2a_input(
+                    db,
+                    existing,
+                    payload_hash=payload_hash,
+                    text=text,
+                    context_id=context_id,
+                    agent_id=agent_id,
+                    owner_id=task_owner_user_id,
+                )
         created_task = task_id is None
         if task_id is None:
             context_id = context_id or new_context_id()
@@ -678,7 +837,30 @@ def _prepare_a2a_turn_sync(
             db.flush()
             db.refresh(task)
             task_snapshot = A2ATaskSnapshot.from_task(task)
-            db.commit()
+            if receipt is not None:
+                assert isinstance(claimed_turn, _EnqueuedTurn)
+                receipt.task_id = int(task.id)
+                receipt.command_db_id = claimed_turn.command_db_id
+            try:
+                db.commit()
+            except Exception:
+                if receipt is None:
+                    raise
+                # A lost COMMIT acknowledgement must not create another input.
+                db.close()
+                with SessionLocal() as check:
+                    saved = check.get(TaskInputReceipt, identity_hash)
+                    if saved is None:
+                        raise
+                    return _replay_a2a_input(
+                        check,
+                        saved,
+                        payload_hash=payload_hash,
+                        text=text,
+                        context_id=context_id,
+                        agent_id=agent_id,
+                        owner_id=task_owner_user_id,
+                    )
             kind = TurnKind.CREATE
         else:
             existing_task = (
@@ -728,6 +910,7 @@ async def start_a2a_turn(
     agent_execution_mode: str,
     text: str,
     message_id: str,
+    key_prefix: str,
     context_id: str | None,
     task_id: int | None,
 ) -> A2ATaskSnapshot:
@@ -738,11 +921,16 @@ async def start_a2a_turn(
                 task_owner_user_id=task_owner_user_id,
                 agent_execution_mode=agent_execution_mode,
                 text=text,
+                message_id=message_id,
+                key_prefix=key_prefix,
                 context_id=context_id,
                 task_id=task_id,
             )
         )
 
+        if isinstance(preparation, A2ATaskSnapshot):
+            notify_task_command_dispatcher()
+            return preparation
         prepared_task = preparation.task
         if prepared_task.status in {
             TaskStatus.PAUSED,

@@ -7,7 +7,7 @@ import math
 import os
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pyarrow as pa  # type: ignore
 from filelock import FileLock, Timeout
@@ -19,9 +19,15 @@ from .scope_columns import (
     derive_scope_columns,
 )
 
+if TYPE_CHECKING:  # ``vector_compatibility`` imports this module at runtime.
+    from .vector_compatibility import VectorCompatibility
+
 MAINTENANCE_METADATA_KEY = b"xagent.memory.scope_maintenance"
 MAINTENANCE_TABLE_VERSION_KEY = b"xagent.memory.scope_maintenance_table_version"
 MAINTENANCE_VERSION = b"1"
+# Written over a marker whose own commit raced a concurrent write, so the
+# migration-state check below stops trusting it and the next call rescans.
+_REVOKED_MAINTENANCE_VERSION = b"revoked"
 DEFAULT_BATCH_SIZE = 512
 DEFAULT_LOCK_TIMEOUT = 10.0
 _INT64_MIN = -(2**63)
@@ -29,6 +35,7 @@ _INT64_MAX = 2**63 - 1
 
 
 class MaintenanceStatus(str, Enum):
+    ABSENT = "absent"
     COMPLETE = "complete"
     INCOMPLETE = "incomplete"
     INVALID_LEGACY_DATA = "invalid_legacy_data"
@@ -43,10 +50,33 @@ class MaintenanceOutcome:
     cas_skipped_rows: int = 0
     batches_committed: int = 0
     detail: str | None = None
+    # How the committed table's vector space compares with the identity the
+    # caller asked for, classified by the producer of this outcome while it
+    # still held the maintenance lock. Only outcomes that certify a table a
+    # caller may be admitted over carry it; it is ``None`` everywhere else,
+    # including scope-only maintenance, which never inspects a vector space.
+    vector_compatibility: VectorCompatibility | None = None
 
 
 class MaintenanceLockTimeout(RuntimeError):
     """Raised when another process holds a table's maintenance lock too long."""
+
+
+def validate_lock_timeout(lock_timeout: Any) -> None:
+    """Reject any timeout that would leave a lock acquisition unbounded.
+
+    ``FileLock`` treats a negative or infinite timeout as "wait forever", so an
+    unvalidated value turns contention into a hang instead of the typed
+    retryable outcome callers rely on. Booleans are rejected as well: ``True``
+    is a numerically valid one-second timeout that no caller means to pass.
+    """
+    if (
+        isinstance(lock_timeout, bool)
+        or not isinstance(lock_timeout, (int, float))
+        or not math.isfinite(lock_timeout)
+        or lock_timeout <= 0
+    ):
+        raise ValueError("lock_timeout must be a finite positive duration")
 
 
 def _checkpoint(_stage: str, _batch: int | None = None) -> None:
@@ -78,20 +108,24 @@ def _is_complete(table: Any) -> bool:
     if not {USER_ID_COLUMN, SCOPE_DIMS_COLUMN} <= names or _scope_schema_error(schema):
         return False
     metadata = schema.field(USER_ID_COLUMN).metadata or {}
-    # LanceDB versions increase monotonically on every commit. Binding completion
-    # to the exact marker commit makes any later write invalidate this fast path.
-    return (
-        metadata.get(MAINTENANCE_METADATA_KEY) == MAINTENANCE_VERSION
-        and metadata.get(MAINTENANCE_TABLE_VERSION_KEY) == str(table.version).encode()
-    )
+    # Keyed on migration state, not on the table version the marker landed at:
+    # ordinary writes after completion come from the new runtime, which writes
+    # consistent scope columns by construction, so they keep the marker valid.
+    # The recorded table version is informational and never gates this check.
+    return metadata.get(MAINTENANCE_METADATA_KEY) == MAINTENANCE_VERSION
+
+
+def lancedb_lock_path(connection: Any, table_name: str, scope: str) -> str:
+    """Validate a local URI and derive a stable, scope-specific lock path."""
+    uri = str(getattr(connection, "uri", "") or "")
+    if not uri or "://" in uri or not os.path.isdir(uri):
+        raise ValueError("LanceDB locking requires a writable local database URI")
+    digest = hashlib.sha256(table_name.encode()).hexdigest()[:16]
+    return os.path.join(uri, f".memory-{scope}-{digest}.lock")
 
 
 def _lock_path(connection: Any, table_name: str) -> str:
-    uri = str(getattr(connection, "uri", "") or "")
-    if not uri or "://" in uri or not os.path.isdir(uri):
-        raise ValueError("LanceDB maintenance requires a writable local database URI")
-    digest = hashlib.sha256(table_name.encode()).hexdigest()[:16]
-    return os.path.join(uri, f".memory-maintenance-{digest}.lock")
+    return lancedb_lock_path(connection, table_name, "maintenance")
 
 
 def _read_rows(table: Any) -> list[dict[str, Any]]:
@@ -176,9 +210,11 @@ def _backfill_batch(table: Any, rows: list[dict[str, Any]]) -> int:
     return int(result.rows_updated)
 
 
-def _mark_complete(table: Any, expected_version: int) -> int:
+def _mark_complete(
+    table: Any, expected_version: int, value: bytes = MAINTENANCE_VERSION
+) -> int:
     marker = {
-        MAINTENANCE_METADATA_KEY.decode(): MAINTENANCE_VERSION.decode(),
+        MAINTENANCE_METADATA_KEY.decode(): value.decode(),
         MAINTENANCE_TABLE_VERSION_KEY.decode(): str(expected_version),
     }
     if hasattr(table, "update_field_metadata"):
@@ -203,19 +239,15 @@ def maintain_lancedb_memory_table(
 ) -> MaintenanceOutcome:
     """Backfill scope projections under an explicit, serialized admin boundary.
 
-    Completion requires a short write-quiet window. Every later table commit
-    invalidates the version-bound O(1) fast path, so a subsequent explicit call
-    scans and validates the table again.
+    Completion requires a short write-quiet window. Once the completion marker
+    is committed, later calls take the O(1) fast path without rescanning, even
+    after ordinary writes: those come from the new runtime, which writes
+    consistent scope columns by construction. A marker whose own commit raced a
+    concurrent write is revoked, so the next call scans and validates again.
     """
     if type(batch_size) is not int or batch_size <= 0:
         raise ValueError("batch_size must be a positive integer")
-    if (
-        isinstance(lock_timeout, bool)
-        or not isinstance(lock_timeout, (int, float))
-        or not math.isfinite(lock_timeout)
-        or lock_timeout <= 0
-    ):
-        raise ValueError("lock_timeout must be a finite positive duration")
+    validate_lock_timeout(lock_timeout)
 
     lock = FileLock(_lock_path(connection, table_name), timeout=lock_timeout)
     try:
@@ -301,11 +333,14 @@ def maintain_lancedb_memory_table(
         actual_marker_version = _mark_complete(table, expected_marker_version)
         # Writes always commit against the latest table version even when this
         # handle's reads are cached. A concurrent commit therefore makes the
-        # marker land after V+1 and leaves it intentionally invalid/resumable.
+        # marker land after V+1, over rows this pass never validated. The
+        # marker is keyed on migration state, so it has to be revoked
+        # explicitly to leave the table resumable.
         if (
             actual_marker_version != expected_marker_version
             or int(table.version) != expected_marker_version
         ):
+            _mark_complete(table, expected_marker_version, _REVOKED_MAINTENANCE_VERSION)
             return MaintenanceOutcome(
                 MaintenanceStatus.INCOMPLETE,
                 scanned_rows=len(rows),

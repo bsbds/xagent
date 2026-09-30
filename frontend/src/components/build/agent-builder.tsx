@@ -97,6 +97,7 @@ interface Tool {
   type: string
   category: string
   enabled: boolean
+  always_available: boolean
   [key: string]: any
 }
 
@@ -369,6 +370,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [skills, setSkills] = useState<Skill[]>([])
   const [tools, setTools] = useState<Tool[]>([])
+  const [intrinsicToolNames, setIntrinsicToolNames] = useState<string[]>([])
+  const [skillLoaderTool, setSkillLoaderTool] = useState<string | null>(null)
   const [mcpServers, setMcpServers] = useState<any[]>([])
   const [isConnectMcpOpen, setIsConnectMcpOpen] = useState(false)
   const [isInitialDataLoaded, setIsInitialDataLoaded] = useState(false)
@@ -710,9 +713,18 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const previewTaskIdRef = useRef<number | null>(null)
+  // Bumped by resetPreviewSession (Clear, mount/unmount); a mismatch silently drops an in-flight send's task and error.
+  const previewGenerationRef = useRef(0)
+  // Bumped by invalidatePreviewTask on config changes; a mismatch still sends the in-flight message but won't cache its task.
+  const previewConfigGenerationRef = useRef(0)
+  // Only an accepted send for the current configuration can complete the guide.
+  // Keep this reactive: invalidating the cached task must also remove its checkmark.
+  const [previewCompletionTaskId, setPreviewCompletionTaskId] = useState<number | null>(null)
 
   const resetPreviewSession = useCallback(() => {
+    previewGenerationRef.current += 1
     previewTaskIdRef.current = null
+    setPreviewCompletionTaskId(null)
     closeFilePreview()
     dispatch({ type: "CLEAR_MESSAGES" })
     dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
@@ -724,7 +736,9 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }, [closeFilePreview, dispatch, setTaskId])
 
   const invalidatePreviewTask = useCallback(() => {
+    previewConfigGenerationRef.current += 1
     previewTaskIdRef.current = null
+    setPreviewCompletionTaskId(null)
   }, [])
 
   useEffect(() => {
@@ -734,12 +748,21 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     }
   }, [resetPreviewSession])
 
+  // Save/reload re-creates arrays and model objects without necessarily changing
+  // execution config. Compare the values sent to preview, not their references.
+  const previewConfigKey = JSON.stringify({
+    instructions,
+    executionMode,
+    models: [modelConfig.general, modelConfig.small_fast, modelConfig.visual, modelConfig.compact]
+      .map(id => id ? String(id) : null),
+    knowledgeBases: [...selectedKbs].sort(),
+    skills: [...selectedSkills].sort(),
+    toolCategories: [...new Set(buildToolCategories())].sort(),
+  })
+
   useEffect(() => {
-    if (!previewTaskIdRef.current) {
-      return
-    }
     invalidatePreviewTask()
-  }, [instructions, executionMode, selectedKbs, selectedSkills, selectedToolCategories, selectedMcpServers, modelConfig, invalidatePreviewTask])
+  }, [previewConfigKey, invalidatePreviewTask])
 
   // Fetch Data
   useEffect(() => {
@@ -771,6 +794,9 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           const toolsData = await toolsRes.json()
           // Filter only enabled tools
           setTools((toolsData.tools || []).filter((t: Tool) => t.enabled))
+          // Unfiltered: the runtime injects these without reading ToolConfig.enabled.
+          setIntrinsicToolNames((toolsData.tools || []).filter((t: Tool) => t.always_available).map((t: Tool) => t.name))
+          setSkillLoaderTool(readNonEmptyString(toolsData.skill_loader_tool))
         }
 
         if (mcpRes.ok && !ownerScopedMcpRef.current) {
@@ -1091,6 +1117,39 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     }
   })
 
+  // Depends on mcpServers/officialApps having loaded: a preview sent earlier
+  // falls back to the raw MCP selectors.
+  function buildToolCategories(): string[] {
+    const categories = [...selectedToolCategories]
+    if (selectedKbs.length > 0 && !categories.includes("knowledge")) {
+      categories.push("knowledge")
+    }
+    if (hasSshBindings && !categories.includes("ssh")) {
+      categories.push("ssh")
+    }
+
+    // Add selected MCP servers back into tool_categories, resolved to the
+    // real connected MCPServer row's name -- see resolveMcpToolSelector for
+    // why a hard-coded id/name fallback can't work for every app. Deduped:
+    // two distinct selectedMcpServers entries can resolve to the same real
+    // row, and the backend persists tool_categories verbatim (agents.py),
+    // so an unresolved duplicate here lands in the DB and stays there.
+    const resolvedMcpSelectors = new Set(
+      selectedMcpServers.map(server => resolveMcpToolSelector(server, mcpServers, officialApps))
+    )
+    resolvedMcpSelectors.forEach(selector => categories.push(`mcp:${selector}`))
+    return categories
+  }
+
+  // Same as buildToolCategories() being non-empty, without resolving MCP selectors (which warns).
+  const hasConfiguredTools =
+    selectedToolCategories.length > 0 || selectedKbs.length > 0 || hasSshBindings || selectedMcpServers.length > 0
+  // load_skill is appended outside tool selection, so a zero-tool agent still gets it.
+  const alwaysAvailableToolNames = [
+    ...(hasConfiguredTools ? intrinsicToolNames : []),
+    ...(skillLoaderTool && selectedSkills.length > 0 ? [skillLoaderTool] : []),
+  ]
+
   // Helper function for category descriptions
   function getCategoryDescription(category: string): string {
     const descriptions: Record<string, string> = {
@@ -1134,6 +1193,9 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }
 
   const handlePreviewSendMessage = async (content: string, _config?: any, files?: File[]) => {
+    const generationAtStart = previewGenerationRef.current
+    const configGenerationAtStart = previewConfigGenerationRef.current
+    setPreviewCompletionTaskId(null)
     try {
       // Check if general model is selected
       if (!modelConfig.general) {
@@ -1163,28 +1225,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         backendMessage = `Uploaded files: ${processedFiles.map(f => f.name).join(', ')}`
       }
 
-      const finalToolCategories = [...selectedToolCategories]
-      // Match handleCreate below: a preview session with a knowledge base
-      // selected must include "knowledge" too, or it runs with different
-      // categories than the agent it's a preview of.
-      if (selectedKbs.length > 0 && !finalToolCategories.includes("knowledge")) {
-        finalToolCategories.push("knowledge")
-      }
-      // Resolve each selection to the real, connected MCPServer row's name
-      // (see resolveMcpToolSelector for why a name/id fallback alone isn't
-      // enough -- the backend uses either convention depending on app
-      // type). Depends on mcpServers/officialApps having loaded; if a
-      // preview message is sent before they do, this falls back to the raw
-      // selector for every MCP tool (matching pre-existing behavior for
-      // this call site, not just this connector). Deduped: two distinct
-      // selectedMcpServers entries can resolve to the same real row.
-      const resolvedMcpSelectors = new Set(
-        selectedMcpServers.map(server => resolveMcpToolSelector(server, mcpServers, officialApps))
-      )
-      resolvedMcpSelectors.forEach(selector => finalToolCategories.push(`mcp:${selector}`))
-      if (hasSshBindings && !finalToolCategories.includes("ssh")) {
-        finalToolCategories.push("ssh")
-      }
+      const finalToolCategories = buildToolCategories()
 
       if (!previewTaskId) {
         const response = await apiRequest(`${getApiUrl()}/api/chat/task/create`, {
@@ -1217,11 +1258,15 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         }
 
         const taskData = await response.json()
+        if (previewGenerationRef.current !== generationAtStart) return
         previewTaskId = Number(taskData.task_id)
         if (!Number.isFinite(previewTaskId)) {
           throw new Error("Preview task creation returned an invalid task id")
         }
-        previewTaskIdRef.current = previewTaskId
+        // Config edited mid-create: this message still goes to the pre-edit task, the next send starts a fresh one.
+        if (previewConfigGenerationRef.current === configGenerationAtStart) {
+          previewTaskIdRef.current = previewTaskId
+        }
 
         // Close any file preview opened from the previous preview task before switching context.
         closeFilePreview()
@@ -1254,8 +1299,15 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       }
 
       await sendMessage(backendMessage, { force: true, targetTaskId: previewTaskId }, files)
+      if (
+        previewGenerationRef.current === generationAtStart
+        && previewConfigGenerationRef.current === configGenerationAtStart
+      ) {
+        setPreviewCompletionTaskId(previewTaskId)
+      }
     } catch (error) {
       console.error("Preview failed:", error)
+      if (previewGenerationRef.current !== generationAtStart) return
       dispatch({
         type: "ADD_MESSAGE",
         payload: {
@@ -1509,24 +1561,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
       return
     }
 
-    let finalToolCategories = [...selectedToolCategories]
-    if (selectedKbs.length > 0 && !finalToolCategories.includes("knowledge")) {
-      finalToolCategories.push("knowledge")
-    }
-    if (hasSshBindings && !finalToolCategories.includes("ssh")) {
-      finalToolCategories.push("ssh")
-    }
-
-    // Add selected MCP servers back into tool_categories, resolved to the
-    // real connected MCPServer row's name -- see resolveMcpToolSelector for
-    // why a hard-coded id/name fallback can't work for every app. Deduped:
-    // two distinct selectedMcpServers entries can resolve to the same real
-    // row, and the backend persists tool_categories verbatim (agents.py),
-    // so an unresolved duplicate here lands in the DB and stays there.
-    const resolvedMcpSelectors = new Set(
-      selectedMcpServers.map(server => resolveMcpToolSelector(server, mcpServers, officialApps))
-    )
-    resolvedMcpSelectors.forEach(selector => finalToolCategories.push(`mcp:${selector}`))
+    const finalToolCategories = buildToolCategories()
 
     setIsCreating(true)
 
@@ -1871,7 +1906,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         selectedToolCategories.length > 0 ||
         selectedMcpServers.length > 0
       )
-  const previewStepCompleted = state.messages.some((message) => message.role === "user")
+  const previewStepCompleted = previewCompletionTaskId !== null
+    && state.taskId === previewCompletionTaskId
+    && state.currentTask?.id === String(previewCompletionTaskId)
+    && state.currentTask?.status === "completed"
+    && !state.isProcessing
   const shouldHighlightConfigStep = !configStepCompleted
   const shouldHighlightKbSection = useTemplateSpecificHighlights ? templateMissingKb : shouldHighlightConfigStep
   const shouldHighlightSkillsSection = useTemplateSpecificHighlights ? templateMissingSkills : shouldHighlightConfigStep
@@ -2561,6 +2600,13 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               })}
             </div>
           )}
+          {alwaysAvailableToolNames.length > 0 && (
+            <div className="text-xs text-muted-foreground">
+              {t("builds.configForm.tools.alwaysAvailable", {
+                tools: alwaysAvailableToolNames.join(", "),
+              })}
+            </div>
+          )}
         </div>
 
         {failedStagedTriggers.length > 0 && (
@@ -2994,7 +3040,9 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               if (updates.modelConfig !== undefined) setModelConfig(updates.modelConfig);
               if (updates.selectedKbs !== undefined) setSelectedKbs(updates.selectedKbs);
               if (updates.selectedSkills !== undefined) setSelectedSkills(updates.selectedSkills);
-              if (updates.selectedToolCategories !== undefined) setSelectedToolCategories(updates.selectedToolCategories);
+              const chatCategories = updates.selectedToolCategories
+              // Chat never writes connectors: keep a bare "mcp" grant or saving revokes it.
+              if (chatCategories !== undefined) setSelectedToolCategories(prev => [...chatCategories, ...prev.filter(c => c === "mcp")]);
             }}
             availableOptions={{
               models: (Array.isArray(models) ? models : []).map(m => ({ id: m.id, name: m.model_name || m.model_id })),

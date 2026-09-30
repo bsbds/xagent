@@ -27,6 +27,7 @@ from ..config import (
     get_orphan_upload_sweep_interval_seconds,
     get_session_secret,
     get_shared_task_execution_enabled,
+    get_task_cleanup_retry_interval_seconds,
     get_task_lease_recovery_batch_size,
     get_task_lease_recovery_interval_seconds,
     get_taskless_upload_ttl_seconds,
@@ -56,6 +57,9 @@ from ..core.tracing.langfuse import flush_langfuse, initialize_langfuse
 from .api.a2a import router as a2a_router
 from .api.admin_interaction_rollout import router as admin_interaction_rollout_router
 from .api.admin_mcp import admin_mcp_router
+from .api.admin_memory_embedding_authority import (
+    OPENAPI_COMPONENT_SCHEMAS as ADMIN_MEMORY_AUTHORITY_SCHEMAS,
+)
 from .api.admin_memory_embedding_authority import (
     router as admin_memory_embedding_authority_router,
 )
@@ -680,6 +684,200 @@ async def stop_orphan_upload_gc_task(app_instance: FastAPI) -> None:
             )
 
 
+def start_task_cleanup_retry_task(
+    app_instance: FastAPI,
+) -> asyncio.Task[Any] | None:
+    """Start the retry driver for cleanup task deletions still owe (#2587).
+
+    Unlike the retention purge this runs in every deployment: on-demand task
+    and account deletion record obligations on any store, and a directory left
+    by a failed removal is owed whether or not retention is configured. Several
+    replicas running it is safe -- its claim is a compare-and-set.
+
+    Guarded under pytest like the sibling loops; a test that means to exercise
+    the starter opts in through ``task_cleanup_retry_allowed_in_tests``.
+    """
+
+    from .models.database import get_session_local
+    from .services.task_cleanup_obligations import run_cleanup_obligation_loop
+
+    existing_task = cast(
+        asyncio.Task[Any] | None,
+        getattr(app_instance.state, "task_cleanup_retry_task", None),
+    )
+    if existing_task is not None:
+        if not existing_task.done():
+            return existing_task
+        try:
+            failure = existing_task.exception()
+        except asyncio.CancelledError:
+            failure = None
+        if failure is not None:
+            logger.error("Previous task cleanup retry loop failed", exc_info=failure)
+        app_instance.state.task_cleanup_retry_task = None
+
+    if os.getenv("PYTEST_CURRENT_TEST") and not getattr(
+        app_instance.state, "task_cleanup_retry_allowed_in_tests", False
+    ):
+        logger.info("Skipping task cleanup retry loop (test environment)")
+        return None
+
+    poll_interval_seconds = get_task_cleanup_retry_interval_seconds()
+    task = asyncio.create_task(
+        run_cleanup_obligation_loop(
+            get_session_local(), poll_interval_seconds=poll_interval_seconds
+        )
+    )
+    app_instance.state.task_cleanup_retry_task = task
+    logger.info("Started task cleanup retry loop (interval=%ss)", poll_interval_seconds)
+    return task
+
+
+async def stop_task_cleanup_retry_task(app_instance: FastAPI) -> None:
+    """Cancel and drain this process's task cleanup retry loop.
+
+    Cancelling is enough here, unlike the purge: an interrupted release keeps
+    its claim until the lease lapses and is then retried, and the release is
+    idempotent.
+    """
+
+    task = getattr(app_instance.state, "task_cleanup_retry_task", None)
+    app_instance.state.task_cleanup_retry_task = None
+    if task is not None and not task.done():
+        logger.info("Cancelling task cleanup retry loop...")
+        task.cancel()
+    if task is not None:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.error(
+                "Task cleanup retry loop stopped after failure",
+                exc_info=exc,
+            )
+
+
+#: How long shutdown waits for the retention purge loop to stop on its own
+#: before cancelling it. One task's purge has to finish first, and a purge is
+#: a handful of indexed deletes -- not a bound anyone should have to tune, so
+#: it is a constant rather than another environment variable.
+RETENTION_PURGE_STOP_GRACE_SECONDS = 10.0
+
+
+def start_retention_purge_task(
+    app_instance: FastAPI,
+) -> asyncio.Task[Any] | None:
+    """Start the conversation/trace retention purge loop, if configured (#2563).
+
+    Returns ``None`` -- having started nothing -- in every deployment that has
+    not opted in, which is all of them until the policy decision in #2567 is
+    made. The loop is also the only thing that reads the configured periods, so
+    a deployment with none configured pays nothing for this call.
+
+    The loop itself refuses to run against anything but PostgreSQL, because the
+    row lock its eligibility check depends on is a no-op elsewhere; it logs the
+    refusal and returns rather than retrying something configuration cannot fix.
+    Guarded under pytest like the five sibling loops. The dialect refusal was
+    argued as making the guard unnecessary -- a test suite runs on SQLite, so
+    the loop would end itself on its first batch -- but ``tests/conftest.py``
+    loads a developer's ``.env`` with ``override=True``, so a machine with
+    both a retention period and a PostgreSQL ``DATABASE_URL`` configured would
+    have run a real, deleting sweep against it. The guard costs one line and
+    removes the need for the argument.
+    """
+
+    from .models.database import get_session_local
+    from .services.task_retention_purge import (
+        retention_purge_configured,
+        run_retention_purge_loop,
+    )
+
+    existing_task = cast(
+        asyncio.Task[Any] | None,
+        getattr(app_instance.state, "retention_purge_task", None),
+    )
+    if existing_task is not None:
+        if not existing_task.done():
+            return existing_task
+        # Same reporting the neighbouring starters do: a loop that died took
+        # its traceback with it, and this is the last place to say so.
+        try:
+            failure = existing_task.exception()
+        except asyncio.CancelledError:
+            failure = None
+        if failure is not None:
+            logger.error("Previous retention purge loop failed", exc_info=failure)
+        app_instance.state.retention_purge_task = None
+
+    if not retention_purge_configured():
+        return None
+    if os.getenv("PYTEST_CURRENT_TEST") and not getattr(
+        app_instance.state, "retention_purge_allowed_in_tests", False
+    ):
+        logger.info("Skipping retention purge loop (test environment)")
+        return None
+
+    stop_event = asyncio.Event()
+    app_instance.state.retention_purge_stop = stop_event
+    task = asyncio.create_task(
+        run_retention_purge_loop(get_session_local(), stop_event=stop_event)
+    )
+    app_instance.state.retention_purge_task = task
+    logger.info("Started retention purge loop")
+    return task
+
+
+async def stop_retention_purge_task(app_instance: FastAPI) -> None:
+    """Ask the retention purge loop to stop, give it a moment, then cancel it.
+
+    The signal is not a courtesy. A sweep runs its batch in a worker thread, so
+    cancelling the loop's task would *detach* that thread rather than end it,
+    leaving deletes running while the process tries to exit. The stop event
+    reaches inside the batch, which checks it between tasks and returns.
+
+    The grace window is bounded because between-tasks is not instant: one
+    task's purge has to finish first.
+
+    What cancelling does *not* do is stop that worker. ``task.cancel()`` ends
+    the awaiting coroutine; the thread ``asyncio.to_thread`` handed the batch
+    to keeps running and can still commit the task it is on. That is why the
+    stop event is set at the top of shutdown rather than here -- it is the
+    only thing that reaches inside the batch -- and why the cancel is a
+    backstop for the await, not a way to abort work in flight.
+    """
+
+    stop_event = getattr(app_instance.state, "retention_purge_stop", None)
+    if stop_event is not None:
+        stop_event.set()
+    app_instance.state.retention_purge_stop = None
+
+    task = getattr(app_instance.state, "retention_purge_task", None)
+    app_instance.state.retention_purge_task = None
+    if task is None:
+        return
+    if not task.done():
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=RETENTION_PURGE_STOP_GRACE_SECONDS
+            )
+            return
+        except asyncio.TimeoutError:
+            logger.info("Cancelling retention purge loop after stop grace period...")
+            task.cancel()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.error("Retention purge loop stopped after failure", exc_info=exc)
+            return
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.error("Retention purge loop stopped after failure", exc_info=exc)
+
+
 def start_temp_file_cleanup_task(
     app_instance: FastAPI,
 ) -> asyncio.Task[Any] | None:
@@ -1257,6 +1455,38 @@ app.include_router(share_router)
 app.include_router(v1_router)
 
 
+#: Schemas no route signature declares, so the framework never walks them.
+#: A route that reads its own body declares its ``requestBody`` by hand and
+#: references a component; without registering that component here, the served
+#: document would carry a ``$ref`` that resolves to nothing.
+DECLARED_OPENAPI_COMPONENT_SCHEMAS: dict[str, Any] = {
+    **ADMIN_MEMORY_AUTHORITY_SCHEMAS,
+}
+
+_assembled_openapi = app.openapi
+
+
+def openapi_with_declared_components() -> dict[str, Any]:
+    """The assembled document, plus the schemas it cannot infer.
+
+    Merged rather than overwritten: where the framework already inferred a
+    definition from a response model, that one stays authoritative and only
+    the genuinely missing definitions are added.
+    """
+    schema = _assembled_openapi()
+    components = schema.setdefault("components", {}).setdefault("schemas", {})
+    for name, definition in DECLARED_OPENAPI_COMPONENT_SCHEMAS.items():
+        components.setdefault(name, definition)
+    # ``app.openapi`` caches and returns that same dict, so the merge above
+    # has already landed in the cache; this only covers the first call, which
+    # populates it.
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = openapi_with_declared_components  # type: ignore[method-assign]
+
+
 def start_runtime_performance_monitor(app_instance: FastAPI) -> None:
     """Start one event-loop lag sampler for the current app lifespan."""
 
@@ -1339,6 +1569,8 @@ async def _initialize_database_and_admit_runtime(app_instance: FastAPI) -> None:
         start_task_lease_recovery_task(app_instance)
     start_uploaded_file_recovery_task(app_instance)
     start_orphan_upload_gc_task(app_instance)
+    start_retention_purge_task(app_instance)
+    start_task_cleanup_retry_task(app_instance)
 
 
 async def _start_shared_task_runtime(app_instance: FastAPI) -> None:
@@ -1458,21 +1690,15 @@ async def startup_event() -> None:
         f"Template manager initialized with {len(await template_manager.list_templates())} templates"
     )
 
-    # Log memory store type (using dynamic manager)
-    from .dynamic_memory_store import get_memory_store_manager
+    # Admit persistent memory storage before anything is allowed to use it.
+    # Startup is the only moment at which this process is guaranteed to have no
+    # memory writers, and no store is published unless admission succeeds.
+    # Quiescing the rest of the fleet is the operator's job: the supported
+    # procedure is an all-worker restart, never a rolling one.
+    from .dynamic_memory_store import admit_memory_storage_at_startup
 
-    manager = get_memory_store_manager()
-    store_info = manager.get_store_info()
-
-    if store_info["is_lancedb"]:
-        logger.info("Using LanceDB memory store with vector search capabilities")
-        logger.info(f"Embedding model ID: {store_info['embedding_model_id']}")
-    else:
-        logger.info("Using in-memory store (no vector search capabilities)")
-
-    logger.info(
-        f"Memory store similarity threshold: {store_info['similarity_threshold']}"
-    )
+    with _startup_phase("memory storage admission"):
+        admit_memory_storage_at_startup()
 
     # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
     # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: true)
@@ -1926,6 +2152,16 @@ async def shutdown_event() -> None:
     if temp_file_cleanup_stop is not None:
         temp_file_cleanup_stop.set()
 
+    # WHY: same shape and same reason as the flag above. The purge runs its
+    # batch in a to_thread worker, which a later task cancel cannot stop, so
+    # the signal has to be set before any step that can hang -- otherwise an
+    # unresponsive flush_langfuse leaves the sweep deleting while the process
+    # tries to exit. Setting it is unconditional and cannot hang; the draining
+    # happens later, in stop_retention_purge_task.
+    retention_purge_stop = getattr(app.state, "retention_purge_stop", None)
+    if retention_purge_stop is not None:
+        retention_purge_stop.set()
+
     flush_langfuse()
 
     if _task_command_dispatcher_task is not None:
@@ -1935,6 +2171,8 @@ async def shutdown_event() -> None:
     _task_command_dispatcher_task = None
 
     await stop_orphan_upload_gc_task(app)
+    await stop_retention_purge_task(app)
+    await stop_task_cleanup_retry_task(app)
     await stop_uploaded_file_recovery_task(app)
     await stop_task_lease_recovery_task(app)
 

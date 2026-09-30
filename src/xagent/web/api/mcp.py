@@ -13,6 +13,7 @@ import json
 import logging
 import secrets
 import shlex
+import weakref
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -40,7 +41,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ...config import get_app_base_url, get_public_api_base_url, get_session_secret
+from ...config import (
+    get_app_base_url,
+    get_mcp_tool_init_timeout_seconds,
+    get_public_api_base_url,
+    get_session_secret,
+)
 from ...core.tools.adapters.vibe.connector_runtime import (
     validate_runtime_config_declaration,
 )
@@ -225,6 +231,14 @@ class MCPServerResponse(BaseModel):
     connected_account: Optional[str] = None
     app_id: Optional[str] = None
     provider: Optional[str] = None
+    connection_status: Optional[Literal["connected", "needs_reconnect"]] = Field(
+        default=None,
+        description=(
+            "Persisted OAuth grant state: connected when the selected grant has an "
+            "access token, needs_reconnect when its token was cleared, or null when "
+            "no persisted grant exists. This is not a runtime readiness probe."
+        ),
+    )
 
     class Config:
         from_attributes = True
@@ -284,6 +298,148 @@ def _project_mcp_tool_load_result(load_result: Any) -> _MCPToolLoadAPIProjection
             for failure in failures
         ),
     )
+
+
+# The connection-test endpoint loads tools for a connection that is not saved.
+# It carries its own concurrency cap: at most this many test loads run at once
+# per event loop. The MCP loader itself does not cap concurrent initializations
+# of a server, so this is the only limit on this endpoint.
+_MCP_CONNECTION_TEST_MAX_INFLIGHT = 4
+
+# Name the unsaved connection is loaded under. The timeout result built below
+# uses the same name, so a timeout reads the same whichever side hit it.
+_MCP_CONNECTION_TEST_SERVER_NAME = "test"
+
+# Semaphores bind to the event loop they first wait on: key them by loop,
+# weakly, so a finished loop (e.g. one per test) does not pin its semaphore.
+_mcp_connection_test_gates: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+# Loads that currently hold a slot. The done-callback that gives a slot back
+# is registered on the task; this set keeps the task referenced until then.
+_mcp_connection_test_loads: "set[asyncio.Task[Any]]" = set()
+
+
+def _mcp_connection_test_gate() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    gate = _mcp_connection_test_gates.get(loop)
+    if gate is None:
+        gate = asyncio.Semaphore(_MCP_CONNECTION_TEST_MAX_INFLIGHT)
+        _mcp_connection_test_gates[loop] = gate
+    return gate
+
+
+def _mcp_connection_test_timeout_result() -> Any:
+    """The result the MCP loader returns when this connection times out."""
+    from ...core.tools.adapters.vibe.mcp_adapter import (
+        MCPFailurePhase,
+        MCPLoadResult,
+        MCPServerLoadFailure,
+    )
+
+    return MCPLoadResult(
+        tools=(),
+        loaded_servers=(),
+        failures=(
+            MCPServerLoadFailure(
+                server_name=_MCP_CONNECTION_TEST_SERVER_NAME,
+                phase=MCPFailurePhase.INITIALIZE,
+                error_type="TimeoutError",
+            ),
+        ),
+    )
+
+
+async def _load_mcp_connection_test_tools(connection: dict[str, Any]) -> Any:
+    """Load tools for one unsaved connection under this endpoint's own cap.
+
+    * At most ``_MCP_CONNECTION_TEST_MAX_INFLIGHT`` loads run per event loop.
+    * Waiting for a slot and the load share one deadline, the MCP
+      initialization timeout, so the request returns within it.
+    * A slot is given back when the load call returns, never earlier: not when
+      the request reaches its deadline and not when the request is cancelled.
+      The load is itself bounded by the loader's timeout, so a slot is held at
+      most that long after it was taken. Cancelling the load early would let
+      a new load start as soon as a request gives up, so the handshakes the
+      loader abandons could pile up as fast as requests arrive.
+    * The loader returns at its timeout without waiting for the abandoned
+      handshake to shut down, so this cap counts loads, not those handshakes.
+      How long they can outlive their load is bounded in the loader: HTTP
+      clients are force-closed after a grace period, and stdio and websocket
+      transports end by their own libraries' shutdown timeouts.
+    * At the deadline the request gets the loader's own timeout result.
+    * A timeout of 0 disables the deadline: wait for a slot as long as it
+      takes, await the load directly, and let cancellation reach it.
+    """
+    from ...core.tools.adapters.vibe.mcp_adapter import (
+        load_mcp_tools_as_agent_tools,
+    )
+
+    # No ``connector_refs``: this connection is not persisted yet, so there is
+    # no connector identity to carry. The tools built here are only projected
+    # to names/descriptions and never dispatched, so the approval gate is never
+    # consulted for them.
+    connections: dict[str, Any] = {_MCP_CONNECTION_TEST_SERVER_NAME: connection}
+    timeout_seconds = get_mcp_tool_init_timeout_seconds()
+    gate = _mcp_connection_test_gate()
+
+    if timeout_seconds <= 0:
+        await gate.acquire()
+        try:
+            return await load_mcp_tools_as_agent_tools(connections, name_prefix="test_")
+        finally:
+            gate.release()
+
+    def _consume_abandoned(task: "asyncio.Task[Any]") -> None:
+        # The request stopped waiting for this load, so nothing else will
+        # retrieve its outcome; do it here so a late failure is not reported
+        # as an exception that was never retrieved.
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.debug(
+                "MCP connection-test load abandoned by its request finished with %s",
+                type(exc).__name__,
+            )
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    try:
+        await asyncio.wait_for(gate.acquire(), timeout_seconds)
+    except TimeoutError:
+        logger.error(
+            "MCP connection test got no slot within %ss; reporting a timeout",
+            timeout_seconds,
+        )
+        return _mcp_connection_test_timeout_result()
+
+    load = asyncio.ensure_future(
+        load_mcp_tools_as_agent_tools(connections, name_prefix="test_")
+    )
+    _mcp_connection_test_loads.add(load)
+
+    def _give_back(task: "asyncio.Task[Any]") -> None:
+        _mcp_connection_test_loads.discard(task)
+        gate.release()
+
+    load.add_done_callback(_give_back)
+    # Not cancelled when this request is cancelled or reaches its deadline:
+    # see the docstring. The load ends by the loader's own timeout.
+    try:
+        done, _pending = await asyncio.wait(
+            {load}, timeout=max(0.0, deadline - loop.time())
+        )
+    except asyncio.CancelledError:
+        load.add_done_callback(_consume_abandoned)
+        raise
+    if load in done:
+        return load.result()
+    load.add_done_callback(_consume_abandoned)
+    logger.error(
+        "MCP connection test did not finish within %ss; reporting a timeout",
+        timeout_seconds,
+    )
+    return _mcp_connection_test_timeout_result()
 
 
 class MCPOAuthDiscoverRequest(BaseModel):
@@ -2075,6 +2231,7 @@ def _db_server_to_response(
     app_id: Optional[str] = None,
     provider: Optional[str] = None,
     is_admin: bool = False,
+    connection_status: Optional[str] = None,
 ) -> MCPServerResponse:
     """Convert database MCPServer to response model."""
     # Get status from manager if available
@@ -2114,6 +2271,7 @@ def _db_server_to_response(
         connected_account=connected_account,
         app_id=app_id,
         provider=provider,
+        connection_status=connection_status,
     )
 
 
@@ -2149,32 +2307,116 @@ def _custom_api_to_mcp_response(
     )
 
 
-def _enrich_oauth_server_info(
-    db: Session, server: MCPServer, oauth_emails: dict
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
+def _oauth_account_summaries(
+    db: Session, user_id: int
+) -> dict[str, tuple[Optional[str], str, int]]:
+    """Per-provider ``(email, connection_status, account_id)`` for the user's
+    OAuth grants.
+
+    ``connection_status`` describes only persisted grant state: "connected"
+    when the selected row has an access token and "needs_reconnect" when the
+    row exists but its token was cleared (for example by a scope migration).
+    It deliberately does not predict refreshability or resolver-hook output.
+    No entry means no persisted personal grant exists.
+
+    ``email`` is nullable on ``UserOAuth`` (some providers never return one,
+    or it was never backfilled) -- a grant missing it is still a grant, so
+    it stays in this map with ``email=None`` rather than being dropped. Keep
+    the existing ``connected_account`` contract by also hiding the email when
+    the stored credential fails the established connectability check; that
+    label is independent from the persisted-only ``connection_status``.
+
+    ``(user_id, provider, provider_user_id)`` is unique, not
+    ``(user_id, provider)`` -- two rows for the same provider are not a
+    schema violation, and the runtime token resolver
+    (``config.py``'s ``.filter(UserOAuth.provider.in_(...)).order_by(
+    UserOAuth.id.desc()).first()``) always uses the single most-recently
+    -created row for a provider, never falling back to an older row even
+    if it is the only usable one. This map must pick the same row runtime
+    would, or the API can claim "connected" for an account runtime will
+    never actually select -- ``account_id`` is kept so a caller checking
+    more than one candidate provider key for one app (an app-scoped and a
+    bare-provider connect are independent rows) can pool them the same way
+    runtime's ``provider.in_(...)`` does and take the overall newest.
     """
-    Return (app_id, provider, connected_account) for an OAuth-based MCPServer.
-    This encapsulates the logic of looking up app information in O(1) time.
+    oauth_accounts = list_scoped_user_oauth_accounts(
+        db,
+        user_id=user_id,
+        resource_owner_key=None,
+    )
+    summaries: dict[str, tuple[Optional[str], str, int]] = {}
+    for oauth in oauth_accounts:
+        provider = str(oauth.provider)
+        account_id = int(oauth.id)
+        existing = summaries.get(provider)
+        if existing is not None and existing[2] >= account_id:
+            continue
+        email = (
+            str(oauth.email)
+            if oauth.email and _oauth_account_can_connect(oauth)
+            else None
+        )
+        status = "connected" if oauth.access_token else "needs_reconnect"
+        summaries[provider] = (email, status, account_id)
+    return summaries
+
+
+def _enrich_oauth_server_info(
+    db: Session,
+    server: MCPServer,
+    oauth_accounts: dict[str, tuple[Optional[str], str, int]],
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """
+    Return (app_id, provider, connected_account, connection_status) for an
+    OAuth-based MCPServer. This encapsulates the logic of looking up app
+    information in O(1) time. ``oauth_accounts`` maps provider/app keys to
+    ``(email, connection_status, account_id)``, as built by
+    ``_oauth_account_summaries``.
     """
     if server.transport != "oauth":
-        return None, None, None
+        return None, None, None, None
 
     # Stable identity, not the mutable display name: an id-named row (the
     # catalog-connect convention) resolved to nothing here, so its app_id,
     # provider and connected account were all reported as absent.
     app_info = get_app_for_mcp_server(db, server)
     if not app_info:
-        return None, None, None
+        return None, None, None, None
 
     provider = app_info.get("provider")
     app_id = app_info.get("id")
-    connected_account = None
-    for key in restrict_to_app_scoped_oauth_grant(app_id, [app_id, provider]):
-        connected_account = oauth_emails.get(key)
-        if connected_account:
-            break
 
-    return app_id, provider, connected_account
+    connected_account: Optional[str] = None
+    connection_status: Optional[str] = None
+    best_account_id = -1
+    # app_id and provider are two independent lookup keys (an app-scoped
+    # connect and a bare-provider connect leave separate UserOAuth rows --
+    # see auth.py's OAuth callback): pool whichever of the two has rows and
+    # take the overall newest by id, exactly mirroring the runtime token
+    # resolver's own `provider.in_([app_id, provider]).order_by(id.desc())`
+    # query -- never "whichever key is healthier," which can pick a row
+    # runtime would never select.
+    for key in restrict_to_app_scoped_oauth_grant(app_id, [app_id, provider]):
+        summary = oauth_accounts.get(key)
+        if not summary:
+            continue
+        email, status, account_id = summary
+        if account_id > best_account_id:
+            connected_account, connection_status, best_account_id = (
+                email,
+                status,
+                account_id,
+            )
+
+    # A pre-existing invariant this response has always kept (see
+    # test_meta_oauth.py's blanked-token regression test, from an earlier
+    # reconnect-migration incident): a stale email left on a row whose token
+    # no longer works must not be surfaced as an account label. Status remains
+    # the persisted-state projection documented on MCPServerResponse.
+    if connection_status != "connected":
+        connected_account = None
+
+    return app_id, provider, connected_account, connection_status
 
 
 def _app_lookup_keys(*values: object) -> list[str]:
@@ -2265,7 +2507,7 @@ def _oauth_account_can_connect(oauth_account: object) -> bool:
 
 def _oauth_keys_for_app(app: dict) -> list[str]:
     return restrict_to_app_scoped_oauth_grant(
-        app.get("id"), _app_lookup_keys(app.get("id"), app.get("provider"))
+        app, _app_lookup_keys(app.get("id"), app.get("provider"))
     )
 
 
@@ -3096,23 +3338,13 @@ def get_mcp_servers(
             .all()
         )
 
-        # Actor credentials are not personal server connections.
-        oauth_accounts = list_scoped_user_oauth_accounts(
-            db,
-            user_id=effective_user_id,
-            resource_owner_key=None,
-        )
-        oauth_emails = {
-            str(oauth.provider): str(oauth.email)
-            for oauth in oauth_accounts
-            if oauth.email and _oauth_account_can_connect(oauth)
-        }
+        oauth_account_summaries = _oauth_account_summaries(db, effective_user_id)
 
         is_admin = getattr(current_user, "is_admin", False)
         responses = []
         for user_mcp, server in user_mcps:
-            app_id, provider, connected_account = _enrich_oauth_server_info(
-                db, server, oauth_emails
+            app_id, provider, connected_account, connection_status = (
+                _enrich_oauth_server_info(db, server, oauth_account_summaries)
             )
             responses.append(
                 _db_server_to_response(
@@ -3123,6 +3355,7 @@ def get_mcp_servers(
                     app_id,
                     provider,
                     is_admin=is_admin,
+                    connection_status=connection_status,
                 )
             )
 
@@ -3149,8 +3382,8 @@ def get_mcp_servers(
             for server in (
                 db.query(MCPServer).filter(MCPServer.id.in_(missing_mcp)).all()
             ):
-                app_id, provider, connected_account = _enrich_oauth_server_info(
-                    db, server, oauth_emails
+                app_id, provider, connected_account, connection_status = (
+                    _enrich_oauth_server_info(db, server, oauth_account_summaries)
                 )
                 responses.append(
                     _db_server_to_response(
@@ -3161,6 +3394,7 @@ def get_mcp_servers(
                         app_id,
                         provider,
                         is_admin=is_admin,
+                        connection_status=connection_status,
                     )
                 )
 
@@ -3212,20 +3446,9 @@ def get_mcp_server(
 
         user_mcp, server = result
 
-        # Actor credentials are not personal server connections.
-        oauth_accounts = list_scoped_user_oauth_accounts(
-            db,
-            user_id=int(user_id),
-            resource_owner_key=None,
-        )
-        oauth_emails = {
-            oauth.provider: oauth.email
-            for oauth in oauth_accounts
-            if oauth.email and _oauth_account_can_connect(oauth)
-        }
-
-        app_id, provider, connected_account = _enrich_oauth_server_info(
-            db, server, oauth_emails
+        oauth_account_summaries = _oauth_account_summaries(db, int(user_id))
+        app_id, provider, connected_account, connection_status = (
+            _enrich_oauth_server_info(db, server, oauth_account_summaries)
         )
 
         return _db_server_to_response(
@@ -3236,6 +3459,7 @@ def get_mcp_server(
             app_id,
             provider,
             is_admin=getattr(current_user, "is_admin", False),
+            connection_status=connection_status,
         )
 
     except HTTPException:
@@ -4742,7 +4966,7 @@ def _teardown_mcp_app_server_locally(
         if str(server.transport or "").lower() == "oauth":
             provider = expected_app.provider_name
             providers_to_delete = restrict_to_app_scoped_oauth_grant(
-                app_id, [provider, app_id]
+                expected_app, [provider, app_id]
             )
             if providers_to_delete:
                 builtin_oauth_revocations.extend(
@@ -5057,7 +5281,7 @@ async def delete_mcp_server(
                 # disconnect any other app — Instagram — still relying on
                 # that shared grant.
                 providers_to_delete = restrict_to_app_scoped_oauth_grant(
-                    app_id, [provider, app_id]
+                    app_info, [provider, app_id]
                 )
                 if providers_to_delete:
                     builtin_oauth_revocations.extend(
@@ -5321,10 +5545,6 @@ async def test_mcp_connection(
 ) -> MCPConnectionTestResponse:
     """Test MCP server connection without saving."""
     try:
-        from ...core.tools.adapters.vibe.mcp_adapter import (
-            load_mcp_tools_as_agent_tools,
-        )
-
         connection: dict[str, Any] = {
             "name": test_data.name,
             "transport": test_data.transport,
@@ -5333,10 +5553,7 @@ async def test_mcp_connection(
         connection.update(**test_data.config)
 
         try:
-            connections_dict: Dict[str, Any] = {"test": connection}
-            load_result = await load_mcp_tools_as_agent_tools(
-                connections_dict, name_prefix="test_"
-            )
+            load_result = await _load_mcp_connection_test_tools(connection)
 
             projection = _project_mcp_tool_load_result(load_result)
             details: dict[str, Any] = {"tool_count": len(projection.tools)}
@@ -5521,6 +5738,7 @@ async def get_mcp_server_tools(
         connection = runtime_build.connection
 
         # Try to load tools
+        from ...core.tools.adapters.vibe.connector_runtime import ConnectorRef
         from ...core.tools.adapters.vibe.mcp_adapter import (
             load_mcp_tools_as_agent_tools,
         )
@@ -5530,8 +5748,15 @@ async def get_mcp_server_tools(
         load_failures: tuple[dict[str, Any], ...] = ()
         if isinstance(server_name, str):
             connections_dict: Dict[str, Any] = {server_name: connection}
+            # This listing never dispatches a call, but it is still a place
+            # where MCP tools are materialized: carry the persisted server id
+            # so every materialization seam in the process is identifiable,
+            # rather than leaving one that would fail closed if it ever grew
+            # an execution path.
             load_result = await load_mcp_tools_as_agent_tools(
-                connections_dict, name_prefix=f"server_{server_id}_"
+                connections_dict,
+                connector_refs={server_name: ConnectorRef("mcp", int(server_id))},
+                name_prefix=f"server_{server_id}_",
             )
             projection = _project_mcp_tool_load_result(load_result)
             if not projection.tools:

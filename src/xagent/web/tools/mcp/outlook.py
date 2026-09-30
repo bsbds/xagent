@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import datetime
 from datetime import timezone as dt_timezone
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit
 
 import requests
@@ -11,8 +11,10 @@ from dateutil import parser as _date_parser
 from dateutil import tz as _date_tz
 from mcp.server.fastmcp import FastMCP
 
+from .outlook_recurrence import build_graph_recurrence
 from .utils import InsufficientScopeError
 from .utils import conflict_response as _conflict_response
+from .utils import datetime_key_for_comparison as _datetime_key_for_comparison
 from .utils import incomplete_check_response as _incomplete_check_response
 from .utils import merge_scope_error as _merge_scope_error
 from .utils import naive_day_bounds as _naive_day_bounds
@@ -21,6 +23,7 @@ from .utils import offset_datetime_string as _offset_datetime_string
 from .utils import reject_reversed_window as _reject_reversed_window
 from .utils import resolve_zoneinfo as _resolve_zoneinfo
 from .utils import setup_proxy_env
+from .utils import window_delta_segments as _window_delta_segments
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("outlook-mcp")
@@ -753,10 +756,12 @@ def outlook_create_event(
     attendees: list[str] | str | None = None,
     is_all_day: bool = False,
     ignore_conflicts: bool = False,
+    recurrence: str | None = None,
 ) -> str:
     """Create an Outlook calendar event.
-    The organizer's primary/default calendar is always checked for scheduling
-    conflicts, matching Outlook's free/busy availability semantics.
+    For a one-off event, the organizer's primary/default calendar is checked
+    for scheduling conflicts, matching Outlook's free/busy availability
+    semantics.
     attendees, if given, are invited by email (Graph emails them the invite)
     and their schedules are checked too; a conflict returns status="conflict"
     instead of creating the event. Pass ignore_conflicts=True to create it
@@ -765,8 +770,20 @@ def outlook_create_event(
     offset). For an all-day event, bare YYYY-MM-DD dates are also accepted and
     end_datetime is an exclusive boundary: use the following date as the end
     of a one-day event.
+    recurrence, when supplied, is one RFC 5545 RRULE with DAILY, WEEKLY,
+    MONTHLY, or YEARLY frequency; the "RRULE:" prefix is optional. For
+    example, 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20260911T235959Z'.
+    An all-day event must use a bare-date UNTIL such as UNTIL=20260911; a
+    timed event must use a UTC UNTIL ending in Z. Supported rules are
+    translated into Microsoft Graph's structured recurrence pattern and range.
+    A recurring series cannot be fully conflict-checked from its first
+    occurrence, so recurrence requires ignore_conflicts=True after the user
+    confirms the complete series is safe. This skips availability checks for
+    both the organizer and every attendee in the series.
     """
     try:
+        if recurrence is not None and not isinstance(recurrence, str):
+            raise TypeError("recurrence must be a string")
         # Timezone validity is part of the write contract, independent of
         # whether the caller explicitly bypasses availability checks.
         _resolve_zoneinfo(timezone, allow_windows_names=True)
@@ -801,6 +818,21 @@ def outlook_create_event(
         _reject_invalid_create_window(
             effective_start, effective_end, is_all_day=is_all_day
         )
+
+        graph_recurrence = None
+        if recurrence is not None:
+            graph_recurrence = build_graph_recurrence(
+                recurrence,
+                effective_start,
+                timezone,
+                is_all_day=is_all_day,
+            )
+            if not ignore_conflicts:
+                raise ValueError(
+                    "Cannot safely conflict-check every occurrence in a recurring "
+                    "series. Pass ignore_conflicts=True only after the user confirms "
+                    "the complete series schedule is safe."
+                )
 
         unchecked_attendees: list[str] = []
         check_error: str | None = None
@@ -844,6 +876,8 @@ def outlook_create_event(
             payload["location"] = {"displayName": location}
         if normalized_attendees:
             payload["attendees"] = _attendee_list(normalized_attendees)
+        if graph_recurrence is not None:
+            payload["recurrence"] = graph_recurrence
 
         result = _graph_request("POST", "/me/events", body=payload)
         return _success(event=result)
@@ -864,17 +898,21 @@ def outlook_update_event(
     attendees: list[str] | str | None = None,
     is_all_day: bool | None = None,
     ignore_conflicts: bool = False,
+    recurrence: str | None = None,
+    acknowledge_recurring_exception_risk: bool = False,
 ) -> str:
     """Update an existing Outlook calendar event.
-    If the update moves the event to a new time or changes its all-day
-    span, the signed-in calendar is checked for conflicts before the write;
+    If the update moves the event, changes its all-day span, or adds
+    attendees, the affected calendars are checked before the write;
     pass ignore_conflicts=True to skip the check once the user has
     explicitly confirmed a conflict is fine. Editing other fields (subject,
     body, location) without moving the event is never blocked.
     attendees, if given, fully replaces the event's attendee list: any
     address already on the event that's left out is removed, and passing
-    an explicit empty list clears every attendee. Leave attendees unset to
-    keep the existing list untouched.
+    an explicit empty list or empty string clears every attendee. Leave
+    attendees unset to keep the existing list untouched. timezone is only
+    valid together with start_datetime or end_datetime; omit it for an
+    attendee-only update.
     Passing only one of start_datetime/end_datetime nudges a timed event
     boundary while keeping the other as-is; timezone is required and describes
     the changed boundary. Passing both together fully replaces the window, and
@@ -883,22 +921,51 @@ def outlook_update_event(
     and an explicit timezone because Graph does not expose a reliable current
     boundary zone; all-day boundaries are normalized to midnight values in one
     shared timezone.
-    This update path checks the signed-in calendar when the event window
-    changes; attendee availability is not checked yet. A detected conflict
+    New attendees are checked across the complete effective window. Retained
+    attendees are checked only across newly introduced portions of a changed
+    window, avoiding the event's own existing busy block. A detected conflict
     returns status="conflict" without updating the event. An incomplete
     availability check returns status="conflict_check_incomplete", or
     status="error" for a missing OAuth scope, and also skips the update.
     The check and PATCH are separate Graph calls, so availability can still
     change between them.
+    If Graph rejects the conditional write because the event changed after the
+    check, the tool returns status="conflict_stale_version" so callers can
+    read the latest event and retry without string-matching an error message.
     Schedule changes to recurring series masters cannot be checked safely as
     one scalar window and are rejected unless ignore_conflicts=True. Update a
     specific occurrence when possible.
+    recurrence replaces or adds the event's recurrence rule using one RFC 5545
+    RRULE string; clearing an existing series is not supported. An all-day
+    event must use a bare-date UNTIL such as UNTIL=20260911; a timed event must
+    use a UTC UNTIL ending in Z. Recurrence updates must resubmit both
+    start_datetime and end_datetime with an explicit timezone so the recurrence
+    range and default weekday use the same current start frame written to
+    Outlook. Because this changes multiple future occurrences, it also requires
+    ignore_conflicts=True after the user confirms the full series is safe.
+    Replacing a series master's recurrence additionally requires
+    acknowledge_recurring_exception_risk=True after the user accepts that
+    edited or cancelled occurrences may need separate adjustment.
+    Because a plain Graph GET does not expose a reliable timezone for an
+    existing all-day window, adding attendees to one requires resubmitting both
+    boundaries with an explicit timezone. Any all-day window submission that
+    retains attendees fails closed unless ignore_conflicts=True because equal
+    date labels in an unknown old timezone do not prove equal absolute windows.
     """
     try:
+        if recurrence is not None and not isinstance(recurrence, str):
+            raise TypeError("recurrence must be a string")
+        # Outlook's existing replacement contract treats every non-None value,
+        # including an empty string, as an explicit attendee list. Normalizing
+        # the empty string yields [], which means clear all attendees.
+        attendees_given = attendees is not None
+        recurrence_given = recurrence is not None
         touches_schedule = (
             start_datetime is not None
             or end_datetime is not None
+            or attendees_given
             or is_all_day is not None
+            or recurrence_given
         )
         single_boundary_update = (start_datetime is not None) != (
             end_datetime is not None
@@ -906,6 +973,27 @@ def outlook_update_event(
         both_boundaries_supplied = (
             start_datetime is not None and end_datetime is not None
         )
+
+        if recurrence is not None:
+            recurrence_body = recurrence.strip()
+            if recurrence_body.upper().startswith("RRULE:"):
+                recurrence_body = recurrence_body[len("RRULE:") :].strip()
+            if not recurrence_body:
+                raise ValueError("recurrence rule must not be empty")
+            if not both_boundaries_supplied or timezone is None:
+                raise ValueError(
+                    "Updating recurrence requires both start_datetime and "
+                    "end_datetime with an explicit timezone so the recurrence "
+                    "range is derived from the same current start frame written "
+                    "to Outlook."
+                )
+            if not ignore_conflicts:
+                raise ValueError(
+                    "Cannot safely conflict-check every occurrence changed by a "
+                    "recurrence update. Pass ignore_conflicts=True only after the "
+                    "user confirms the complete series schedule is safe."
+                )
+
         if timezone is not None and touches_schedule:
             _resolve_zoneinfo(timezone, allow_windows_names=True)
             if start_datetime is None and end_datetime is None:
@@ -950,8 +1038,39 @@ def outlook_update_event(
             existing = _graph_request(
                 "GET",
                 f"/me/events/{quote(event_id, safe='')}",
-                params={"$select": "start,end,isAllDay,type"},
+                params={"$select": "start,end,attendees,isAllDay,type"},
             )
+
+        snapshot_start_field = existing.get("start") or {}
+        snapshot_end_field = existing.get("end") or {}
+        existing_attendees_raw: list[str] = []
+        existing_by_email: dict[str, dict[str, Any]] = {}
+        for attendee_index, attendee in enumerate(existing.get("attendees") or []):
+            address = (attendee.get("emailAddress") or {}).get("address")
+            if not isinstance(address, str) or not address.strip():
+                raise ValueError(
+                    "Existing Outlook attendee at index "
+                    f"{attendee_index} has no valid email address; the event "
+                    "cannot be updated safely."
+                )
+            normalized_address = address.strip()
+            address_key = normalized_address.lower()
+            if address_key not in existing_by_email:
+                # Keep the first Graph object and its casing, matching the
+                # first-seen behavior used by _normalize_addresses.
+                existing_by_email[address_key] = attendee
+                existing_attendees_raw.append(normalized_address)
+        existing_attendee_emails = {
+            address.lower() for address in existing_attendees_raw
+        }
+        desired_addresses = (
+            _normalize_addresses(attendees) if attendees_given and attendees else []
+        )
+        added_attendees = [
+            address
+            for address in desired_addresses
+            if address.lower() not in existing_attendee_emails
+        ]
 
         existing_is_all_day = bool(existing.get("isAllDay"))
         effective_is_all_day = (
@@ -975,6 +1094,24 @@ def outlook_update_event(
                 "and end_datetime with one shared timezone because Graph does "
                 "not expose the boundaries' reliable current timezone."
             )
+        if recurrence_given and existing.get("type") in {"occurrence", "exception"}:
+            raise ValueError(
+                "Recurrence can only be changed on a single event or series "
+                "master; update the recurring series master instead of one "
+                "occurrence or exception."
+            )
+        if (
+            recurrence_given
+            and existing.get("type") == "seriesMaster"
+            and not acknowledge_recurring_exception_risk
+        ):
+            raise ValueError(
+                "Outlook cannot atomically preserve instance exceptions while "
+                "replacing a recurring series master's rule; pass "
+                "acknowledge_recurring_exception_risk=True only after the user "
+                "accepts that edited or cancelled occurrences may need separate "
+                "adjustment."
+            )
 
         schedule_semantics_supplied = (
             start_datetime is not None
@@ -984,19 +1121,19 @@ def outlook_update_event(
         if (
             not ignore_conflicts
             and existing.get("type") == "seriesMaster"
-            and schedule_semantics_supplied
+            and (schedule_semantics_supplied or added_attendees)
         ):
             raise ValueError(
-                "Cannot safely conflict-check a schedule or timezone change to "
-                "a recurring series master because it can affect multiple "
-                "occurrences. Update a specific occurrence, or pass "
+                "Cannot safely conflict-check a schedule, timezone, or attendee "
+                "addition to a recurring series master because it can affect "
+                "multiple occurrences. Update a specific occurrence, or pass "
                 "ignore_conflicts=True only after the user confirms every "
                 "occurrence is safe."
             )
 
         resolved_timezone = timezone or "UTC"
-        existing_start_field = existing.get("start") or {}
-        existing_end_field = existing.get("end") or {}
+        existing_start_field = snapshot_start_field
+        existing_end_field = snapshot_end_field
         if not existing_is_all_day and single_boundary_update:
             # A plain GET returns timed boundaries in UTC. Convert only the
             # untouched snapshot boundary to the caller's explicit comparison
@@ -1019,13 +1156,13 @@ def outlook_update_event(
                 "Existing event has no complete time window; cannot safely "
                 "validate a single-boundary update."
             )
-        query_timezone = (
+        write_timezone = (
             resolved_timezone
             if (start_datetime is not None or end_datetime is not None)
             else existing_zone
         )
         if start_datetime is not None or end_datetime is not None or is_all_day is True:
-            _resolve_zoneinfo(query_timezone, allow_windows_names=True)
+            _resolve_zoneinfo(write_timezone, allow_windows_names=True)
 
         raw_effective_start = (
             start_datetime if start_datetime is not None else existing_start
@@ -1045,17 +1182,28 @@ def outlook_update_event(
         effective_end = raw_effective_end
         if effective_is_all_day and raw_effective_start and raw_effective_end:
             effective_start, effective_end = _normalize_all_day_window(
-                raw_effective_start, raw_effective_end, query_timezone
+                raw_effective_start, raw_effective_end, write_timezone
             )
         else:
             if start_datetime is not None:
                 effective_start = _naive_datetime_in_timezone(
-                    start_datetime, query_timezone
+                    start_datetime, write_timezone
                 )
             if end_datetime is not None:
                 effective_end = _naive_datetime_in_timezone(
-                    end_datetime, query_timezone
+                    end_datetime, write_timezone
                 )
+
+        graph_recurrence = None
+        if recurrence is not None:
+            # The recurrence input guard requires start_datetime, and the
+            # normalization above therefore always produces a string here.
+            graph_recurrence = build_graph_recurrence(
+                recurrence,
+                cast(str, effective_start),
+                write_timezone,
+                is_all_day=effective_is_all_day,
+            )
 
         payload: dict[str, Any] = {}
         if subject is not None:
@@ -1063,22 +1211,46 @@ def outlook_update_event(
         if start_datetime is not None:
             payload["start"] = {
                 "dateTime": effective_start,
-                "timeZone": query_timezone,
+                "timeZone": write_timezone,
             }
         if end_datetime is not None:
             payload["end"] = {
                 "dateTime": effective_end,
-                "timeZone": query_timezone,
+                "timeZone": write_timezone,
             }
         if body is not None:
             payload["body"] = _message_body(body, "text")
         if location is not None:
             payload["location"] = {"displayName": location}
-        if attendees is not None:
-            payload["attendees"] = _attendee_list(attendees)
+        if attendees_given:
+            desired_lower = {address.lower() for address in desired_addresses}
+            if desired_lower != existing_attendee_emails:
+                payload["attendees"] = [
+                    existing_by_email.get(
+                        address.lower(),
+                        {"emailAddress": {"address": address}, "type": "required"},
+                    )
+                    for address in desired_addresses
+                ]
+            retained_attendees = [
+                address
+                for address in desired_addresses
+                if address.lower() in existing_attendee_emails
+            ]
+        else:
+            retained_attendees = existing_attendees_raw
         if is_all_day is not None:
             payload["isAllDay"] = is_all_day
+        if graph_recurrence is not None:
+            payload["recurrence"] = graph_recurrence
 
+        if not payload and attendees_given:
+            current_event = _graph_request(
+                "GET", f"/me/events/{quote(event_id, safe='')}"
+            )
+            return _success(
+                event=current_event, message="No attendee changes were needed"
+            )
         if not payload:
             raise ValueError("at least one field must be provided to update the event")
 
@@ -1100,56 +1272,215 @@ def outlook_update_event(
         ):
             _reject_reversed_window(effective_start, effective_end)
 
-        if not ignore_conflicts and schedule_semantics_supplied:
-            # Graph does not expose a reliable current boundary timezone: a
-            # no-Prefer GET returns UTC, while original*TimeZone is historical.
-            # Therefore every supplied boundary is schedule-significant even
-            # when its represented instant matches the snapshot.
+        if not ignore_conflicts and (schedule_semantics_supplied or added_attendees):
             query_start, query_end = effective_start, effective_end
+            availability_timezone = write_timezone
+            snapshot_utc_window: tuple[str | None, str | None] | None = None
+
+            def _snapshot_window_in_utc() -> tuple[str | None, str | None]:
+                nonlocal snapshot_utc_window
+                if snapshot_utc_window is None:
+                    snapshot_utc_window = (
+                        _utc_field_in_zone(snapshot_start_field, "UTC").get("dateTime"),
+                        _utc_field_in_zone(snapshot_end_field, "UTC").get("dateTime"),
+                    )
+                return snapshot_utc_window
+
+            if (
+                added_attendees
+                and not existing_is_all_day
+                and not both_boundaries_supplied
+                and not single_boundary_update
+            ):
+                # A timed attendee-only update queries the unchanged snapshot
+                # window. A plain event GET is documented to return UTC; validate
+                # that contract rather than pairing contradictory response clock
+                # values with their labels and querying the wrong instant.
+                query_start, query_end = _snapshot_window_in_utc()
+                availability_timezone = "UTC"
             if not query_start or not query_end:
                 raise ValueError(
                     "Existing event has no complete time window; cannot safely "
                     "check conflicts for this update."
                 )
-            check_error: str | None = None
-            try:
-                conflicts, unchecked_attendees = _find_conflicts(
-                    query_start,
-                    query_end,
-                    query_timezone,
-                    [],
-                    exclude_event_id=event_id,
-                    check_organizer=True,
-                    organizer_calendar_label="signed_in_calendar",
+
+            def _key(value: str, timezone_name: str) -> datetime | str | None:
+                return _datetime_key_for_comparison(
+                    _offset_datetime_string(
+                        value, timezone_name, allow_windows_names=True
+                    )
                 )
-            except InsufficientScopeError as exc:
-                check_error = str(exc)
-                conflicts, unchecked_attendees = _merge_scope_error(exc, [], [])
-            except _ConflictCheckIncompleteError as exc:
-                check_error = str(exc)
-                conflicts = exc.conflicts
-                unchecked_attendees = exc.unchecked_attendees
-            if conflicts:
+
+            retained_segments: list[tuple[datetime, datetime]] = []
+            if schedule_semantics_supplied and retained_attendees:
+                if existing_is_all_day:
+                    raise ValueError(
+                        "Outlook does not expose a reliable timezone for the "
+                        "existing all-day window, so retained attendee conflicts "
+                        "cannot be checked safely even when the submitted date "
+                        "labels are unchanged or narrower. Retry with "
+                        "ignore_conflicts=true only after the user confirms the "
+                        "attendee availability."
+                    )
+                else:
+                    snapshot_start, snapshot_end = _snapshot_window_in_utc()
+                    if not snapshot_start or not snapshot_end:
+                        raise ValueError(
+                            "Existing event has no complete time window; cannot safely "
+                            "check retained attendee conflicts for this update."
+                        )
+                    retained_segments = _window_delta_segments(
+                        _key(snapshot_start, "UTC"),
+                        _key(snapshot_end, "UTC"),
+                        _key(query_start, availability_timezone),
+                        _key(query_end, availability_timezone),
+                    )
+
+            if existing_is_all_day and added_attendees and not both_boundaries_supplied:
+                raise ValueError(
+                    "Outlook does not expose a reliable timezone for the existing "
+                    "all-day window. Provide both boundaries with an explicit "
+                    "timezone so new attendee availability can be checked safely."
+                )
+
+            all_conflicts: list[dict[str, Any]] = []
+            seen_conflicts: set[str] = set()
+            unchecked_attendees: list[str] = []
+            check_error: str | None = None
+            pending_scope_error: InsufficientScopeError | None = None
+
+            def _extend_conflicts(items: list[dict[str, Any]]) -> None:
+                for item in items:
+                    key = json.dumps(
+                        item, ensure_ascii=False, sort_keys=True, default=str
+                    )
+                    if key not in seen_conflicts:
+                        all_conflicts.append(item)
+                        seen_conflicts.add(key)
+
+            def _run_and_accumulate(
+                time_min: str,
+                time_max: str,
+                timezone_name: str,
+                attendees_to_check: list[str],
+                *,
+                check_organizer: bool,
+            ) -> bool:
+                nonlocal check_error, pending_scope_error
+                try:
+                    conflicts, unchecked = _find_conflicts(
+                        time_min,
+                        time_max,
+                        timezone_name,
+                        attendees_to_check,
+                        exclude_event_id=event_id,
+                        check_organizer=check_organizer,
+                        organizer_calendar_label="signed_in_calendar",
+                    )
+                    _extend_conflicts(conflicts)
+                    unchecked_attendees.extend(unchecked)
+                    return False
+                except InsufficientScopeError as exc:
+                    if pending_scope_error is None:
+                        pending_scope_error = exc
+                        check_error = str(exc)
+                    _extend_conflicts(exc.conflicts)
+                    unchecked_attendees.extend(exc.unchecked_attendees)
+                    return True
+                except _ConflictCheckIncompleteError as exc:
+                    check_error = check_error or str(exc)
+                    _extend_conflicts(exc.conflicts)
+                    unchecked_attendees.extend(exc.unchecked_attendees)
+                    return True
+
+            _run_and_accumulate(
+                query_start,
+                query_end,
+                availability_timezone,
+                added_attendees,
+                check_organizer=schedule_semantics_supplied,
+            )
+
+            for segment_start, segment_end in retained_segments:
+                segment_start_utc = segment_start.astimezone(dt_timezone.utc).replace(
+                    tzinfo=None
+                )
+                segment_end_utc = segment_end.astimezone(dt_timezone.utc).replace(
+                    tzinfo=None
+                )
+                stopped = _run_and_accumulate(
+                    segment_start_utc.isoformat(),
+                    segment_end_utc.isoformat(),
+                    "UTC",
+                    retained_attendees,
+                    check_organizer=False,
+                )
+                if stopped:
+                    break
+
+            unchecked_attendees = list(dict.fromkeys(unchecked_attendees))
+            if pending_scope_error is not None and not all_conflicts:
+                return _error(
+                    str(pending_scope_error),
+                    details={"unchecked_attendees": unchecked_attendees},
+                )
+            response_start = _offset_datetime_string(
+                query_start, availability_timezone, allow_windows_names=True
+            )
+            response_end = _offset_datetime_string(
+                query_end, availability_timezone, allow_windows_names=True
+            )
+            if all_conflicts:
                 return _conflict_response(
-                    conflicts,
+                    all_conflicts,
                     unchecked_attendees,
-                    query_start,
-                    query_end,
+                    response_start,
+                    response_end,
                     check_error=check_error,
                 )
             if check_error or unchecked_attendees:
                 return _incomplete_check_response(
                     unchecked_attendees,
-                    query_start,
-                    query_end,
+                    response_start,
+                    response_end,
                     message=check_error,
                 )
 
-        result = _graph_request(
-            "PATCH",
-            f"/me/events/{quote(event_id, safe='')}",
-            body=payload,
-        )
+        patch_headers: dict[str, str] | None = None
+        if schedule_semantics_supplied or "attendees" in payload:
+            # Microsoft Graph returns the event's @odata.etag annotation on
+            # GET responses, including when $select limits structural fields.
+            # OData annotations are not structural properties and therefore
+            # cannot be added to $select explicitly.
+            event_etag = existing.get("@odata.etag")
+            if not isinstance(event_etag, str) or not event_etag.strip():
+                raise ValueError(
+                    "Outlook did not return an event version, so schedule or "
+                    "attendee changes cannot be applied safely. Read the event "
+                    "again and retry."
+                )
+            patch_headers = {"If-Match": event_etag.strip()}
+        try:
+            result = _graph_request(
+                "PATCH",
+                f"/me/events/{quote(event_id, safe='')}",
+                body=payload,
+                extra_headers=patch_headers,
+            )
+        except _GraphRequestError as exc:
+            if patch_headers and exc.status_code == 412:
+                return json.dumps(
+                    {
+                        "status": "conflict_stale_version",
+                        "message": (
+                            "The event changed before this update could be applied. "
+                            "Read the latest event and retry so recent schedule, "
+                            "attendee, or RSVP changes are preserved."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            raise
         return _success(event=result)
     except Exception as e:
         logger.error("Error updating Outlook event %s: %s", event_id, e)

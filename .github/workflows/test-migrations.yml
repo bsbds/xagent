@@ -32,15 +32,64 @@ on:
       - 'src/xagent/web/services/task_start_consumer.py'
       - 'src/xagent/web/services/task_orchestrator.py'
       - 'tests/web/services/test_shared_execution_postgresql.py'
+      - 'src/xagent/web/models/task_input_receipt.py'
+      - 'src/xagent/web/services/task_start.py'
+      - 'src/xagent/web/api/a2a.py'
+      - 'tests/web/services/test_a2a_input_idempotency.py'
+      - 'tests/alembic/test_20260919_task_input_receipts.py'
       - 'src/xagent/web/services/task_coordinator_runtime.py'
       - 'src/xagent/web/services/task_coordinator_service.py'
       - 'tests/web/services/test_task_coordinator_commands.py'
+      - 'tests/web/services/test_command_owner_dispatch.py'
+      - 'tests/web/services/coordinator_command_shared.py'
+      - 'tests/web/services/test_task_coordinator_runtime.py'
+      - 'tests/web/services/test_task_coordinator_service.py'
+      - 'tests/web/services/test_task_coordinator_heartbeat.py'
+      - 'src/xagent/web/services/task_command_execution.py'
+      - 'src/xagent/web/services/task_execution_admission.py'
+      - 'src/xagent/web/models/task_admission.py'
+      - 'tests/web/services/test_task_execution_admission.py'
+      - 'src/xagent/web/models/task_admission_pacing.py'
+      - 'src/xagent/web/services/task_admission_execution.py'
+      - 'src/xagent/web/services/task_admission_observation.py'
+      - 'src/xagent/web/services/task_admission_pacing.py'
+      - 'tests/web/services/test_task_admission_pacing.py'
+      - 'tests/web/services/test_task_admission_telemetry.py'
+      - 'tests/web/services/test_task_admission_guidance.py'
+      - 'tests/migrations/test_task_admission_pacing_schema.py'
+      - 'tests/web/services/test_queued_channel_pause_admission.py'
+      - 'tests/web/services/test_queued_start_cancel_admission.py'
       - 'tests/web/services/test_shared_channel_execution.py'
       - 'src/xagent/web/services/shared_channel_execution.py'
+      - 'src/xagent/web/services/uploaded_file_store.py'
+      - 'src/xagent/web/models/uploaded_file.py'
+      - 'src/xagent/web/services/task_file_lifecycle.py'
+      - 'src/xagent/web/services/file_turn.py'
+      - 'tests/web/services/test_detached_file_concurrency.py'
+      - 'src/xagent/core/workspace.py'
+      - 'src/xagent/web/models/task_channel_delivery.py'
+      - 'src/xagent/web/services/channel_input_acceptance.py'
+      - 'src/xagent/web/channels/batch_control.py'
+      - 'src/xagent/web/channels/feishu/bot.py'
+      - 'src/xagent/web/channels/feishu/trace_handler.py'
+      - 'src/xagent/web/channels/telegram/bot.py'
+      - 'src/xagent/web/channels/telegram/handler.py'
+      - 'src/xagent/web/services/channel_delivery.py'
+      - 'src/xagent/web/services/channel_progress.py'
+      - 'src/xagent/web/services/task_event_bridge.py'
+      - 'tests/web/services/test_channel_progress.py'
+      - 'tests/web/services/channel_delivery_shared.py'
+      - 'tests/web/services/test_channel_delivery.py'
+      - 'tests/web/services/test_task_event_bridge.py'
+      - 'tests/web/services/test_channel_input_acceptance.py'
+      - 'tests/web/test_slack_durable_input.py'
+      - 'tests/web/test_feishu_durable_input.py'
+      - 'tests/web/test_telegram_durable_input.py'
+      - 'src/xagent/web/channels/slack/bot.py'
+      - 'src/xagent/web/channels/slack/trace_handler.py'
       - 'src/xagent/web/services/channel_runtime.py'
       - 'src/xagent/web/services/task_command_transport.py'
       - 'tests/web/services/test_task_command_transport.py'
-      - 'src/xagent/web/models/task.py'
       - 'tests/web/services/task_status_storage_shared.py'
       - 'tests/web/services/test_task_status_storage_postgresql.py'
       - 'tests/web/services/test_task_status_enum_drift.py'
@@ -59,6 +108,7 @@ on:
       - 'tests/web/services/test_task_lease_heartbeat_batch.py'
       - 'tests/web/services/test_task_settlement_locking.py'
       - 'tests/web/services/test_task_execution_event_store.py'
+      - 'tests/web/services/task_database_shared.py'
       - 'src/xagent/web/services/chat_history_service.py'
       - 'src/xagent/web/services/ops_signals.py'
       - 'src/xagent/core/tools/adapters/vibe/ask_user_tool.py'
@@ -88,6 +138,34 @@ on:
       - 'src/xagent/config.py'
       - 'src/xagent/web/services/trace_handlers.py'
       - 'tests/web/services/test_trace_database_postgresql.py'
+      - 'src/xagent/web/services/task_retention.py'
+      - 'src/xagent/web/tracking/task_tracker.py'
+      - 'tests/web/services/test_task_retention.py'
+      - 'tests/alembic/test_20260922_task_last_activity_at.py'
+      - 'src/xagent/web/services/task_retention_purge.py'
+      - 'src/xagent/web/models/task.py'
+      - 'tests/web/services/test_task_retention_purge.py'
+      - 'src/xagent/web/services/task_deletion.py'
+      - 'src/xagent/web/models/task_command.py'
+      - 'tests/web/services/test_task_retention_purge_postgresql.py'
+      - 'tests/web/services/test_task_retention_anchor_postgresql.py'
+      - 'src/xagent/web/services/task_retention_overrides.py'
+      - 'tests/web/services/test_task_retention_overrides.py'
+      - 'src/xagent/core/agent/runner.py'
+      - 'src/xagent/core/agent/runtime.py'
+      - 'src/xagent/core/agent/context/execution.py'
+      - 'src/xagent/core/agent/trace.py'
+      - 'tests/web/services/test_injection_atomicity_postgresql.py'
+      - 'tests/web/services/test_turn_dedup_jsonb_postgresql.py'
+      - 'src/xagent/web/services/task_lease_recovery.py'
+      - 'tests/web/api/test_durable_message_resume_contention.py'
+      - 'tests/web/api/test_recovered_delivery_outcome_unknown.py'
+      - 'tests/web/services/test_unknown_delivery_postgresql.py'
+      - 'src/xagent/web/services/task_execution_controller.py'
+      - 'tests/web/services/test_pause_lease_fence_postgresql.py'
+      - 'src/xagent/web/services/task_execution.py'
+      - 'tests/web/api/test_recovered_delivery_failed_run.py'
+      - 'tests/web/api/test_fresh_message_ended_run.py'
   pull_request:
     branches: [main]
   # Required by the merge queue: without this the two required contexts below
@@ -156,15 +234,64 @@ jobs:
             src/xagent/web/services/task_start_consumer.py
             src/xagent/web/services/task_orchestrator.py
             tests/web/services/test_shared_execution_postgresql.py
+            src/xagent/web/models/task_input_receipt.py
+            src/xagent/web/services/task_start.py
+            src/xagent/web/api/a2a.py
+            tests/web/services/test_a2a_input_idempotency.py
+            tests/alembic/test_20260919_task_input_receipts.py
             src/xagent/web/services/task_coordinator_runtime.py
             src/xagent/web/services/task_coordinator_service.py
             tests/web/services/test_task_coordinator_commands.py
+            tests/web/services/test_command_owner_dispatch.py
+            tests/web/services/coordinator_command_shared.py
+            tests/web/services/test_task_coordinator_runtime.py
+            tests/web/services/test_task_coordinator_service.py
+            tests/web/services/test_task_coordinator_heartbeat.py
+            src/xagent/web/services/task_command_execution.py
+            src/xagent/web/services/task_execution_admission.py
+            src/xagent/web/models/task_admission.py
+            tests/web/services/test_task_execution_admission.py
+            src/xagent/web/models/task_admission_pacing.py
+            src/xagent/web/services/task_admission_execution.py
+            src/xagent/web/services/task_admission_observation.py
+            src/xagent/web/services/task_admission_pacing.py
+            tests/web/services/test_task_admission_pacing.py
+            tests/web/services/test_task_admission_telemetry.py
+            tests/web/services/test_task_admission_guidance.py
+            tests/migrations/test_task_admission_pacing_schema.py
+            tests/web/services/test_queued_channel_pause_admission.py
+            tests/web/services/test_queued_start_cancel_admission.py
             tests/web/services/test_shared_channel_execution.py
             src/xagent/web/services/shared_channel_execution.py
+            src/xagent/web/services/uploaded_file_store.py
+            src/xagent/web/models/uploaded_file.py
+            src/xagent/web/services/task_file_lifecycle.py
+            src/xagent/web/services/file_turn.py
+            tests/web/services/test_detached_file_concurrency.py
+            src/xagent/core/workspace.py
+            src/xagent/web/models/task_channel_delivery.py
+            src/xagent/web/services/channel_input_acceptance.py
+            src/xagent/web/channels/batch_control.py
+            src/xagent/web/channels/feishu/bot.py
+            src/xagent/web/channels/feishu/trace_handler.py
+            src/xagent/web/channels/telegram/bot.py
+            src/xagent/web/channels/telegram/handler.py
+            src/xagent/web/services/channel_delivery.py
+            src/xagent/web/services/channel_progress.py
+            src/xagent/web/services/task_event_bridge.py
+            tests/web/services/test_channel_progress.py
+            tests/web/services/channel_delivery_shared.py
+            tests/web/services/test_channel_delivery.py
+            tests/web/services/test_task_event_bridge.py
+            tests/web/services/test_channel_input_acceptance.py
+            tests/web/test_slack_durable_input.py
+            tests/web/test_feishu_durable_input.py
+            tests/web/test_telegram_durable_input.py
+            src/xagent/web/channels/slack/bot.py
+            src/xagent/web/channels/slack/trace_handler.py
             src/xagent/web/services/channel_runtime.py
             src/xagent/web/services/task_command_transport.py
             tests/web/services/test_task_command_transport.py
-            src/xagent/web/models/task.py
             tests/web/services/task_status_storage_shared.py
             tests/web/services/test_task_status_storage_postgresql.py
             tests/web/services/test_task_status_enum_drift.py
@@ -183,6 +310,7 @@ jobs:
             tests/web/services/test_task_lease_heartbeat_batch.py
             tests/web/services/test_task_settlement_locking.py
             tests/web/services/test_task_execution_event_store.py
+            tests/web/services/task_database_shared.py
             src/xagent/web/services/chat_history_service.py
             src/xagent/web/services/ops_signals.py
             src/xagent/core/tools/adapters/vibe/ask_user_tool.py
@@ -212,6 +340,34 @@ jobs:
             src/xagent/config.py
             src/xagent/web/services/trace_handlers.py
             tests/web/services/test_trace_database_postgresql.py
+            src/xagent/web/services/task_retention.py
+            src/xagent/web/tracking/task_tracker.py
+            tests/web/services/test_task_retention.py
+            tests/alembic/test_20260922_task_last_activity_at.py
+            src/xagent/web/services/task_retention_purge.py
+            src/xagent/web/models/task.py
+            tests/web/services/test_task_retention_purge.py
+            src/xagent/web/services/task_deletion.py
+            src/xagent/web/models/task_command.py
+            tests/web/services/test_task_retention_purge_postgresql.py
+            tests/web/services/test_task_retention_anchor_postgresql.py
+            src/xagent/web/services/task_retention_overrides.py
+            tests/web/services/test_task_retention_overrides.py
+            src/xagent/core/agent/runner.py
+            src/xagent/core/agent/runtime.py
+            src/xagent/core/agent/context/execution.py
+            src/xagent/core/agent/trace.py
+            tests/web/services/test_injection_atomicity_postgresql.py
+            tests/web/services/test_turn_dedup_jsonb_postgresql.py
+            src/xagent/web/services/task_lease_recovery.py
+            tests/web/api/test_durable_message_resume_contention.py
+            tests/web/api/test_recovered_delivery_outcome_unknown.py
+            tests/web/services/test_unknown_delivery_postgresql.py
+            src/xagent/web/services/task_execution_controller.py
+            tests/web/services/test_pause_lease_fence_postgresql.py
+            src/xagent/web/services/task_execution.py
+            tests/web/api/test_recovered_delivery_failed_run.py
+            tests/web/api/test_fresh_message_ended_run.py
           )
 
           case "$EVENT_NAME" in
@@ -241,6 +397,7 @@ jobs:
     name: Test SQLite Migrations
     needs: detect-migration-changes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Skip migration tests
@@ -311,6 +468,7 @@ jobs:
     name: Test PostgreSQL Migrations
     needs: detect-migration-changes
     runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -470,7 +628,7 @@ jobs:
       - name: Test task command staging concurrency (Postgres-only)
         if: needs.detect-migration-changes.outputs.should-test == 'true'
         run: |
-          pytest tests/web/services/test_task_command_transport.py tests/web/services/test_task_start_protocol.py tests/web/services/test_shared_execution_postgresql.py tests/web/services/test_task_coordinator_commands.py tests/web/services/test_shared_channel_execution.py -m postgresql -q
+          pytest tests/web/test_slack_durable_input.py tests/web/test_feishu_durable_input.py tests/web/test_telegram_durable_input.py tests/web/services/test_channel_input_acceptance.py tests/web/services/test_channel_progress.py tests/web/services/test_channel_delivery.py tests/web/services/test_a2a_input_idempotency.py tests/alembic/test_20260919_task_input_receipts.py tests/web/services/test_task_command_transport.py tests/web/services/test_task_start_protocol.py tests/web/services/test_shared_execution_postgresql.py tests/web/services/test_task_coordinator_commands.py tests/web/services/test_command_owner_dispatch.py tests/alembic/test_20260918_command_retry_available_at.py tests/web/services/test_task_coordinator_runtime.py tests/web/services/test_task_coordinator_service.py tests/web/services/test_task_coordinator_heartbeat.py tests/web/services/test_shared_channel_execution.py tests/web/services/test_task_execution_admission.py tests/web/services/test_task_admission_pacing.py tests/web/services/test_task_admission_telemetry.py tests/web/services/test_task_admission_guidance.py tests/web/services/test_queued_channel_pause_admission.py tests/web/services/test_queued_start_cancel_admission.py tests/migrations/test_task_admission_schema.py tests/migrations/test_task_admission_pacing_schema.py -m postgresql -q
         env:
           XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
 
@@ -607,6 +765,77 @@ jobs:
         run: |
           pytest tests/web/services/test_trace_blob_upsert_postgresql.py -m postgresql -q
           pytest tests/web/services/test_trace_database_postgresql.py -m postgresql -q
+        env:
+          XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
+
+      - name: Test retention anchor and eligibility (Postgres-only)
+        if: needs.detect-migration-changes.outputs.should-test == 'true'
+        run: |
+          pytest tests/web/services/test_task_retention.py -m postgresql -q
+          pytest tests/web/services/test_task_retention_anchor_postgresql.py -m postgresql -q
+          pytest tests/alembic/test_20260922_task_last_activity_at.py -m postgresql -q
+        env:
+          XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
+
+      - name: Test attachment detachment and migration (Postgres-only)
+        if: needs.detect-migration-changes.outputs.should-test == 'true'
+        run: |
+          pytest tests/alembic/test_20260929_task_attachment_detachment.py tests/web/services/test_detached_file_concurrency.py -m postgresql -q
+          pytest tests/alembic/test_20260930_task_identity.py -m postgresql -q
+        env:
+          XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
+
+      # The purge's fence is a claim about PostgreSQL row locks -- that a
+      # command insert's FOR KEY SHARE on tasks blocks against the purge's
+      # FOR UPDATE. Nothing on SQLite can check it, so this step is the only
+      # place that claim is ever tested.
+      - name: Test retention purge paths and locking (Postgres-only)
+        if: needs.detect-migration-changes.outputs.should-test == 'true'
+        run: |
+          pytest tests/web/services/test_task_retention_purge.py -m postgresql -q
+          pytest tests/web/services/test_task_retention_purge_postgresql.py -m postgresql -q
+          pytest tests/web/services/test_task_retention_overrides.py -m postgresql -q
+        env:
+          XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
+
+      # The unknown-input read-back and pause settle against PostgreSQL's
+      # commit visibility and FOR UPDATE settlement lock; SQLite takes a
+      # different lock path and cannot check either.
+      - name: Test atomic injection against PostgreSQL (Postgres-only)
+        if: needs.detect-migration-changes.outputs.should-test == 'true'
+        run: |
+          pytest tests/web/services/test_injection_atomicity_postgresql.py -m postgresql -q
+        env:
+          XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
+
+      # JSONB reorders object keys, so the accepted-turn record's eviction
+      # order is only observable through a real PostgreSQL round-trip.
+      - name: Test accepted-turn record order through JSONB (Postgres-only)
+        if: needs.detect-migration-changes.outputs.should-test == 'true'
+        run: |
+          pytest tests/web/services/test_turn_dedup_jsonb_postgresql.py -m postgresql -q
+        env:
+          XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
+
+      # Orphaned-delivery reconciliation and recovered outcome-unknown
+      # settlement depend on PostgreSQL row locks and READ COMMITTED
+      # re-evaluation (a sweep must neither block on nor see an uncommitted
+      # new turn); SQLite serializes writers and cannot check either.
+      - name: Test unknown delivery settlement against PostgreSQL (Postgres-only)
+        if: needs.detect-migration-changes.outputs.should-test == 'true'
+        run: |
+          pytest tests/web/services/test_unknown_delivery_postgresql.py -m postgresql -q
+        env:
+          XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
+
+      # The live-control pause and resume-handoff fences are single UPDATEs
+      # whose WHERE clause PostgreSQL re-evaluates after waiting on a
+      # concurrent takeover's row lock; SQLite serializes writers and cannot
+      # show that re-check.
+      - name: Test live-control lease fences against PostgreSQL (Postgres-only)
+        if: needs.detect-migration-changes.outputs.should-test == 'true'
+        run: |
+          pytest tests/web/services/test_pause_lease_fence_postgresql.py -m postgresql -q
         env:
           XAGENT_TEST_POSTGRES_URL: postgresql://xagent:xagent@localhost:5432/xagent_test
 

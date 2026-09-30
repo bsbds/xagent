@@ -272,18 +272,21 @@ class Task(Base):  # type: ignore
             "interaction_protocol_version IS NULL OR interaction_protocol_version = 1",
             name="ck_tasks_interaction_protocol_version",
         ),
+        # Deleted tasks leave retained files under web_task_<id>. Never give
+        # their workspace identity to a later task on SQLite.
+        {"sqlite_autoincrement": True},
     )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String(200), nullable=False)
     description = Column(Text)
-    # Stage 3.1 only supports legacy routing. Widen this pin together with
-    # the event-backed runtime, never by changing the creation default alone.
+    # Production creation remains legacy; version 2 is exercised by migration
+    # tests until the event readers are ready for production routing.
     conversation_storage_version = Column(
         Integer,
         CheckConstraint(
-            "conversation_storage_version = 1",
+            "conversation_storage_version IN (1, 2)",
             name="ck_tasks_conversation_storage_version",
         ),
         nullable=False,
@@ -316,6 +319,47 @@ class Task(Base):  # type: ignore
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    # Retention anchor: the time of the last *conversational* activity on this
+    # task, written only when a row is persisted to ``task_chat_messages``
+    # (the insert paths in chat_history_service, via
+    # ``services.task_retention.touch_task_last_activity``). Owner: #2562.
+    #
+    # "Conversational" means it landed in the transcript the user reads. That
+    # includes system notices rendered as assistant turns -- an interruption
+    # or failure message moves this column, because the user sees it. It
+    # excludes everything that never reaches the transcript, which is the
+    # class ``updated_at`` cannot distinguish.
+    #
+    # ``updated_at`` above cannot serve this purpose: it carries
+    # ``onupdate=func.now()``, so every unrelated write to this row advances
+    # it -- the token tracker's periodic counter writes
+    # (tracking/task_tracker.py), lease acquisition and heartbeat renewal,
+    # completion writes, and checkpoint-pointer maintenance. A retention
+    # period anchored on it would be postponed indefinitely by execution
+    # bookkeeping that no user ever saw.
+    #
+    # NULL on rows written before this column existed *and* not yet reached
+    # by the backfill in revision 20260922_task_last_activity_at, and on any
+    # task that has never carried a message. Readers must not treat NULL as
+    # "infinitely recent" -- ``retention_anchor()`` coalesces it to
+    # ``created_at`` so a message-less task cannot become immortal. The
+    # column deliberately carries no server default: one would have made
+    # ``ALTER TABLE`` stamp every pre-existing row with the migration's own
+    # clock, which is exactly the value the backfill exists to avoid.
+    #
+    # No index yet. The set-scanning consumer is the purge job (#2563), not
+    # the read-only preview in this revision, and a plain CREATE INDEX on a
+    # multi-million-row ``tasks`` table takes a lock for its duration --
+    # PostgreSQL wants CONCURRENTLY, which cannot run inside Alembic's
+    # migration transaction. Whoever adds the scan adds the index, with the
+    # deployment procedure that goes with it.
+    last_activity_at = Column(DateTime(timezone=True), nullable=True)
+    # When the retention purge last removed this task's execution trace
+    # (#2565). The conversation survives trace expiry and can take new turns,
+    # which write new trace rows, so this does not mean "has no steps": it
+    # means the steps from before this moment were removed and a steps read
+    # may be incomplete. NULL when retention never touched the trace.
+    traces_expired_at = Column(DateTime(timezone=True), nullable=True)
     runner_id = Column(String(255), nullable=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)
     last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)

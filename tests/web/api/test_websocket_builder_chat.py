@@ -201,6 +201,16 @@ async def test_handle_builder_chat_basic() -> None:
         assert call_kwargs["pattern"] == "react"
         assert call_kwargs["name"] == "builder_chat_agent"
         assert call_kwargs["compact_llm"] is mock_compact_llm
+        # After #2219 the builder chat is the only place the knowledge-base
+        # authoring tools are mounted, so pin the wiring here rather than
+        # only the tool classes.
+        mounted_tool_names = {
+            getattr(tool, "name", None) for tool in call_kwargs["tools"]
+        }
+        assert {
+            "create_knowledge_base_from_file",
+            "create_knowledge_base_from_url",
+        } <= mounted_tool_names
         mock_agent_service.set_allowed_skills.assert_called_once_with(["agent-builder"])
         mock_agent_service.set_recovered_skill_context.assert_called_once()
         mock_agent_service.set_outbound_message_handler.assert_called_once()
@@ -490,6 +500,50 @@ async def test_handle_builder_chat_without_voice_leaves_prompt_unchanged() -> No
     system_prompt = execution_context["system_prompt"]
     assert "## OUTPUT VOICE" not in system_prompt
     assert "persisted as configuration" not in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_handle_builder_chat_hides_connectors_from_current_config() -> None:
+    mock_websocket = AsyncMock()
+    message_data = {
+        "messages": [{"role": "user", "content": "Add web search"}],
+        "models": {"general": 1},
+        "tool_categories": ["file", "mcp", "mcp:github"],
+    }
+    runtime_loader = AsyncMock(
+        return_value=BuilderChatRuntimeInputs(
+            authorized_file_ids=(), llm=AsyncMock(), compact_llm=None
+        )
+    )
+
+    with (
+        patch(
+            "xagent.web.services.builder_chat_runtime.load_builder_chat_runtime_inputs",
+            runtime_loader,
+        ),
+        patch("xagent.web.api.websocket.get_session_local", return_value=MagicMock()),
+        patch("xagent.core.agent.service.AgentService") as MockAgentService,
+        patch("xagent.core.memory.in_memory.InMemoryMemoryStore"),
+        patch("xagent.web.user_isolated_memory.UserContext"),
+    ):
+        mock_agent_service = MockAgentService.return_value
+        mock_agent_service.execute_task = AsyncMock(
+            return_value={"output": "done", "status": "completed"}
+        )
+        mock_websocket.state = MagicMock()
+        del mock_websocket.state.builder_task_id
+        del mock_websocket.state.builder_agent_service
+
+        await handle_builder_chat(
+            mock_websocket,
+            message_data,
+            SimpleNamespace(id=1, is_admin=False, voice=None),
+        )
+
+    system_prompt = mock_agent_service.execute_task.await_args.kwargs["context"][
+        "system_prompt"
+    ]
+    assert "'tool_categories': ['file']" in system_prompt
 
 
 @pytest.mark.asyncio

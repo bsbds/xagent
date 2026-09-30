@@ -18,9 +18,9 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
-from sqlalchemy import and_, exists, or_, select, true
+from sqlalchemy import and_, exists, false, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Query, Session, aliased
 
@@ -29,7 +29,8 @@ from ...config import (
     get_task_lease_heartbeat_seconds,
     get_task_lease_ttl_seconds,
 )
-from ..models.task import Task, TaskStatus
+from ..models.task import Task, TaskStatus, task_status_predicate
+from ..models.task_admission import TaskAdmissionTicket
 from ..models.task_command import TaskExecutionCommand
 from ..models.user import User
 from .db_runtime import (
@@ -38,6 +39,11 @@ from .db_runtime import (
     propagate_deferred_cancellation,
     run_db_io_cancellation_safe,
 )
+from .task_admission_execution import (
+    AdmissionWaiting,
+    admission_execution,
+    return_to_admission_queue,
+)
 from .task_command_terminal_events import (
     TerminalTaskEventDraft,
     stage_terminal_event,
@@ -45,6 +51,9 @@ from .task_command_terminal_events import (
 )
 from .task_execution_host import consumes_task_commands
 from .task_lease_service import get_runner_id
+
+if TYPE_CHECKING:
+    from .task_coordinator_service import TaskLease as TaskOwnerLease
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +226,7 @@ class ClaimedTaskCommand:
     attempt_count: int
     failure_count: int = 0
     defer_count: int = 0
+    admission_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -305,6 +315,40 @@ def _load_actor_subject(db: Session, actor_user_id: int | None) -> str | None:
         select(User.actor_subject).where(User.id == actor_user_id)
     ).scalar_one_or_none()
     return str(stored_subject) if stored_subject is not None else None
+
+
+def existing_task_command_payload_matches(
+    db: Session,
+    *,
+    task_id: int,
+    command_id: str,
+    actor_user_id: int | None,
+    kind: TaskCommandKind,
+    payload: dict[str, Any],
+) -> bool | None:
+    """Read an existing command's payload identity without staging any writes.
+
+    None means no command exists; False means its actor, kind or payload
+    conflicts. Missing actor identities are not created by this read path.
+    """
+    with db.no_autoflush:
+        existing = (
+            db.query(TaskExecutionCommand)
+            .filter(
+                TaskExecutionCommand.task_id == task_id,
+                TaskExecutionCommand.command_id == command_id,
+            )
+            .first()
+        )
+        if existing is None:
+            return None
+        return _matches_existing(
+            existing,
+            actor_user_id=actor_user_id,
+            actor_subject=_load_actor_subject(db, actor_user_id),
+            kind=kind,
+            payload=payload,
+        )
 
 
 def _resolve_actor_subject(db: Session, actor_user_id: int | None) -> str | None:
@@ -514,6 +558,29 @@ def stage_task_command(
     )
     db.add(command)
     db.flush()
+    from .task_execution_event_writer import (
+        append_fact_no_commit,
+        uses_execution_events,
+    )
+
+    if uses_execution_events(db, resolved_task_id):
+        append_fact_no_commit(
+            db,
+            task_id=resolved_task_id,
+            kind="command_accepted",
+            key=f"command:{normalized_id}",
+            run_id=snapshot.run_id,
+            payload={
+                "command_id": normalized_id,
+                "kind": kind.value,
+                "payload": payload,
+                "actor_user_id": actor_user_id,
+                "target_state_version": int(snapshot.state_version or 0),
+            },
+        )
+    from .task_execution_admission import stage_task_admission
+
+    stage_task_admission(db, command)
     return StagedTaskCommand(
         staged_db_id=int(command.id),
         client_command_id=normalized_id,
@@ -673,6 +740,14 @@ def enqueue_task_command(
 
 
 def _claim_availability_predicate(now: datetime) -> Any:
+    if get_shared_task_execution_enabled():
+        return and_(
+            TaskExecutionCommand.status.in_((COMMAND_PENDING, COMMAND_PROCESSING)),
+            or_(
+                TaskExecutionCommand.retry_available_at.is_(None),
+                TaskExecutionCommand.retry_available_at <= now,
+            ),
+        )
     return or_(
         and_(
             TaskExecutionCommand.status == COMMAND_PENDING,
@@ -709,12 +784,19 @@ def _command_routing_predicate(runner_id: str, now: datetime) -> Any:
 
 
 def _unfinished_earlier_command() -> Any:
+    from .task_execution_admission import waiting_admission
+
     earlier = aliased(TaskExecutionCommand)
     return exists(
         select(1).where(
             earlier.task_id == TaskExecutionCommand.task_id,
             earlier.id < TaskExecutionCommand.id,
             earlier.status.notin_(COMMAND_TERMINAL),
+            ~and_(
+                TaskExecutionCommand.kind.in_(("cancel", "pause")),
+                earlier.status == COMMAND_PENDING,
+                waiting_admission(earlier.id),
+            ),
         )
     )
 
@@ -722,6 +804,8 @@ def _unfinished_earlier_command() -> Any:
 def _claimable_query(
     db: Session, *, runner_id: str, command_db_id: int | None
 ) -> Query[Any]:
+    from .task_execution_admission import admission_eligible
+
     now = _utc_now()
     query = (
         db.query(TaskExecutionCommand)
@@ -736,6 +820,7 @@ def _claimable_query(
                 )
             ),
             _claim_availability_predicate(now),
+            admission_eligible(),
             ~_unfinished_earlier_command(),
             _command_routing_predicate(runner_id, now),
         )
@@ -743,6 +828,54 @@ def _claimable_query(
     if command_db_id is not None:
         query = query.filter(TaskExecutionCommand.id == command_db_id)
     return query.order_by(TaskExecutionCommand.id.asc())
+
+
+def command_processing_predicates(
+    db: Session,
+    command_db_id: int,
+    runner_id: str,
+    *,
+    expected_attempt_count: int | None = None,
+    require_live_claim: bool = False,
+    owner_lease: TaskOwnerLease | None = None,
+) -> tuple[Any, ...]:
+    """Authorize a command write in the same transaction as its task owner.
+
+    Attempt count isolates retries inside an owner; only the task has a lease.
+    Legacy local execution retains its existing command claim contract.
+    """
+    predicates = [
+        TaskExecutionCommand.id == command_db_id,
+        TaskExecutionCommand.status == COMMAND_PROCESSING,
+    ]
+    if get_shared_task_execution_enabled():
+        from .task_coordinator_runtime import current_task_coordinator
+        from .task_coordinator_service import lock_task_lease_no_commit
+
+        task_id = db.scalar(
+            select(TaskExecutionCommand.task_id).where(
+                TaskExecutionCommand.id == command_db_id
+            )
+        )
+        if owner_lease is None:
+            coordinator = (
+                current_task_coordinator(task_id) if task_id is not None else None
+            )
+            owner_lease = coordinator.lease if coordinator is not None else None
+        if (
+            owner_lease is None
+            or owner_lease.task_id != task_id
+            or owner_lease.runner_id != runner_id
+            or not lock_task_lease_no_commit(db, owner_lease)
+        ):
+            return (false(),)
+    else:
+        predicates.append(TaskExecutionCommand.claimed_by == runner_id)
+        if require_live_claim:
+            predicates.append(TaskExecutionCommand.claim_expires_at > _utc_now())
+    if expected_attempt_count is not None:
+        predicates.append(TaskExecutionCommand.attempt_count == expected_attempt_count)
+    return tuple(predicates)
 
 
 def claim_task_command(
@@ -764,6 +897,24 @@ def claim_task_command(
     if candidate is None:
         return None
 
+    shared = get_shared_task_execution_enabled()
+    if shared:
+        from .task_coordinator_runtime import current_task_coordinator
+        from .task_coordinator_service import lock_task_lease_no_commit
+
+        coordinator = current_task_coordinator(int(candidate.task_id))
+        if (
+            coordinator is None
+            or coordinator.lease is None
+            or coordinator.lease.runner_id != resolved_runner_id
+            or not lock_task_lease_no_commit(db, coordinator.lease)
+        ):
+            return None
+        from .task_execution_admission import reserve_task_admission
+
+        if not reserve_task_admission(db, int(candidate.id), coordinator.lease):
+            db.rollback()
+            return None
     now = _utc_now()
     expires = now + timedelta(seconds=get_task_lease_ttl_seconds())
     routable_task = exists(
@@ -783,8 +934,9 @@ def claim_task_command(
         .update(
             {
                 TaskExecutionCommand.status: COMMAND_PROCESSING,
-                TaskExecutionCommand.claimed_by: resolved_runner_id,
-                TaskExecutionCommand.claim_expires_at: expires,
+                TaskExecutionCommand.claimed_by: None if shared else resolved_runner_id,
+                TaskExecutionCommand.claim_expires_at: None if shared else expires,
+                TaskExecutionCommand.retry_available_at: None,
                 TaskExecutionCommand.attempt_count: (
                     TaskExecutionCommand.attempt_count + 1
                 ),
@@ -797,14 +949,15 @@ def claim_task_command(
     if claimed != 1:
         db.rollback()
         return None
-    db.commit()
     fresh = (
         db.query(TaskExecutionCommand)
         .filter(TaskExecutionCommand.id == int(candidate.id))
+        .populate_existing()
         .one()
     )
+    admission_required = db.get(TaskAdmissionTicket, fresh.id) is not None
     payload: dict[str, Any] = fresh.payload if isinstance(fresh.payload, dict) else {}
-    return ClaimedTaskCommand(
+    command = ClaimedTaskCommand(
         id=int(fresh.id),
         task_id=int(fresh.task_id),
         actor_user_id=(
@@ -815,9 +968,17 @@ def claim_task_command(
         payload=payload,
         target_run_id=(str(fresh.target_run_id) if fresh.target_run_id else None),
         attempt_count=int(fresh.attempt_count or 0),
+        admission_required=admission_required,
         failure_count=int(fresh.failure_count or 0),
         defer_count=int(fresh.defer_count or 0),
     )
+    accepted_at = cast(datetime, fresh.created_at)
+    db.commit()
+    if admission_required:
+        from .task_admission_observation import record_command_admission
+
+        record_command_admission(command.id, command.attempt_count, accepted_at)
+    return command
 
 
 def _claim_task_command_isolated(
@@ -916,20 +1077,20 @@ def finish_task_command_no_commit(
     result: dict[str, Any] | None = None,
     expected_attempt_count: int | None = None,
     require_live_claim: bool = False,
+    owner_lease: TaskOwnerLease | None = None,
 ) -> bool:
     """Stage completion; START commits this together with its execution lease."""
     now = _utc_now()
     query = db.query(TaskExecutionCommand).filter(
-        TaskExecutionCommand.id == command_db_id,
-        TaskExecutionCommand.status == COMMAND_PROCESSING,
-        TaskExecutionCommand.claimed_by == runner_id,
+        *command_processing_predicates(
+            db,
+            command_db_id,
+            runner_id,
+            expected_attempt_count=expected_attempt_count,
+            require_live_claim=require_live_claim,
+            owner_lease=owner_lease,
+        ),
     )
-    if require_live_claim:
-        query = query.filter(TaskExecutionCommand.claim_expires_at > now)
-    if expected_attempt_count is not None:
-        query = query.filter(
-            TaskExecutionCommand.attempt_count == expected_attempt_count
-        )
     updated = query.update(
         {
             TaskExecutionCommand.status: COMMAND_COMPLETED,
@@ -943,6 +1104,9 @@ def finish_task_command_no_commit(
         synchronize_session=False,
     )
     if updated == 1:
+        from .task_execution_admission import settle_cancelled_admissions
+
+        settle_cancelled_admissions(db, command_db_id)
         stage_terminal_event(db, command_db_id=command_db_id)
     return updated == 1
 
@@ -966,6 +1130,15 @@ def finish_task_command(
         )
         db.commit()
         return updated
+
+
+def _records_message_outcome_unknown(result: Any) -> bool:
+    from .chat_history_service import DELIVERY_OUTCOME_UNKNOWN
+
+    return (
+        isinstance(result, dict)
+        and result.get("delivery_outcome") == DELIVERY_OUTCOME_UNKNOWN
+    )
 
 
 def fail_task_command(
@@ -1005,18 +1178,21 @@ def fail_task_command(
             db.execute(
                 select(Task.id).where(Task.id == handoff.task_id).with_for_update()
             ).first()
+        ownership = command_processing_predicates(
+            db,
+            command_db_id,
+            runner_id,
+            expected_attempt_count=expected_attempt_count,
+        )
         snapshot_query = db.query(
             TaskExecutionCommand.failure_count,
             TaskExecutionCommand.attempt_count,
+            TaskExecutionCommand.result,
         ).filter(
             TaskExecutionCommand.id == command_db_id,
             TaskExecutionCommand.status == COMMAND_PROCESSING,
-            TaskExecutionCommand.claimed_by == runner_id,
+            *ownership,
         )
-        if handoff is not None:
-            snapshot_query = snapshot_query.filter(
-                TaskExecutionCommand.claim_expires_at > now
-            )
         if expected_attempt_count is not None:
             snapshot_query = snapshot_query.filter(
                 TaskExecutionCommand.attempt_count == expected_attempt_count
@@ -1026,6 +1202,11 @@ def fail_task_command(
             return False
         observed_failure_count = int(snapshot.failure_count or 0)
         observed_attempt_count = int(snapshot.attempt_count or 0)
+        if result is None and _records_message_outcome_unknown(snapshot.result):
+            # A MESSAGE attempt recorded that its turn's ``dispatched`` row
+            # means "outcome unknown" before it failed. That record is the
+            # retry's only way to tell it from an accepted turn; keep it.
+            result = snapshot.result
         failure_count = observed_failure_count + 1
         terminal = force_terminal or failure_count >= MAX_COMMAND_FAILURES
         updated = (
@@ -1033,12 +1214,9 @@ def fail_task_command(
             .filter(
                 TaskExecutionCommand.id == command_db_id,
                 TaskExecutionCommand.status == COMMAND_PROCESSING,
-                TaskExecutionCommand.claimed_by == runner_id,
+                *ownership,
                 TaskExecutionCommand.failure_count == observed_failure_count,
                 TaskExecutionCommand.attempt_count == observed_attempt_count,
-                (TaskExecutionCommand.claim_expires_at > _utc_now())
-                if handoff is not None
-                else true(),
             )
             .update(
                 {
@@ -1049,7 +1227,11 @@ def fail_task_command(
                     TaskExecutionCommand.error: error[:4000],
                     TaskExecutionCommand.result: result,
                     TaskExecutionCommand.claimed_by: None,
-                    TaskExecutionCommand.claim_expires_at: (
+                    (
+                        TaskExecutionCommand.retry_available_at
+                        if get_shared_task_execution_enabled()
+                        else TaskExecutionCommand.claim_expires_at
+                    ): (
                         None
                         if terminal
                         else now + timedelta(seconds=min(2**failure_count, 30))
@@ -1094,13 +1276,19 @@ def defer_task_command(
     SessionLocal = get_session_local()
     now = _utc_now()
     with SessionLocal() as db:
+        ownership = command_processing_predicates(
+            db,
+            command_db_id,
+            runner_id,
+            expected_attempt_count=expected_attempt_count,
+        )
         snapshot_query = db.query(
             TaskExecutionCommand.defer_count,
             TaskExecutionCommand.attempt_count,
         ).filter(
             TaskExecutionCommand.id == command_db_id,
             TaskExecutionCommand.status == COMMAND_PROCESSING,
-            TaskExecutionCommand.claimed_by == runner_id,
+            *ownership,
         )
         if expected_attempt_count is not None:
             snapshot_query = snapshot_query.filter(
@@ -1118,7 +1306,7 @@ def defer_task_command(
             .filter(
                 TaskExecutionCommand.id == command_db_id,
                 TaskExecutionCommand.status == COMMAND_PROCESSING,
-                TaskExecutionCommand.claimed_by == runner_id,
+                *ownership,
                 TaskExecutionCommand.defer_count == observed_defer_count,
                 TaskExecutionCommand.attempt_count == observed_attempt_count,
             )
@@ -1136,9 +1324,11 @@ def defer_task_command(
                         )[:4000]
                     ),
                     TaskExecutionCommand.claimed_by: None,
-                    TaskExecutionCommand.claim_expires_at: (
-                        None if terminal else now + timedelta(seconds=1)
-                    ),
+                    (
+                        TaskExecutionCommand.retry_available_at
+                        if get_shared_task_execution_enabled()
+                        else TaskExecutionCommand.claim_expires_at
+                    ): (None if terminal else now + timedelta(seconds=1)),
                     TaskExecutionCommand.updated_at: now,
                     TaskExecutionCommand.completed_at: now if terminal else None,
                 },
@@ -1165,6 +1355,10 @@ def retry_failed_task_command(
 ) -> bool:
     """Reset one failed command without retargeting its immutable execution."""
 
+    from .task_execution_admission import prepare_task_admission_retry
+
+    prepare_task_admission_retry(db, command_db_id)
+
     now = _utc_now()
     updated = (
         db.query(TaskExecutionCommand)
@@ -1175,6 +1369,7 @@ def retry_failed_task_command(
         .update(
             {
                 TaskExecutionCommand.status: COMMAND_PENDING,
+                TaskExecutionCommand.retry_available_at: None,
                 TaskExecutionCommand.failure_count: 0,
                 TaskExecutionCommand.defer_count: 0,
                 TaskExecutionCommand.error: None,
@@ -1313,7 +1508,85 @@ async def _persist_task_command_disposition(
     return persisted
 
 
+def _find_command_candidate(
+    command_db_id: int | None,
+    busy_task_ids: tuple[int, ...] = (),
+) -> tuple[int, int, TaskCommandKind] | None:
+    from ..models.database import get_session_local
+
+    runner_id = get_runner_id()
+    with get_session_local()() as db:
+        row = (
+            _claimable_query(db, runner_id=runner_id, command_db_id=command_db_id)
+            .filter(
+                TaskExecutionCommand.task_id.notin_(busy_task_ids),
+                # A different expired RUNNING owner needs recovery before
+                # acquisition. Our own owner can still process commands:
+                # expiry alone does not revoke its immutable lease identity.
+                or_(
+                    Task.runner_id == runner_id,
+                    task_status_predicate.ne(TaskStatus.RUNNING),
+                    Task.lease_expires_at.is_(None),
+                    Task.lease_expires_at >= _utc_now(),
+                ),
+            )
+            .first()
+        )
+        return (
+            (int(row.id), int(row.task_id), TaskCommandKind(row.kind)) if row else None
+        )
+
+
 async def dispatch_one_task_command(
+    executor: CommandExecutor,
+    *,
+    command_db_id: int | None = None,
+) -> bool:
+    if not get_shared_task_execution_enabled():
+        return await _dispatch_task_command(executor, command_db_id=command_db_id)
+    if not consumes_task_commands():
+        return False
+    from types import SimpleNamespace
+
+    from .task_coordinator_runtime import (
+        _CoordinatorClosed,
+        get_task_coordinator_registry,
+    )
+
+    registry = get_task_coordinator_registry()
+    skipped_task_ids = set(registry.busy_command_tasks())
+    while True:
+        candidate = await run_db_io_cancellation_safe(
+            lambda: _find_command_candidate(command_db_id, tuple(skipped_task_ids))
+        )
+        if candidate is None:
+            return False
+        selected_id, task_id, kind = candidate
+        coordinator = await registry.ensure(task_id)
+        if coordinator is not None and not coordinator._command_tasks:
+            break
+        # Ownership can change after candidate selection. Skip this task
+        # without spending its business retry budget; keep the exclusion
+        # local to this scan so a later dispatch can reconsider it.
+        skipped_task_ids.add(task_id)
+
+    async def apply() -> bool:
+        try:
+            return await _dispatch_task_command(executor, command_db_id=selected_id)
+        except BaseException:
+            coordinator.require_recovery()
+            raise
+
+    try:
+        return await coordinator.execute_command(
+            SimpleNamespace(task_id=task_id, kind=kind), apply
+        )
+    except (TaskCommandDeferred, _CoordinatorClosed):
+        # Ownership health is not a business attempt or deferral.
+        return False
+
+
+async def _dispatch_task_command(
     executor: CommandExecutor,
     *,
     command_db_id: int | None = None,
@@ -1329,8 +1602,12 @@ async def dispatch_one_task_command(
         return False
 
     stop_event = asyncio.Event()
-    heartbeat = asyncio.get_running_loop().create_task(
-        _claim_heartbeat(command.id, runner_id, command.attempt_count, stop_event)
+    heartbeat = (
+        None
+        if get_shared_task_execution_enabled()
+        else asyncio.get_running_loop().create_task(
+            _claim_heartbeat(command.id, runner_id, command.attempt_count, stop_event)
+        )
     )
     already_completed = False
     disposition_name: str | None = None
@@ -1338,7 +1615,19 @@ async def dispatch_one_task_command(
     heartbeat_outcome = TaskCommandClaimHeartbeatOutcome()
     heartbeat_cancellation: asyncio.CancelledError | None = None
     try:
-        result = await executor(command)
+        with admission_execution(
+            command.id, command.task_id, command.admission_required
+        ):
+            result = await executor(command)
+    except AdmissionWaiting:
+        disposition_name = "return_to_admission_queue"
+
+        def persist_admission_wait() -> bool:
+            return return_to_admission_queue(
+                command.id, runner_id, command.attempt_count
+            )
+
+        disposition_operation = persist_admission_wait
     except asyncio.CancelledError:
         # Leave the processing claim intact. Another worker may reclaim it only
         # after the claim expires, which avoids concurrent replay on shutdown.
@@ -1443,9 +1732,10 @@ async def dispatch_one_task_command(
             disposition_operation = persist_completion
     finally:
         stop_event.set()
-        heartbeat_outcome, heartbeat_cancellation = await await_task_settlement(
-            heartbeat
-        )
+        if heartbeat is not None:
+            heartbeat_outcome, heartbeat_cancellation = await await_task_settlement(
+                heartbeat
+            )
 
     with propagate_deferred_cancellation(heartbeat_cancellation):
         if heartbeat_outcome.requires_ttl_recovery and not already_completed:
@@ -1462,11 +1752,23 @@ async def dispatch_one_task_command(
             )
             return True
         if disposition_name is not None and disposition_operation is not None:
-            await _persist_task_command_disposition(
+            persisted = await _persist_task_command_disposition(
                 command,
                 disposition=disposition_name,
                 operation=disposition_operation,
             )
+            if not persisted:
+                from .task_coordinator_runtime import current_task_coordinator
+
+                coordinator = current_task_coordinator(command.task_id)
+                if coordinator is not None:
+                    coordinator.require_recovery()
+        elif not already_completed and get_shared_task_execution_enabled():
+            from .task_coordinator_runtime import current_task_coordinator
+
+            coordinator = current_task_coordinator(command.task_id)
+            assert coordinator is not None
+            coordinator.require_recovery()
         return True
 
 

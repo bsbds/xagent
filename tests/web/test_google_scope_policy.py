@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from xagent.web import mcp_apps
 from xagent.web.api import auth as auth_api
 from xagent.web.api.mcp import list_mcp_apps
-from xagent.web.builtin_mcp_registry import get_builtin_public_mcp_app
+from xagent.web.builtin_mcp_registry import (
+    get_builtin_public_mcp_app,
+    sync_google_scope_policy,
+)
 from xagent.web.models.database import (
     Base,
     _initialize_database_schema,
@@ -112,7 +115,41 @@ def test_registry_scope_policy(monkeypatch, value):
     gmail = get_builtin_public_mcp_app("gmail")
     assert drive["oauth_scopes"] == [DRIVE if enabled else DRIVE_FILE]
     assert gmail["is_visible_in_connector"] is enabled
-    assert gmail["oauth_scopes"] == [GMAIL]
+    assert gmail["oauth_scopes"] == ([GMAIL] if enabled else [])
+    assert drive["is_visible_in_connector"] is enabled
+
+
+def test_production_catalog_closed(monkeypatch):
+    monkeypatch.setenv(FLAG, "false")
+    gmail = get_builtin_public_mcp_app("gmail")
+    drive = get_builtin_public_mcp_app("google-drive")
+    assert gmail["oauth_scopes"] == []
+    assert gmail["is_visible_in_connector"] is False
+    assert drive["oauth_scopes"] == [DRIVE_FILE]
+    assert drive["is_visible_in_connector"] is False
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_sync_google_catalog_rows(google_db, monkeypatch, enabled):
+    db, _user = google_db
+    gmail = db.query(PublicMCPApp).filter_by(app_id="gmail").one()
+    drive = db.query(PublicMCPApp).filter_by(app_id="google-drive").one()
+    # Model both the narrowed main rows and a previous enabled deployment.
+    gmail.oauth_scopes = [] if enabled else [GMAIL]
+    gmail.is_visible_in_connector = not enabled
+    drive.oauth_scopes = [DRIVE_FILE if enabled else DRIVE]
+    drive.is_visible_in_connector = not enabled
+    db.commit()
+    monkeypatch.setenv(FLAG, str(enabled))
+
+    with db.get_bind().begin() as connection:
+        sync_google_scope_policy(connection)
+    db.expire_all()
+
+    assert gmail.oauth_scopes == ([GMAIL] if enabled else [])
+    assert gmail.is_visible_in_connector is enabled
+    assert drive.oauth_scopes == [DRIVE if enabled else DRIVE_FILE]
+    assert drive.is_visible_in_connector is enabled
 
 
 def test_gmail_overlay_blocks_db(google_db):
@@ -176,6 +213,8 @@ def test_drive_redirect_scopes(google_db, monkeypatch, flow, enabled):
     expected_scope = DRIVE if enabled else DRIVE_FILE
     drive = db.query(PublicMCPApp).filter_by(app_id="google-drive").one()
     drive.oauth_scopes = [expected_scope]
+    # A manually exposed narrow connector must still request only drive.file.
+    drive.is_visible_in_connector = True
     db.commit()
     response = _login(db, user, "google-drive", flow)
     assert response.status_code == 307
@@ -195,6 +234,8 @@ def test_gmail_login_gate(google_db, monkeypatch, flow):
     assert "location" not in response.headers
 
     monkeypatch.setenv(FLAG, "true")
+    gmail.oauth_scopes = [GMAIL]
+    db.commit()
     response = _login(db, user, "gmail", flow)
     assert response.status_code == 307
     params = parse_qs(urlparse(response.headers["location"]).query)
@@ -278,6 +319,8 @@ def test_startup_sync_and_revert(tmp_path, monkeypatch, enabled):
         drive = db.query(PublicMCPApp).filter_by(app_id="google-drive").one()
         gmail = db.query(PublicMCPApp).filter_by(app_id="gmail").one()
         assert drive.oauth_scopes == [DRIVE if enabled else DRIVE_FILE]
+        assert drive.is_visible_in_connector is enabled
+        assert gmail.oauth_scopes == ([GMAIL] if enabled else [])
         assert gmail.is_visible_in_connector is enabled
         drive.description = "Keep this description"
         drive.is_visible_in_connector = False
@@ -292,8 +335,9 @@ def test_startup_sync_and_revert(tmp_path, monkeypatch, enabled):
         gmail = db.query(PublicMCPApp).filter_by(app_id="gmail").one()
         assert drive.oauth_scopes == [DRIVE_FILE if enabled else DRIVE]
         assert gmail.is_visible_in_connector is not enabled
+        assert gmail.oauth_scopes == ([] if enabled else [GMAIL])
         assert drive.description == "Keep this description"
-        assert drive.is_visible_in_connector is False
+        assert drive.is_visible_in_connector is not enabled
         assert drive.generation == generation
         assert db.query(PublicMCPApp).filter_by(
             app_id="custom-app"

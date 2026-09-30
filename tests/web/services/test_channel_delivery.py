@@ -9,10 +9,15 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from tests.web.services.test_shared_channel_execution import (
-    database_url as database_url,
+from tests.web.services.channel_delivery_shared import accepted as accepted
+from tests.web.services.channel_delivery_shared import (
+    complete,
 )
-from tests.web.services.test_shared_channel_execution import selected as selected
+from tests.web.services.channel_delivery_shared import database_url as database_url
+from tests.web.services.channel_delivery_shared import (
+    expire_claim,
+)
+from tests.web.services.channel_delivery_shared import selected as selected
 from xagent.web.models.database import get_session_local
 from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.task_channel_delivery import TaskChannelDelivery
@@ -21,43 +26,6 @@ from xagent.web.models.user_channel import UserChannel
 from xagent.web.services import channel_delivery as delivery
 from xagent.web.services import shared_channel_execution as shared
 from xagent.web.services.task_orchestrator import TaskTurnPayload
-
-
-@pytest.fixture
-def accepted(selected):
-    selected.delivery_destination = {
-        "chat_id": "conversation",
-        "loading_message_id": "loading",
-    }
-    command_id = shared._accept_channel_turn(
-        selected, TaskTurnPayload("hello"), "old-ingress"
-    )
-    return command_id
-
-
-def complete(command_id):
-    with get_session_local()() as db:
-        command = db.get(TaskExecutionCommand, command_id)
-        command.status = "completed"
-        command.result = {
-            "channel_result": {
-                "success": True,
-                "status": "completed",
-                "output": "saved answer",
-            }
-        }
-        task = db.get(Task, command.task_id)
-        task.run_id = command.target_run_id
-        task.status = TaskStatus.COMPLETED
-        db.commit()
-
-
-def expire_claim(command_id):
-    with get_session_local()() as db:
-        db.get(TaskChannelDelivery, command_id).available_at = datetime.now(
-            timezone.utc
-        ) - timedelta(seconds=1)
-        db.commit()
 
 
 @pytest.mark.asyncio
@@ -234,7 +202,10 @@ async def test_channel_pending_wait_is_bounded_and_keeps_command(selected, monke
     bridge.register_origin.return_value = "origin"
     monkeypatch.setattr(shared, "get_task_event_bridge", lambda: bridge)
     monkeypatch.setattr(shared, "get_task_reply_wait_timeout_seconds", lambda: 0.03)
-    result = await asyncio.wait_for(selected.execute(TaskTurnPayload("hello"), None), 1)
+    # Acceptance includes real database I/O before the short reply-wait deadline.
+    result = await asyncio.wait_for(
+        selected.execute(TaskTurnPayload("hello"), None), 10
+    )
     assert result["status"] == "accepted"
     with get_session_local()() as db:
         assert db.query(TaskExecutionCommand).one().status == "pending"
@@ -519,3 +490,150 @@ async def test_preaccept_failure_preserves_resumable_task_and_files(
         assert db.query(UploadedFile).one().task_id == task.id
         assert db.query(TaskExecutionCommand).count() == 0
     assert path.read_text() == "input"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_scope", [None, "owner", "channel", "task"])
+async def test_discard_abandoned_conversation_prevents_retry(
+    accepted, selected, wrong_scope
+):
+    complete(accepted)
+    await delivery.deliver_channel_result(
+        accepted, AsyncMock(side_effect=ConnectionError("send failed"))
+    )
+    if wrong_scope == "owner":
+        from xagent.web.models.user import User
+
+        with get_session_local()() as db:
+            other = User(username="other-delivery-owner", password_hash="unused")
+            db.add(other)
+            db.flush()
+            db.get(Task, selected.selection.task_id).user_id = other.id
+            db.commit()
+    if wrong_scope == "channel":
+        with get_session_local()() as db:
+            db.get(Task, selected.selection.task_id).channel_id = None
+            db.commit()
+    await delivery.discard_channel_task_results(
+        channel_id=selected.selection.channel_id,
+        external_user_id=selected.selection.external_user_id,
+        task_id=selected.selection.task_id + (1 if wrong_scope == "task" else 0),
+    )
+    with get_session_local()() as db:
+        assert db.get(TaskChannelDelivery, accepted).status == (
+            "pending" if wrong_scope else "discarded"
+        )
+    if wrong_scope is None:
+        sender = AsyncMock()
+        await delivery.recover_channel_results(selected.selection.channel_id, sender)
+        sender.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_feishu_new_discards_failed_reply_without_in_memory_turn(
+    accepted, selected, tmp_path
+):
+    from types import SimpleNamespace
+
+    from xagent.web.channels.feishu.bot import FeishuBotInstance
+
+    complete(accepted)
+    await delivery.deliver_channel_result(
+        accepted, AsyncMock(side_effect=ConnectionError("send failed"))
+    )
+    bot = object.__new__(FeishuBotInstance)
+    bot._initialize_batch_control()
+    bot._accepting = True
+    bot.channel_id = selected.selection.channel_id
+    bot.control_locks = {}
+    bot.user_active_trace_handlers = {}
+    bot.active_tasks = {"sender": str(selected.selection.task_id)}
+    bot.active_tasks_file = tmp_path / "active.json"
+    bot._send_text = AsyncMock()
+    event = SimpleNamespace(
+        event=SimpleNamespace(message=SimpleNamespace(chat_id="conversation"))
+    )
+    await bot._handle_control("sender", event, "/new")
+    assert bot.active_tasks["sender"] == "-1"
+    sender = AsyncMock()
+    await delivery.recover_channel_results(selected.selection.channel_id, sender)
+    sender.assert_not_awaited()
+    with get_session_local()() as db:
+        assert db.get(TaskChannelDelivery, accepted).status == "discarded"
+
+
+@pytest.mark.asyncio
+async def test_feishu_new_fences_already_claimed_recovery(
+    accepted, selected, tmp_path, monkeypatch
+):
+    import threading
+    from types import SimpleNamespace
+
+    from xagent.web.channels.feishu.bot import FeishuBotInstance
+
+    complete(accepted)
+    bot = object.__new__(FeishuBotInstance)
+    bot._initialize_batch_control()
+    bot._accepting = True
+    bot.channel_id = selected.selection.channel_id
+    bot.control_locks = {}
+    bot.user_active_trace_handlers = {}
+    bot.active_tasks = {"sender": str(selected.selection.task_id)}
+    bot.active_tasks_file = tmp_path / "active.json"
+    bot._send_text = AsyncMock()
+    bot._update_text = AsyncMock()
+    entered, release = threading.Event(), threading.Event()
+    original = delivery._claim
+
+    def claim(*args, **kwargs):
+        result = original(*args, **kwargs)
+        entered.set()
+        assert release.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(delivery, "_claim", claim)
+    recovering = asyncio.create_task(
+        delivery.recover_channel_results(bot.channel_id, bot._deliver_shared_result)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await bot._handle_control(
+            "sender",
+            SimpleNamespace(
+                event=SimpleNamespace(message=SimpleNamespace(chat_id="conversation"))
+            ),
+            "/new",
+        )
+        assert bot.active_tasks["sender"] == "-1"
+    finally:
+        release.set()
+        await recovering
+    bot._send_text.assert_awaited_once()
+    bot._update_text.assert_not_awaited()
+    with get_session_local()() as db:
+        assert db.get(TaskChannelDelivery, accepted).status == "discarded"
+
+
+@pytest.mark.asyncio
+async def test_feishu_recovery_records_abandoned_reply_as_discarded(accepted, selected):
+    from xagent.web.channels.feishu.bot import FeishuBotInstance
+
+    complete(accepted)
+    bot = object.__new__(FeishuBotInstance)
+    bot._initialize_batch_control()
+    bot.active_tasks = {selected.selection.external_user_id: "-1"}
+    bot._send_text = AsyncMock()
+    bot._update_text = AsyncMock()
+    assert not await delivery.deliver_channel_result(
+        accepted, bot._deliver_shared_result
+    )
+    bot._send_text.assert_not_awaited()
+    bot._update_text.assert_not_awaited()
+    with get_session_local()() as db:
+        row = db.get(TaskChannelDelivery, accepted)
+        assert row.status == "discarded"
+        assert row.delivered_at is None
+        assert row.failure_count == 0
+    retry = AsyncMock()
+    await delivery.recover_channel_results(selected.selection.channel_id, retry)
+    retry.assert_not_awaited()

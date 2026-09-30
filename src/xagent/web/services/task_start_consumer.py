@@ -34,6 +34,7 @@ from .task_command_transport import (
     SettledTaskCommand,
     TaskCommandRejected,
     command_identity_matches_task,
+    command_processing_predicates,
     finish_task_command_no_commit,
 )
 from .task_coordinator_service import TaskLease as TaskOwnerLease
@@ -145,9 +146,7 @@ def _reject_start(
     owned = db.query(TaskExecutionCommand).filter(
         TaskExecutionCommand.id == row.id,
         TaskExecutionCommand.status == COMMAND_PROCESSING,
-        TaskExecutionCommand.claimed_by == row.claimed_by,
         TaskExecutionCommand.attempt_count == row.attempt_count,
-        TaskExecutionCommand.claim_expires_at > datetime.now(timezone.utc),
     )
     result = {"rejection_reason": reason}
     if (
@@ -189,6 +188,15 @@ def settle_failed_start_no_commit(db: Session, row: TaskExecutionCommand) -> Non
     )
     # A never-started new Task needs a terminal result. An append's failure
     # belongs to its command and must not overwrite the previous run's result.
+    stopped_before_start = (
+        isinstance(row.result, dict)
+        and row.result.get("rejection_reason") == "cancelled_before_admission"
+    )
+    error_message = (
+        "Task stopped before execution started."
+        if stopped_before_start
+        else "Task could not start."
+    )
     changed = (
         db.query(Task)
         .filter(
@@ -208,7 +216,7 @@ def settle_failed_start_no_commit(db: Session, row: TaskExecutionCommand) -> Non
                 Task.status: TaskStatus.FAILED,
                 Task.control_state: "failed",
                 Task.state_version: func.coalesce(Task.state_version, 0) + 1,
-                Task.error_message: "Task could not start.",
+                Task.error_message: error_message,
             },
             synchronize_session=False,
         )
@@ -247,9 +255,13 @@ def _commit_handoff(
             .where(
                 TaskExecutionCommand.id == command.id,
                 TaskExecutionCommand.status == COMMAND_PROCESSING,
-                TaskExecutionCommand.claimed_by == runner,
-                TaskExecutionCommand.attempt_count == command.attempt_count,
-                TaskExecutionCommand.claim_expires_at > datetime.now(timezone.utc),
+                *command_processing_predicates(
+                    db,
+                    command.id,
+                    runner,
+                    expected_attempt_count=command.attempt_count,
+                    owner_lease=owner_lease,
+                ),
             )
             .with_for_update()
         ).scalar_one_or_none()
@@ -338,6 +350,7 @@ def _commit_handoff(
             runner,
             result=result,
             expected_attempt_count=command.attempt_count,
+            owner_lease=owner_lease,
             require_live_claim=True,
         ):
             db.rollback()
