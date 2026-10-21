@@ -620,3 +620,145 @@ async def test_only_a_release_refusal_records_the_park(
         row = host.row(command_id)
         assert (row.status, row.result) == ("pending", expected)
         assert (row.defer_count, row.failure_count) == (0, 0)
+
+
+# ------------------------------------------- a completed pause stops parked input
+
+
+def _parked_message(
+    host: CapHost, task_id: int, *, attempts: int = 2, result: Any = "parked"
+) -> int:
+    command_id = host.enqueue(task_id, "message")
+    record = {"release_parked_attempt": attempts} if result == "parked" else result
+    _set_command(
+        host,
+        command_id,
+        attempt_count=attempts,
+        result=record,
+        payload={"client_message_id": f"turn-{command_id}", "message": "hi"},
+    )
+    return command_id
+
+
+def _user_turn(host: CapHost, task_id: int, turn_id: str) -> None:
+    from xagent.web.models.chat_message import TaskChatMessage
+
+    with host.factory() as db, db.begin():
+        db.add(
+            TaskChatMessage(
+                task_id=task_id,
+                user_id=host.user_id,
+                role="user",
+                content="hi",
+                message_type="user_message",
+                turn_id=turn_id,
+                delivery_status="pending",
+            )
+        )
+
+
+def _settle(host: CapHost, control_id: int) -> None:
+    from xagent.web.services.task_execution_admission import (
+        settle_cancelled_admissions,
+    )
+
+    with host.factory() as db, db.begin():
+        settle_cancelled_admissions(db, control_id)
+
+
+def _delivery(host: CapHost, task_id: int, turn_id: str) -> str | None:
+    from xagent.web.models.chat_message import TaskChatMessage
+
+    with host.factory() as db:
+        return (
+            db.query(TaskChatMessage.delivery_status)
+            .filter_by(task_id=task_id, turn_id=turn_id)
+            .scalar()
+        )
+
+
+def _terminal_events(host: CapHost, command_id: int) -> int:
+    from xagent.web.models.task_command_terminal_event import (
+        TaskCommandTerminalEvent,
+    )
+
+    with host.factory() as db:
+        return (
+            db.query(TaskCommandTerminalEvent)
+            .filter_by(task_command_id=command_id)
+            .count()
+        )
+
+
+async def test_a_completed_pause_stops_only_earlier_parked_messages_of_its_task(
+    cap_host: CapHost, gate: RecordingGate
+) -> None:
+    """Earlier, same task, current park record, message: stopped durably.
+    Everything else the pause passed or did not pass is left alone."""
+    host = cap_host
+    task_id = host.new_task(status=TaskStatus.PAUSED, run_id="run-1")
+    other_task = host.new_task(status=TaskStatus.RUNNING, run_id="run-2")
+    parked = _parked_message(host, task_id)
+    _user_turn(host, task_id, f"turn-{parked}")
+    stale = _parked_message(
+        host, task_id, attempts=3, result={"release_parked_attempt": 2}
+    )
+    unmarked = _parked_message(host, task_id, result={"delivery_outcome": "x"})
+    processing = _parked_message(host, task_id)
+    _set_command(host, processing, status="processing")
+    parked_start = host.enqueue(task_id, "start")
+    _set_command(
+        host, parked_start, attempt_count=1, result={"release_parked_attempt": 1}
+    )
+    foreign = _parked_message(host, other_task)
+    pause = host.enqueue(task_id, "pause")
+    later = _parked_message(host, task_id)
+    _set_command(host, pause, status="completed")
+
+    _settle(host, pause)
+
+    stopped = host.row(parked)
+    assert (stopped.status, stopped.error, stopped.result) == (
+        "failed",
+        "Task command stopped by a control request.",
+        {"rejection_reason": "cancelled_before_admission"},
+    )
+    assert stopped.attempt_count == 2 and stopped.completed_at is not None
+    assert _delivery(host, task_id, f"turn-{parked}") == "failed"
+    assert _terminal_events(host, parked) == 1
+    for kept, status in (
+        (stale, "pending"),
+        (unmarked, "pending"),
+        (processing, "processing"),
+        (parked_start, "pending"),
+        (foreign, "pending"),
+        (later, "pending"),
+    ):
+        assert host.row(kept).status == status
+        assert _terminal_events(host, kept) == 0
+
+
+@pytest.mark.parametrize("control", ["cancel", "message"])
+async def test_only_a_pause_stops_parked_messages(
+    cap_host: CapHost, gate: RecordingGate, control: str
+) -> None:
+    host = cap_host
+    task_id = host.new_task(status=TaskStatus.PAUSED, run_id="run-1")
+    parked = _parked_message(host, task_id)
+    command = host.enqueue(task_id, control)
+    _set_command(host, command, status="completed")
+    _settle(host, command)
+    assert host.row(parked).status == "pending"
+
+
+async def test_without_a_gate_a_pause_stops_no_parked_message(
+    cap_host: CapHost,
+) -> None:
+    """Default hosts never write the record; their settlement is unchanged."""
+    host = cap_host
+    task_id = host.new_task(status=TaskStatus.PAUSED, run_id="run-1")
+    parked = _parked_message(host, task_id)
+    pause = host.enqueue(task_id, "pause")
+    _set_command(host, pause, status="completed")
+    _settle(host, pause)
+    assert host.row(parked).status == "pending"

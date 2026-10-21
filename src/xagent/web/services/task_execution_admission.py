@@ -31,7 +31,7 @@ import functools
 import inspect
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.orm import Session, aliased
@@ -824,6 +824,8 @@ def settle_cancelled_admissions(db: Session, command_id: int) -> None:
         )
         .returning(TaskExecutionCommand.id)
     ).all()
+    if control.kind == "pause":
+        cancelled = [*cancelled, *_stop_release_parked_messages(db, control)]
     for cancelled_id in cancelled:
         command = db.get(TaskExecutionCommand, cancelled_id, populate_existing=True)
         assert command is not None
@@ -841,6 +843,75 @@ def settle_cancelled_admissions(db: Session, command_id: int) -> None:
                 include_command_identity=scope != "external",
             ),
         )
+
+
+def _stop_release_parked_messages(
+    db: Session, pause: TaskExecutionCommand
+) -> list[int]:
+    """Stop the earlier messages of the task the completed ``pause`` passed parked.
+
+    Runs only in the pause's successful completion transaction, the one that
+    fences its claim and the task owner (``finish_task_command_no_commit``),
+    so a rejected or stale pause stops nothing. A message qualifies only while
+    its current attempt is the one the host release fence refused
+    (``release_parked``): that attempt started nothing, so the user's later
+    pause wins over it instead of the message resuming the paused task once
+    claims reopen. It is failed with the same terminal outcome a control gives
+    a command still waiting for admission, and its claimed delivery row is
+    failed with it. Without a gate nothing writes the record, so nothing here
+    changes.
+    """
+    from .task_admission_execution import release_parked
+    from .task_release_gate import installed_release_gate
+
+    if installed_release_gate() is None:
+        return []
+    stopped = list(
+        db.scalars(
+            update(TaskExecutionCommand)
+            .where(
+                TaskExecutionCommand.task_id == pause.task_id,
+                TaskExecutionCommand.id < pause.id,
+                TaskExecutionCommand.kind == "message",
+                release_parked(TaskExecutionCommand),
+            )
+            .values(
+                status="failed",
+                error=_CONTROL_STOPPED_COMMAND,
+                completed_at=func.now(),
+                result={"rejection_reason": "cancelled_before_admission"},
+            )
+            .returning(TaskExecutionCommand.id)
+        ).all()
+    )
+    if not stopped:
+        return []
+    from .chat_history_service import DELIVERY_FAILED, mark_user_message_delivery
+    from .task_command_execution import _client_message_id
+
+    for stopped_id in stopped:
+        message = db.get(TaskExecutionCommand, stopped_id, populate_existing=True)
+        assert message is not None
+        payload: dict[str, Any] = (
+            message.payload if isinstance(message.payload, dict) else {}
+        )
+        # A first-party message's delivery row is keyed by its client id; an
+        # external continuation released its claim before it was parked.
+        turn_id = _client_message_id(payload.get("client_message_id"))
+        if turn_id is not None and payload.get("scope") is None:
+            mark_user_message_delivery(
+                db,
+                task_id=int(message.task_id),
+                turn_id=turn_id,
+                status=DELIVERY_FAILED,
+            )
+    logger.info(
+        "task_id=%s component=release-park pause_command_id=%s stopped_messages=%s",
+        pause.task_id,
+        pause.id,
+        stopped,
+    )
+    return stopped
 
 
 def cap_held_command_predicates(
