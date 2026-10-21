@@ -510,3 +510,21 @@ async def test_only_an_uninterrupted_close_settles(
     assert lease_runner(host, idle) is None and lease_runner(host, busy) is None
     # The close that cancelled live work released without settling it.
     assert gate.released == [(idle, None)]
+
+
+async def test_a_superseded_owner_settles_nothing(
+    cap_host: CapHost, gate: RecordingGate
+) -> None:
+    """An owner whose lease another acquisition replaced never settles for it."""
+    host = cap_host
+    target = host.new_task(status=TaskStatus.COMPLETED)
+    coordinator = await host.registry.ensure(target)
+    assert coordinator is not None
+    with host.factory() as db, db.begin():
+        # Recovery handed the task to a newer owner while this one stalled.
+        row = db.get(Task, target)
+        row.runner_id, row.lease_attempt_id = "newer-runner", "newer-attempt"
+    coordinator._ensure_idle_check()
+    await eventually(lambda: coordinator.state is runtime.CoordinatorState.CLOSED)
+    assert gate.released == []
+    assert lease_runner(host, target) == "newer-runner"
