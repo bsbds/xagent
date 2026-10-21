@@ -107,10 +107,18 @@ class ExecutionReleaseGate(Protocol):
         ...
 
 
+@dataclass
+class _JoinedRun:
+    task_id: int
+    run_id: str
+    used: bool = False
+
+
 _gate: ExecutionReleaseGate | None = None
 _permit: ContextVar[ExecutionPermit | None] = ContextVar(
     "xagent_execution_permit", default=None
 )
+_joined: ContextVar[_JoinedRun | None] = ContextVar("xagent_joined_run", default=None)
 
 
 def install_release_gate(gate: ExecutionReleaseGate) -> None:
@@ -134,6 +142,33 @@ def installed_release_gate() -> ExecutionReleaseGate | None:
 def current_claim_mode() -> ClaimMode:
     gate = _gate
     return ClaimMode.OPEN if gate is None else gate.claim_mode()
+
+
+def mark_joined_run(task_id: int, run_id: str) -> None:
+    """Record that guidance was confirmed injected into this live run.
+
+    Set where the injection is confirmed (``allow_injected_guidance``) for the
+    rest of the command's context, which the detached continuation copies,
+    whether or not team admission governs the command.
+    """
+    _joined.set(_JoinedRun(task_id, run_id))
+
+
+def claim_joined_run(task_id: int, run_id: str) -> bool:
+    """Whether this acquisition continues the confirmed join; single use."""
+    joined = _joined.get()
+    if (
+        joined is None
+        or joined.used
+        or (joined.task_id, joined.run_id)
+        != (
+            task_id,
+            run_id,
+        )
+    ):
+        return False
+    joined.used = True
+    return True
 
 
 def admit_execution(

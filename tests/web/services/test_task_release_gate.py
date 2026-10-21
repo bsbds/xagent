@@ -12,6 +12,7 @@ PostgreSQL, is exercised by the embedding application's own suite.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from typing import Any
 
@@ -180,6 +181,30 @@ async def test_fence_precedes_the_guidance_exemption(
                 db, task_id, runner_id="w", expected_run_id="run-1"
             )
     assert gate.admitted[-1].continuation is False
+
+
+async def test_guidance_is_a_continuation_without_team_admission(
+    cap_host: CapHost, gate: RecordingGate
+) -> None:
+    """Joining a live run is flagged whether or not admission governs the command."""
+    task_id = cap_host.new_task(status=TaskStatus.RUNNING, run_id="run-1")
+    with cap_host.factory() as db, db.begin():
+        db.get(Task, task_id).runner_id = "w"
+
+    def join_and_acquire(run_id: str) -> list[bool]:
+        with admission_execution(43, task_id, governed=False):
+            allow_injected_guidance(task_id, run_id)
+            for _ in range(2):
+                with cap_host.factory() as db, db.begin():
+                    acquire_task_lease_no_commit(
+                        db, task_id, runner_id="w", expected_run_id="run-1"
+                    )
+        return [a.continuation for a in gate.admitted[-2:]]
+
+    # Single use: only the acquisition that continues the join is flagged.
+    assert contextvars.copy_context().run(join_and_acquire, "run-1") == [True, False]
+    # Guidance confirmed for another run never flags this one.
+    assert contextvars.copy_context().run(join_and_acquire, "run-0") == [False, False]
 
 
 async def test_entering_a_kept_run_is_always_new(

@@ -65,6 +65,12 @@ def allow_injected_guidance(task_id: int, run_id: str | None) -> None:
     handle can drain during the await between this call and the continuation
     handle's own registration, which would otherwise leave nothing to infer.
     """
+    if run_id is not None:
+        from .task_release_gate import mark_joined_run
+
+        # The host release fence needs the join even when no admission
+        # context exists (team admission off).
+        mark_joined_run(task_id, run_id)
     context = _current.get()
     if context is not None and context.task_id == task_id and run_id is not None:
         _current.set(replace(context, injected_run_id=run_id))

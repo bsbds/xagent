@@ -1105,13 +1105,9 @@ def acquire_task_lease_no_commit(
     stored_run_id = result.scalar_one_or_none()
     if stored_run_id is None:
         return None
-    from .task_admission_execution import (
-        current_admission_execution,
-        require_execution_admission,
-    )
-    from .task_release_gate import admit_execution
+    from .task_admission_execution import require_execution_admission
+    from .task_release_gate import admit_execution, claim_joined_run
 
-    admission = current_admission_execution(task_id)
     # The host's release fence runs before admission's early returns: neither
     # a missing command context nor confirmed guidance may skip it. Guidance
     # is only flagged here; the host decides whether this process holds the
@@ -1120,11 +1116,7 @@ def acquire_task_lease_no_commit(
         db,
         task_id,
         str(stored_run_id),
-        continuation=(
-            not new_run
-            and admission is not None
-            and admission.injected_run_id == str(stored_run_id)
-        ),
+        continuation=not new_run and claim_joined_run(task_id, str(stored_run_id)),
         coordinated=coordinator is not None,
     )
     require_execution_admission(
