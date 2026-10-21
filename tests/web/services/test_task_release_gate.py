@@ -528,3 +528,95 @@ async def test_a_superseded_owner_settles_nothing(
     await eventually(lambda: coordinator.state is runtime.CoordinatorState.CLOSED)
     assert gate.released == []
     assert lease_runner(host, target) == "newer-runner"
+
+
+# ------------------------------------------------------- release-parked FIFO
+
+
+def _claimable(host: CapHost, command_id: int) -> bool:
+    with host.factory() as db:
+        return (
+            transport._claimable_query(
+                db, runner_id="worker", command_db_id=command_id
+            ).first()
+            is not None
+        )
+
+
+def _set_command(host: CapHost, command_id: int, **values: Any) -> None:
+    from xagent.web.models.task_command import TaskExecutionCommand
+
+    with host.factory() as db, db.begin():
+        db.query(TaskExecutionCommand).filter(
+            TaskExecutionCommand.id == command_id
+        ).update(values, synchronize_session=False)
+
+
+@pytest.mark.parametrize(
+    "stored_result",
+    [
+        None,
+        {},
+        {"unrelated": True},
+        # A record from an earlier attempt: a later claim voided it.
+        {"release_parked_attempt": 2},
+    ],
+    ids=["null", "empty", "unrelated", "stale_attempt"],
+)
+@pytest.mark.parametrize("control", ["pause", "cancel"])
+async def test_an_unmarked_attempted_command_still_blocks_controls(
+    cap_host: CapHost, gate: RecordingGate, stored_result: Any, control: str
+) -> None:
+    """Only a definite, current release-park record lets a control pass."""
+    host = cap_host
+    task_id = host.new_task(status=TaskStatus.RUNNING, run_id="run-1")
+    earlier = host.enqueue(task_id, "message")
+    _set_command(host, earlier, attempt_count=3, result=stored_result)
+    later = host.enqueue(task_id, control)
+    assert not _claimable(host, later)
+
+
+@pytest.mark.parametrize("control", ["pause", "cancel"])
+async def test_a_release_parked_command_lets_only_controls_pass(
+    cap_host: CapHost, gate: RecordingGate, control: str
+) -> None:
+    host = cap_host
+    task_id = host.new_task(status=TaskStatus.RUNNING, run_id="run-1")
+    earlier = host.enqueue(task_id, "message")
+    record = {"delivery_outcome": "outcome_unknown", "release_parked_attempt": 3}
+    _set_command(host, earlier, attempt_count=3, result=record)
+    assert _claimable(host, host.enqueue(task_id, control))
+    # A process without a gate keeps the legacy FIFO, record or not.
+    gate_module.uninstall_release_gate(gate)
+    try:
+        assert not _claimable(host, host.enqueue(task_id, control))
+    finally:
+        gate_module.install_release_gate(gate)
+    assert not _claimable(host, host.enqueue(task_id, "message"))
+    # Processing again (a claim): the record no longer describes it.
+    _set_command(host, earlier, status="processing")
+    assert not _claimable(host, host.enqueue(task_id, control))
+
+
+async def test_only_a_release_refusal_records_the_park(
+    cap_host: CapHost, gate: RecordingGate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record keeps an existing result beside it and only marks the
+    attempt the fence refused; another admission wait records nothing."""
+    host = cap_host
+    set_limit(monkeypatch, 10)
+    task_id = host.new_task()
+    command_id = host.enqueue(task_id, "start")
+    keep = {"delivery_outcome": "outcome_unknown"}
+    _set_command(host, command_id, result=keep)
+    refusals = [AdmissionWaiting("team slot"), ExecutionClosed("release")]
+
+    async def refused(command: Any) -> None:
+        raise refusals.pop(0)
+
+    for expected in (keep, {**keep, "release_parked_attempt": 2}):
+        _set_command(host, command_id, retry_available_at=None)
+        assert await asyncio.wait_for(transport.dispatch_one_task_command(refused), 30)
+        row = host.row(command_id)
+        assert (row.status, row.result) == ("pending", expected)
+        assert (row.defer_count, row.failure_count) == (0, 0)

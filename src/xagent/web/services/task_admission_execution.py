@@ -9,9 +9,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, false, func, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from ..models.task import Task
 from ..models.task_admission import TaskAdmissionTicket
@@ -113,7 +115,40 @@ def require_execution_admission_isolated(task_id: int) -> None:
         require_execution_admission(db, task_id)
 
 
-def return_to_admission_queue(command_id: int, runner_id: str, attempt: int) -> bool:
+#: ``TaskExecutionCommand.result`` key recording that the claim attempt with
+#: this number was returned to the queue by the host release fence
+#: (``task_release_gate.ExecutionClosed``). That refusal is raised before the
+#: handler's first durable write for a detached execution, or inside the
+#: RUNNING transaction it rolls back, so the attempt started nothing. The
+#: record is only meaningful while the row is pending at that same attempt
+#: count: the next claim increments the count and voids it. A cancel or pause
+#: of the task may pass such a row (``_unfinished_earlier_command``) and leaves
+#: it pending; nothing else reads the key.
+RELEASE_PARKED_ATTEMPT = "release_parked_attempt"
+
+
+def release_parked(command: Any) -> ColumnElement[bool]:
+    """SQL: ``command`` (an alias of the command table) is release-parked now.
+
+    Never NULL: a missing result or key is a definite false, so a negated use
+    (a control's FIFO barrier) still counts every unmarked row as blocking.
+    """
+    marker = command.result[RELEASE_PARKED_ATTEMPT].as_integer()
+    return and_(
+        command.status == "pending",
+        func.coalesce(marker == command.attempt_count, false()),
+    )
+
+
+def return_to_admission_queue(
+    command_id: int, runner_id: str, attempt: int, *, parked_by_release: bool = False
+) -> bool:
+    """Requeue a claim that was not admitted, without spending any budget.
+
+    ``parked_by_release`` records the attempt as refused by the host release
+    fence (see :data:`RELEASE_PARKED_ATTEMPT`); an existing result record,
+    such as a message's outcome-unknown record, is kept beside it.
+    """
     from ..models.database import get_session_local
     from .task_command_transport import command_processing_predicates
 
@@ -126,18 +161,26 @@ def return_to_admission_queue(command_id: int, runner_id: str, attempt: int) -> 
         owned = command_processing_predicates(
             db, command_id, runner_id, expected_attempt_count=attempt
         )
+        values: dict[str, Any] = {
+            "status": "pending",
+            "claimed_by": None,
+            "claim_expires_at": None,
+            "retry_available_at": datetime.now(timezone.utc)
+            + timedelta(seconds=retry_delay),
+            "error": None,
+        }
+        if parked_by_release:
+            # Read under the same owner lock the update below is fenced by.
+            current = db.scalar(
+                select(TaskExecutionCommand.result).where(*owned).with_for_update()
+            )
+            kept = dict(current) if isinstance(current, dict) else {}
+            values["result"] = {**kept, RELEASE_PARKED_ATTEMPT: attempt}
         return (
             db.execute(
                 update(TaskExecutionCommand)
                 .where(*owned)
-                .values(
-                    status="pending",
-                    claimed_by=None,
-                    claim_expires_at=None,
-                    retry_available_at=datetime.now(timezone.utc)
-                    + timedelta(seconds=retry_delay),
-                    error=None,
-                )
+                .values(**values)
                 .returning(TaskExecutionCommand.id)
             ).scalar_one_or_none()
             is not None

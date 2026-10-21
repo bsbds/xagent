@@ -67,7 +67,7 @@ from .task_dispatch_cap import (
 )
 from .task_execution_host import consumes_task_commands
 from .task_lease_service import get_runner_id
-from .task_release_gate import ClaimMode
+from .task_release_gate import ClaimMode, installed_release_gate
 
 if TYPE_CHECKING:
     from .task_coordinator_service import TaskLease as TaskOwnerLease
@@ -923,7 +923,9 @@ def _unfinished_earlier_command(cap: DispatchCapSnapshot | None = None) -> Any:
     """An earlier command of the same task that still blocks this one.
 
     A cancel or pause may pass an earlier command that waits for an
-    admission ticket. While ``cap`` is closed (the process starts no new
+    admission ticket, or one the host release fence parked
+    (``task_admission_execution.RELEASE_PARKED_ATTEMPT``); a parked one is
+    left pending. While ``cap`` is closed (the process starts no new
     execution) or batch-closed (it starts no batch command), a control in
     ``CAP_OVERTAKING_CONTROL_KINDS`` may also pass an earlier pending command
     that would open an execution, was never claimed, and whose task holds no
@@ -947,6 +949,7 @@ def _unfinished_earlier_command(cap: DispatchCapSnapshot | None = None) -> Any:
     ``dispatch_one_task_command``, ``_command_lock`` in ``execute_command``).
     A claim path that bypasses the task coordinator must keep that rule.
     """
+    from .task_admission_execution import release_parked
     from .task_execution_admission import waiting_admission
 
     earlier = aliased(TaskExecutionCommand)
@@ -960,6 +963,17 @@ def _unfinished_earlier_command(cap: DispatchCapSnapshot | None = None) -> Any:
             waiting_admission(earlier.id),
         ),
     ]
+    if installed_release_gate() is not None:
+        # Nor one the host release fence parked: its last attempt started
+        # nothing, and it stays pending after the control. Only a process
+        # with a gate writes the record, so without one the clause (and the
+        # legacy SQL) stays as it was; such a process keeps the stricter FIFO.
+        clauses.append(
+            ~and_(
+                TaskExecutionCommand.kind.in_(("cancel", "pause")),
+                release_parked(earlier),
+            )
+        )
     if cap is not None and cap.batch_closed:
         held = true() if cap.closed else _held_below_cap(earlier)
         clauses.append(
@@ -2110,12 +2124,18 @@ async def _dispatch_task_command(
             command.id, command.task_id, command.admission_required
         ):
             result = await executor(command)
-    except AdmissionWaiting:
+    except AdmissionWaiting as waiting:
         disposition_name = "return_to_admission_queue"
+        from .task_release_gate import ExecutionClosed
+
+        parked_by_release = isinstance(waiting, ExecutionClosed)
 
         def persist_admission_wait() -> bool:
             return return_to_admission_queue(
-                command.id, runner_id, command.attempt_count
+                command.id,
+                runner_id,
+                command.attempt_count,
+                parked_by_release=parked_by_release,
             )
 
         disposition_operation = persist_admission_wait
