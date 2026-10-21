@@ -77,6 +77,7 @@ from .task_lease_service import (
     task_lease_holder_predicate,
     utc_now,
 )
+from .task_release_gate import execution_permit, reserve_execution_permit_isolated
 
 if TYPE_CHECKING:
     from .task_orchestrator import TaskTurnPayload, _PreparedTurn
@@ -2473,11 +2474,24 @@ async def handle_task_message(
                             "until the resume owner is ready",
                             task_id,
                         )
+                    # Posted guidance joined the live run (``posted`` needs a
+                    # live lease here) and continues it; the release fence
+                    # still checks that this process holds that run. A message
+                    # that did not join resumes the run later as a new
+                    # execution, in the detached resume below, so the host's
+                    # permit is reserved now, before the transition writes
+                    # anything, and a refusal requeues the command.
+                    resume_permit = None
                     if posted:
                         allow_injected_guidance(task_id, task_run_id)
                     else:
                         await run_db_io_cancellation_safe(
                             lambda: require_execution_admission_isolated(task_id)
+                        )
+                        resume_permit = await run_db_io_cancellation_safe(
+                            lambda: reserve_execution_permit_isolated(
+                                task_id, task_run_id
+                            )
                         )
                     try:
                         handoff_snapshot = await task_execution_controller.transition(
@@ -2684,68 +2698,71 @@ async def handle_task_message(
                     previous_task = task_execution_service.background_task_manager.running_tasks.get(
                         task_id
                     )
-                    bg_task = asyncio.create_task(
-                        task_execution_service.execute_resume_background(
-                            task_id=task_id,
-                            agent_service=agent_service,
-                            task_owner_user_id=task_owner_user_id,
-                            # Also the transition's run, for the same reason
-                            # as the registration below: a ``None`` here
-                            # reaches ``acquire_task_lease_no_commit``, whose
-                            # ``candidate_run_id = expected_run_id or uuid4()``
-                            # would mint a *second* run and claim the lease
-                            # under it -- leaving the row, the coordinator
-                            # registration, and the execution on three
-                            # different answers for one resume.
-                            #
-                            # Two further effects on that formerly-NULL path,
-                            # both intended. The claim now carries
-                            # ``WHERE run_id = :expected``, so if the run
-                            # rotates before it lands -- the window includes
-                            # the unbounded ``await previous_task`` -- the
-                            # claim returns None and the delivery fails
-                            # cleanly instead of stealing the lease. And the
-                            # ``expected_run_id is None`` branch that clears
-                            # the checkpoint pointers is now skipped, which
-                            # is what a resume wants: those pointers are the
-                            # anchor it is resuming from.
-                            expected_run_id=handoff_snapshot.run_id,
-                            trusted_task_source=routing.task_source,
-                            previous_task=previous_task,
-                            resolved_execution_scope=resolved_execution_scope,
-                            # Covers a run ending between the transition above
-                            # and the lease claim (lease recovery or the run's
-                            # own finalizer can still settle the row here).
-                            refuse_terminal_status=True,
-                            # A fresh claim was made by this attempt, so a
-                            # claim refused for an ended run can withdraw the
-                            # never-injected row for a new turn.
-                            delivery_claimed_fresh=not delivery_recovered_claim,
-                            pending_user_message=(
-                                None
-                                if posted
-                                else {
-                                    "execution_message": user_message_for_llm,
-                                    "display_message": display_user_message,
-                                    "files": display_file_refs,
-                                    "turn_id": turn_id,
-                                    # The pre-injection observation, carried
-                                    # rather than re-read: the deferred path
-                                    # injects later still, so a read there
-                                    # would be even further past the point
-                                    # where the answered row is identifiable.
-                                    "interaction_id": active_interaction_id,
-                                }
-                            ),
-                            delivery_turn_id=turn_id,
-                            delivery_already_dispatched=bool(posted),
-                            delivery_notifier=(
-                                None
-                                if posted or suppress_delivery_ack
-                                else make_delivery_notifier(reply, client_message_id)
-                            ),
+                    with execution_permit(resume_permit):
+                        bg_task = asyncio.create_task(
+                            task_execution_service.execute_resume_background(
+                                task_id=task_id,
+                                agent_service=agent_service,
+                                task_owner_user_id=task_owner_user_id,
+                                # Also the transition's run, for the same reason
+                                # as the registration below: a ``None`` here
+                                # reaches ``acquire_task_lease_no_commit``, whose
+                                # ``candidate_run_id = expected_run_id or uuid4()``
+                                # would mint a *second* run and claim the lease
+                                # under it -- leaving the row, the coordinator
+                                # registration, and the execution on three
+                                # different answers for one resume.
+                                #
+                                # Two further effects on that formerly-NULL path,
+                                # both intended. The claim now carries
+                                # ``WHERE run_id = :expected``, so if the run
+                                # rotates before it lands -- the window includes
+                                # the unbounded ``await previous_task`` -- the
+                                # claim returns None and the delivery fails
+                                # cleanly instead of stealing the lease. And the
+                                # ``expected_run_id is None`` branch that clears
+                                # the checkpoint pointers is now skipped, which
+                                # is what a resume wants: those pointers are the
+                                # anchor it is resuming from.
+                                expected_run_id=handoff_snapshot.run_id,
+                                trusted_task_source=routing.task_source,
+                                previous_task=previous_task,
+                                resolved_execution_scope=resolved_execution_scope,
+                                # Covers a run ending between the transition above
+                                # and the lease claim (lease recovery or the run's
+                                # own finalizer can still settle the row here).
+                                refuse_terminal_status=True,
+                                # A fresh claim was made by this attempt, so a
+                                # claim refused for an ended run can withdraw the
+                                # never-injected row for a new turn.
+                                delivery_claimed_fresh=not delivery_recovered_claim,
+                                pending_user_message=(
+                                    None
+                                    if posted
+                                    else {
+                                        "execution_message": user_message_for_llm,
+                                        "display_message": display_user_message,
+                                        "files": display_file_refs,
+                                        "turn_id": turn_id,
+                                        # The pre-injection observation, carried
+                                        # rather than re-read: the deferred path
+                                        # injects later still, so a read there
+                                        # would be even further past the point
+                                        # where the answered row is identifiable.
+                                        "interaction_id": active_interaction_id,
+                                    }
+                                ),
+                                delivery_turn_id=turn_id,
+                                delivery_already_dispatched=bool(posted),
+                                delivery_notifier=(
+                                    None
+                                    if posted or suppress_delivery_ack
+                                    else make_delivery_notifier(
+                                        reply, client_message_id
+                                    )
+                                ),
+                            )
                         )
-                    )
                     task_execution_service.background_task_manager.register_reserved_resume(
                         task_id,
                         bg_task,
@@ -4046,6 +4063,21 @@ async def resume_task(
             resume_snapshot: Any | None = None
             bg_task: asyncio.Task[None] | None = None
             try:
+                # The detached resume below enters RUNNING after this handler
+                # has written the transition. The host's release permit is
+                # reserved first, so a refusal requeues the command before
+                # anything was written for it.
+                resume_permit = await run_db_io_cancellation_safe(
+                    lambda: reserve_execution_permit_isolated(
+                        task_id, task_fields.run_id
+                    )
+                )
+            except BaseException:
+                task_execution_service.background_task_manager.release_resume_reservation(
+                    task_id
+                )
+                raise
+            try:
                 resume_snapshot = await task_execution_controller.transition(
                     task_id,
                     TaskControlState.RESUME_REQUESTED,
@@ -4128,27 +4160,28 @@ async def resume_task(
                         task_id
                     )
                 )
-                bg_task = asyncio.create_task(
-                    task_execution_service.execute_resume_background(
-                        task_id=task_id,
-                        agent_service=agent_service,
-                        task_owner_user_id=task_owner_user_id,
-                        expected_run_id=resume_snapshot.run_id,
-                        trusted_task_source=task_fields.source,
-                        previous_task=previous_task,
-                        # Not `resolved_execution_scope`: that value is the
-                        # off-turn downgrade used above to obtain
-                        # `agent_service` (which, on an agent-cache miss, may
-                        # itself have built the workspace/sandbox from it --
-                        # see the comment above `resolved_execution_scope`).
-                        # The scheduled turn selects the namespace its own
-                        # output lands under, so it explicitly gets
-                        # `EXECUTION_SCOPE_NOT_PROVIDED` and runs its own
-                        # fail-closed resolution instead of inheriting a
-                        # disputed answer.
-                        resolved_execution_scope=EXECUTION_SCOPE_NOT_PROVIDED,
+                with execution_permit(resume_permit):
+                    bg_task = asyncio.create_task(
+                        task_execution_service.execute_resume_background(
+                            task_id=task_id,
+                            agent_service=agent_service,
+                            task_owner_user_id=task_owner_user_id,
+                            expected_run_id=resume_snapshot.run_id,
+                            trusted_task_source=task_fields.source,
+                            previous_task=previous_task,
+                            # Not `resolved_execution_scope`: that value is the
+                            # off-turn downgrade used above to obtain
+                            # `agent_service` (which, on an agent-cache miss, may
+                            # itself have built the workspace/sandbox from it --
+                            # see the comment above `resolved_execution_scope`).
+                            # The scheduled turn selects the namespace its own
+                            # output lands under, so it explicitly gets
+                            # `EXECUTION_SCOPE_NOT_PROVIDED` and runs its own
+                            # fail-closed resolution instead of inheriting a
+                            # disputed answer.
+                            resolved_execution_scope=EXECUTION_SCOPE_NOT_PROVIDED,
+                        )
                     )
-                )
                 task_execution_service.background_task_manager.register_reserved_resume(
                     task_id,
                     bg_task,
@@ -4229,6 +4262,9 @@ async def resume_task(
             reason,
             reason_code="invalid_command_payload",
         )
+    except AdmissionWaiting:
+        # Not a failure: the command waits in its queue without a client error.
+        raise
     except RuntimeError as e:
         logger.error("Runtime error resuming task %s: %s", task_id, e, exc_info=True)
         await reply(

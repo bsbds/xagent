@@ -4839,16 +4839,21 @@ class BackgroundTaskManager:
         self._record_cap_state(
             DispatchCapSnapshot(
                 policy=policy, active_ids=self._active_task_ids()
-            ).closed,
+            ).at_limit,
             now,
         )
 
     def dispatch_cap_snapshot(self, policy: DispatchPolicy) -> DispatchCapSnapshot:
+        from .task_release_gate import current_claim_mode
+
         snapshot = DispatchCapSnapshot(
-            policy=policy, active_ids=self._active_task_ids()
+            policy=policy,
+            active_ids=self._active_task_ids(),
+            claims=current_claim_mode(),
         )
         self._cap_last_policy = policy
-        self._record_cap_state(snapshot.closed, self._cap_clock())
+        # Time held by a release drain is not time at the dispatch cap.
+        self._record_cap_state(snapshot.at_limit, self._cap_clock())
         return snapshot
 
     def reserve_dispatch_slot(

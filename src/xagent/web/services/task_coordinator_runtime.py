@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from enum import Enum
 from typing import Any, Awaitable, Callable, TypeVar
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -49,6 +49,7 @@ from .task_dispatch_cap import (
 )
 from .task_lease_service import TaskLease as ExecutionLease
 from .task_lease_service import TaskLeaseHeartbeatOutcome, get_runner_id
+from .task_release_gate import ClaimMode, release_ownership
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,8 @@ class TaskCoordinator:
         self._heartbeat_error: BaseException | None = None
         self._recovery_required = False
         self._released = False
+        # Set by ``_close`` when it had to cancel live work; see ``_release``.
+        self._interrupted = False
         self._heartbeat_done: asyncio.Future[None] | None = None
         self._renewal_waiter: asyncio.Future[None] | None = None
         self._retry_at: float | None = None
@@ -387,9 +390,18 @@ class TaskCoordinator:
             )
 
     def _release(self) -> bool:
+        """Release ownership on close; the host settles only an uninterrupted owner.
+
+        A close that cancelled live commands or executions (host shutdown, lost
+        renewal) has no proof that their work finished, so what this process
+        owed for the task stays unsettled for the host to report.
+        """
         assert self.lease is not None
         with self._registry.session_factory() as db, db.begin():
-            return release_task_lease_no_commit(db, self.lease)
+            released = release_task_lease_no_commit(db, self.lease)
+            if released and not self._interrupted:
+                release_ownership(db, self.task_id)
+            return released
 
     async def _start(self) -> None:
         self.lease = await run_db_io_cancellation_safe(self._acquire)
@@ -644,6 +656,17 @@ class TaskCoordinator:
         commands would wait here for a free slot, so they do not keep the lease
         and any process with room may claim them. Not applied to a RUNNING
         task, whose orphaned row keeps the busy/recover handling.
+
+        Under a host release drain (``held_by_cap.claims`` is not ``OPEN``) the
+        process will not claim them later either, so a pending command keeps
+        the lease only if this process would still claim it: with executions
+        closed, a command that is not held and not stuck behind a held one it
+        cannot overtake; with every claim closed, none. A lease kept for work
+        this process never claims would hold the task's responsibility open
+        until the drain expires.
+
+        The release commits together with the host's settlement of what this
+        process owed for the task (``task_release_gate.release_ownership``).
         """
         assert self.lease is not None
         with self._registry.session_factory() as db, db.begin():
@@ -668,7 +691,24 @@ class TaskCoordinator:
                 and task.status != TaskStatus.RUNNING
             )
             if exclude_held:
-                unfinished = unfinished.where(~held_execution)
+                assert held_by_cap is not None
+                processing = TaskExecutionCommand.status == "processing"
+                if held_by_cap.claims is ClaimMode.CLOSED:
+                    held_execution = TaskExecutionCommand.status == "pending"
+                    unfinished = unfinished.where(processing)
+                elif held_by_cap.claims is ClaimMode.EXECUTION_CLOSED:
+                    from .task_command_transport import _unfinished_earlier_command
+
+                    blocked = _unfinished_earlier_command(held_by_cap)
+                    unfinished = unfinished.where(
+                        or_(processing, and_(~held_execution, ~blocked))
+                    )
+                    held_execution = and_(
+                        TaskExecutionCommand.status == "pending",
+                        or_(held_execution, blocked),
+                    )
+                else:
+                    unfinished = unfinished.where(~held_execution)
             pending = db.execute(unfinished.limit(1)).first()
             if pending is not None:
                 return "busy"
@@ -689,17 +729,29 @@ class TaskCoordinator:
                 return "recover"
             if not release_task_lease_no_commit(db, self.lease):
                 return "recover"
+            release_ownership(db, self.task_id)
         if held and held_by_cap is not None:
-            logger.info(
-                "Task %s lease released by runner %s at its dispatch cap or batch "
-                "line (limit=%s, active=%s); %s queued execution command(s) left "
-                "for a process with a free slot",
-                self.task_id,
-                self.lease.runner_id,
-                held_by_cap.limit,
-                len(held_by_cap.active_ids),
-                held,
-            )
+            if held_by_cap.claims is not ClaimMode.OPEN:
+                logger.info(
+                    "Task %s lease released by runner %s during a release drain "
+                    "(claims=%s); %s queued command(s) left for a process that "
+                    "will claim them",
+                    self.task_id,
+                    self.lease.runner_id,
+                    held_by_cap.claims.value,
+                    held,
+                )
+            else:
+                logger.info(
+                    "Task %s lease released by runner %s at its dispatch cap or "
+                    "batch line (limit=%s, active=%s); %s queued execution "
+                    "command(s) left for a process with a free slot",
+                    self.task_id,
+                    self.lease.runner_id,
+                    held_by_cap.limit,
+                    len(held_by_cap.active_ids),
+                    held,
+                )
         return "released"
 
     async def _check_idle(self) -> None:
@@ -857,6 +909,13 @@ class TaskCoordinator:
             await asyncio.gather(self._startup, return_exceptions=True)
             if self._idle_task is not None:
                 await cancel_and_drain_async_task(self._idle_task)
+            self._interrupted = (
+                any(not t.done() for t in self._command_tasks)
+                or any(not t.done() for t in self._children)
+                or (
+                    self._execution_task is not None and not self._execution_task.done()
+                )
+            )
             await asyncio.gather(
                 *(cancel_and_drain_async_task(t) for t in tuple(self._command_tasks)),
                 return_exceptions=True,
@@ -949,6 +1008,19 @@ async def execute_coordinated_command(
             # The transport still owns this exact claim. Re-enter through the
             # registry after the old owner has drained, without redelivering it.
             continue
+
+
+def owned_task_ids() -> tuple[int, ...]:
+    """Tasks this loop's process still holds a task owner for, closing ones too.
+
+    Empty means every owner lease this process took has been released or left
+    behind by a closed owner; a host waiting for its ownership to drain checks
+    this together with ``task_command_dispatch_quiescent``.
+    """
+    registry = _registry
+    if registry is None or registry.loop is not asyncio.get_running_loop():
+        return ()
+    return tuple(registry._coordinators)
 
 
 def task_coordinators_closing() -> bool:

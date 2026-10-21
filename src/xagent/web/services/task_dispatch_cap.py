@@ -22,6 +22,7 @@ from ...config import (
     get_dispatcher_interactive_reserve_per_process,
     get_dispatcher_max_inflight_per_process,
 )
+from .task_release_gate import ClaimMode
 
 logger = logging.getLogger(__name__)
 
@@ -74,22 +75,36 @@ class DispatchCapSnapshot:
     interactive command may take a slot while fewer than ``limit`` tasks are
     active, a batch command only while fewer than ``limit - interactive_reserve``
     are.
+
+    ``claims`` is the host release gate's view (``task_release_gate``). Any
+    mode other than ``OPEN`` closes the snapshot whatever its capacity, so the
+    process claims exactly what it claims at its limit: controls and commands
+    of tasks it already runs. ``CLOSED`` additionally means the dispatcher
+    claims nothing; that is decided before any snapshot is used for a scan.
     """
 
     policy: DispatchPolicy
     active_ids: frozenset[int]
+    claims: ClaimMode = ClaimMode.OPEN
 
     @property
     def limit(self) -> int:
         return self.policy.limit
 
     @property
-    def closed(self) -> bool:
+    def at_limit(self) -> bool:
+        """Capacity alone is exhausted; what the diagnostics line reports."""
         return len(self.active_ids) >= self.limit
 
     @property
+    def closed(self) -> bool:
+        return self.claims is not ClaimMode.OPEN or self.at_limit
+
+    @property
     def batch_closed(self) -> bool:
-        return len(self.active_ids) >= self.limit - self.policy.interactive_reserve
+        return self.claims is not ClaimMode.OPEN or (
+            len(self.active_ids) >= self.limit - self.policy.interactive_reserve
+        )
 
     def admits(self, task_id: int, *, interactive: bool) -> bool:
         """Whether a command of ``task_id`` may open an execution.

@@ -267,7 +267,13 @@ def begin_task_execution_no_commit(
     if started_run is None:
         return None
     from .task_admission_execution import require_execution_admission
+    from .task_release_gate import admit_execution
 
+    # The row was not RUNNING, so this is always a new execution for the
+    # host's release fence, whatever run id it keeps.
+    admit_execution(
+        db, lease.task_id, str(started_run), continuation=False, coordinated=True
+    )
     require_execution_admission(
         db, lease.task_id, continuing_run_id=None if new_run else str(started_run)
     )

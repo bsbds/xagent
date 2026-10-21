@@ -67,6 +67,7 @@ from .task_dispatch_cap import (
 )
 from .task_execution_host import consumes_task_commands
 from .task_lease_service import get_runner_id
+from .task_release_gate import ClaimMode
 
 if TYPE_CHECKING:
     from .task_coordinator_service import TaskLease as TaskOwnerLease
@@ -1698,6 +1699,9 @@ _dispatcher_slot_freed: asyncio.Event | None = None
 _dispatcher_task: asyncio.Task[Any] | None = None
 _dispatcher_loop: asyncio.AbstractEventLoop | None = None
 _prompt_dispatch_tasks: set[asyncio.Task[bool]] = set()
+# Dispatch attempts in flight on this process's loop; see
+# ``task_command_dispatch_quiescent``.
+_inflight_dispatches = 0
 
 
 def notify_task_command_dispatcher() -> None:
@@ -1956,7 +1960,31 @@ def count_claimable_task_commands(db: Session, *, runner_id: str) -> int:
     )
 
 
+def task_command_dispatch_quiescent() -> bool:
+    """Whether no dispatch attempt of this process is in flight.
+
+    An attempt counts from its claim decision until it returns, including the
+    command application it hands to the task owner. A host that just closed
+    its claims (``task_release_gate.ClaimMode.CLOSED``) and then sees this
+    true knows every later attempt observes the closed mode.
+    """
+    return _inflight_dispatches == 0 and not _prompt_dispatch_tasks
+
+
 async def dispatch_one_task_command(
+    executor: CommandExecutor,
+    *,
+    command_db_id: int | None = None,
+) -> bool:
+    global _inflight_dispatches
+    _inflight_dispatches += 1
+    try:
+        return await _dispatch_one_task_command(executor, command_db_id=command_db_id)
+    finally:
+        _inflight_dispatches -= 1
+
+
+async def _dispatch_one_task_command(
     executor: CommandExecutor,
     *,
     command_db_id: int | None = None,
@@ -1978,6 +2006,9 @@ async def dispatch_one_task_command(
     skipped_task_ids = set(registry.busy_command_tasks())
     while True:
         cap = build_dispatch_cap_snapshot()
+        if cap.claims is ClaimMode.CLOSED:
+            # The host release gate closed every claim; commands stay durable.
+            return False
         candidate = await run_db_io_cancellation_safe(
             lambda: _find_command_candidate(command_db_id, tuple(skipped_task_ids), cap)
         )
