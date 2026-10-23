@@ -2909,6 +2909,71 @@ def test_lookup_user_keeps_matches_when_a_later_page_fails(monkeypatch):
     assert result["error"] == "internal_error"
 
 
+@pytest.mark.parametrize("stop", ["page_failure", "page_cap"])
+def test_lookup_user_never_treats_an_incomplete_exact_match_as_unique(
+    monkeypatch, stop
+):
+    """Display names are not unique and users.list has no defined order: an
+    exact match from a partial scan may hide a same-name member on an unread
+    page, so the result must tell the model not to mention anyone from it."""
+    first_page = [_member("U0CHELSEA1", "cmac", "Chelsea Macatulad", "Chelsea")]
+    hidden_page = [_member("U0CHELSEA2", "crivera", "Chelsea Rivera", "Chelsea")]
+    responses = _users_list_pages(first_page, hidden_page)
+    if stop == "page_failure":
+        responses[1] = MockResponse({"ok": False, "error": "internal_error"})
+    else:
+        monkeypatch.setattr(slack, "MAX_PAGES", 1)
+    monkeypatch.setattr(slack.requests, "request", Mock(side_effect=responses))
+
+    result = json.loads(slack.slack_lookup_user("Chelsea"))
+
+    assert result["match"] == "exact"
+    assert [user["id"] for user in result["users"]] == ["U0CHELSEA1"]
+    assert result["directory_complete"] is False
+    assert "Do not mention anyone from this result" in result["message"]
+    assert "email address or Slack user id" in result["message"]
+
+
+def test_lookup_user_complete_exact_match_carries_no_partial_warning(monkeypatch):
+    monkeypatch.setattr(
+        slack.requests,
+        "request",
+        Mock(side_effect=_users_list_pages([_member("U0CHELSEA1", "cmac", "Chelsea")])),
+    )
+
+    result = json.loads(slack.slack_lookup_user("Chelsea"))
+
+    assert result["directory_complete"] is True
+    assert "message" not in result
+
+
+async def test_lookup_user_description_forbids_mentions_from_a_partial_scan():
+    tools = {t.name: t for t in await slack.mcp.list_tools()}
+    description = " ".join((tools["slack_lookup_user"].description or "").split())
+    assert (
+        "even an exact match may not be the only person with that name" in description
+    )
+    assert "do not mention anyone from that result" in description
+
+
+@pytest.mark.parametrize("query", ["chelsea m", "chel mac"])
+def test_lookup_user_prefix_splits_names_on_underscores(monkeypatch, query):
+    # The handle is the only searchable name, so no other variant can mask
+    # the separator; "_" must split words like "." and spaces do.
+    monkeypatch.setattr(
+        slack.requests,
+        "request",
+        Mock(
+            side_effect=_users_list_pages([_member("U0CHELSEA1", "chelsea_macatulad")])
+        ),
+    )
+
+    result = json.loads(slack.slack_lookup_user(query))
+
+    assert result["match"] == "prefix"
+    assert [user["id"] for user in result["users"]] == ["U0CHELSEA1"]
+
+
 def test_lookup_user_marks_directory_incomplete_after_max_pages(monkeypatch):
     monkeypatch.setattr(slack, "MAX_PAGES", 1)
     monkeypatch.setattr(

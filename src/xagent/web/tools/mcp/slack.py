@@ -65,8 +65,9 @@ _SLACK_USER_MENTION_PATTERN = re.compile(r"^<@([UW][A-Z0-9]{5,})(?:\|[^>]*)?>$")
 _EMAIL_PATTERN = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
 # Splits a folded name into words for slack_lookup_user's prefix tier, so
 # "chelsea.m", "Chelsea Macatulad" and "chelsea_m" all split on their
-# separators.
-_NAME_WORD_SEPARATOR = re.compile(r"[^\w]+")
+# separators. "_" is a word character to \w, so it is named explicitly;
+# Unicode letters and digits still stay inside words.
+_NAME_WORD_SEPARATOR = re.compile(r"[\W_]+")
 # Upper bound on the members one slack_lookup_user call returns. A name that
 # matches more people than this is too vague to act on anyway; the response
 # flags truncation so the model asks for something more specific.
@@ -1141,8 +1142,11 @@ def _lookup_result(
 
     truncated means more members matched than MAX_USER_MATCHES returned;
     directory_complete=false means the name scan stopped before the end of
-    the directory (a page failed, or MAX_PAGES ran out), so an absent or
-    prefix-only answer is not authoritative.
+    the directory (a page failed, or MAX_PAGES ran out). No answer from such
+    a scan is authoritative -- not even an exact one: Slack names are not
+    unique and users.list has no defined order, so an unread page may hold
+    another member with the same name. The response says so explicitly so
+    the model asks for an email or user id instead of mentioning a guess.
     """
     payload: dict[str, Any] = {
         "users": [_user_summary(user) for user in users[:MAX_USER_MATCHES]],
@@ -1157,6 +1161,13 @@ def _lookup_result(
         payload["message"] = (
             f"No active Slack member matches this query{scope}. Ask the user "
             "for the person's exact name, @handle, or email address."
+        )
+    elif not directory_complete:
+        payload["message"] = (
+            "Only part of the Slack directory could be read, so these matches "
+            "may not be the only members with this name. Do not mention anyone "
+            "from this result: ask the user for the person's email address or "
+            "Slack user id and look them up again."
         )
     return _success(**payload)
 
@@ -1236,9 +1247,12 @@ def slack_lookup_user(query: str) -> str:
     and notifies no one.
     If more than one member matches, ask the user which one they mean
     (e.g. with ask_user_question) instead of choosing; never mention someone
-    the user did not clearly identify. If match is "none", or
-    directory_complete is false and the match is not exact, ask the user
-    for the person's email address rather than guessing. truncated=true
+    the user did not clearly identify. If match is "none", ask the user
+    for the person's email address rather than guessing. If
+    directory_complete is false, the directory was only partly read, so
+    even an exact match may not be the only person with that name: do not
+    mention anyone from that result; ask for an email address or Slack user
+    id and look them up again. truncated=true
     means more members matched than were returned: ask for a more specific
     name.
     """
