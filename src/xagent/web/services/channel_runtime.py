@@ -42,6 +42,7 @@ from .managed_task_lease import (
     start_managed_task_lease,
 )
 from .mcp_runtime import MCPBuiltinOAuthActorPolicyRequiredError
+from .release_hold import release_hold
 from .task_lease_service import TaskLease, acquire_task_lease_no_commit, utc_now
 from .task_runtime import (
     MCP_RUNTIME_AUTHORIZATION_POLICY_IDENTITY_KEY,
@@ -1133,6 +1134,7 @@ async def prepare_channel_task(
     assert snapshot is None or isinstance(snapshot, _ChannelTaskClaimSnapshot)
     if cancellation is not None:
         if snapshot is not None:
+            compensated = False
             try:
                 compensated = await run_db_io_cancellation_safe(
                     lambda: _compensate_channel_task_claim_sync(snapshot)
@@ -1151,6 +1153,8 @@ async def prepare_channel_task(
                     "preparation; retaining TTL recovery",
                     snapshot.task_id,
                 )
+            if not compensated:
+                _record_uncompensated_claim(snapshot, "cancelled preparation")
         raise cancellation
 
     if snapshot is None:
@@ -1160,8 +1164,9 @@ async def prepare_channel_task(
     try:
         managed_lease = start_managed_task_lease(snapshot.lease)
     except Exception:
+        compensated = False
         try:
-            await run_db_io_cancellation_safe(
+            compensated = await run_db_io_cancellation_safe(
                 lambda: _compensate_channel_task_claim_sync(snapshot)
             )
         except Exception:
@@ -1170,6 +1175,8 @@ async def prepare_channel_task(
                 "failed; retaining TTL recovery",
                 snapshot.task_id,
             )
+        if not compensated:
+            _record_uncompensated_claim(snapshot, "heartbeat startup failure")
         raise
 
     return ClaimedChannelTask(
@@ -1178,6 +1185,21 @@ async def prepare_channel_task(
         is_new_task=snapshot.is_new_task,
         managed_lease=managed_lease,
         requested_agent_missing=snapshot.requested_agent_missing,
+    )
+
+
+def _record_uncompensated_claim(
+    snapshot: _ChannelTaskClaimSnapshot, after: str
+) -> None:
+    """An abandoned claim this call could not settle is left to TTL recovery.
+
+    Sticky unsettled evidence for a pooled release (``record_unsettled``):
+    the compensation raised, was cancelled, or found the claim changed.
+    """
+    release_hold.record_unsettled(
+        "channel_claim",
+        f"task:{snapshot.task_id}",
+        f"claim not compensated after {after}; left to TTL recovery",
     )
 
 

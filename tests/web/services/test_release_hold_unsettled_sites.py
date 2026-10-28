@@ -8,7 +8,11 @@ process hold's ``unsettled_total`` before and after: one record per
 retained lease, none for a proven release.
 
 A source guard pins the instrumented functions, so a new retention branch
-added elsewhere in them cannot silently skip the record.
+added elsewhere in them cannot silently skip the record. The behavioural
+proof for the Web-local sites lives beside each site's own scenarios
+(``test_managed_task_lease``, ``test_execute_task_manage_task_lease``,
+``test_task_orchestrator``, ``test_channel_runtime``, v1 ``test_task_reply``
+and ``test_a2a_api``), which own their fixtures.
 """
 
 from __future__ import annotations
@@ -20,10 +24,19 @@ from typing import Any
 import pytest
 
 from tests.web.api import test_execution_scope_turn_wiring as wiring
+from xagent.web.services import (
+    agent_service_manager,
+    channel_runtime,
+    managed_task_lease,
+)
 from xagent.web.services import release_hold as release_hold_module
 from xagent.web.services import task_command_transport as transport
 from xagent.web.services import task_coordinator_runtime as runtime
-from xagent.web.services import task_execution
+from xagent.web.services import (
+    task_execution,
+    task_orchestrator,
+    task_resume,
+)
 
 # (scenario, unsettled records it must leave)
 RESUME_SCENARIOS: list[tuple[Callable[..., Awaitable[None]], int]] = [
@@ -63,16 +76,63 @@ async def test_resume_exits_record_unsettled_only_when_the_lease_is_retained(
         assert hold.snapshot()["unsettled"][-1]["kind"] == "resume_lease"
 
 
+# (function, the call through which it records): direct calls, or the one
+# helper each site routes every retained outcome through.
+RETENTION_SITES: list[tuple[Callable[..., Any], str]] = [
+    (task_execution.execute_task_background, "release_hold.record_unsettled("),
+    (task_execution.execute_resume_background, "release_hold.record_unsettled("),
+    (runtime.TaskCoordinator._close, "release_hold.record_unsettled("),
+    (transport._dispatch_shared_task_command, "release_hold.record_unsettled("),
+    # Web-local retention sites (parent acceptance R2 audit).
+    (managed_task_lease.ManagedTaskLease.finalize_result, "self._confirmed("),
+    (managed_task_lease.ManagedTaskLease.close, "self._confirmed("),
+    (
+        managed_task_lease.ManagedTaskLease._record_unsettled,
+        "release_hold.record_unsettled(",
+    ),
+    (
+        agent_service_manager.AgentServiceManager.execute_task,
+        "release_hold.record_unsettled(",
+    ),
+    (task_orchestrator._schedule_bg, "release_hold.record_unsettled("),
+    (task_resume.resume_task_reply, "_record_unless_restored("),
+    (task_resume.resume_a2a_task, "_record_unless_restored("),
+    (task_resume._record_unless_restored, "release_hold.record_unsettled("),
+    (channel_runtime.prepare_channel_task, "_record_uncompensated_claim("),
+    (channel_runtime._record_uncompensated_claim, "release_hold.record_unsettled("),
+]
+
+
 @pytest.mark.parametrize(
-    "function",
-    [
-        task_execution.execute_task_background,
-        task_execution.execute_resume_background,
-        runtime.TaskCoordinator._close,
-        transport._dispatch_shared_task_command,
-    ],
-    ids=lambda function: function.__qualname__,
+    ("function", "marker"),
+    RETENTION_SITES,
+    ids=[function.__qualname__ for function, _ in RETENTION_SITES],
 )
-def test_each_retention_site_records_unsettled(function: Callable[..., Any]) -> None:
-    source = inspect.getsource(function)
-    assert "record_unsettled(" in source
+def test_each_retention_site_records_unsettled(
+    function: Callable[..., Any], marker: str
+) -> None:
+    assert marker in inspect.getsource(function)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"), [("restored", 0), ("not_restored", 1), ("raises", 1)]
+)
+async def test_prelease_restore_records_unless_confirmed(
+    outcome: str, expected: int
+) -> None:
+    hold = release_hold_module.release_hold
+    before = hold.unsettled_total
+
+    async def restore() -> bool:
+        if outcome == "raises":
+            raise RuntimeError("restore write fault")
+        return outcome == "restored"
+
+    if outcome == "raises":
+        with pytest.raises(RuntimeError):
+            await task_resume._record_unless_restored(41, restore)
+    else:
+        assert await task_resume._record_unless_restored(41, restore) is (
+            outcome == "restored"
+        )
+    assert hold.unsettled_total - before == expected

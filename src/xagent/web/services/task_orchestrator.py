@@ -101,6 +101,7 @@ from .mcp_runtime import (
     MCPBuiltinOAuthActorPolicy,
     MCPBuiltinOAuthActorPolicyRequiredError,
 )
+from .release_hold import release_hold
 from .task_auto_recovery import (
     InterruptionDecision,
     InterruptionOutcome,
@@ -2840,7 +2841,16 @@ def _schedule_bg(
                             task_id,
                         )
 
-                if not defer_settlement_to_ttl_recovery:
+                if defer_settlement_to_ttl_recovery:
+                    # Lease loss, a pool timeout, an unresolvable checkpoint,
+                    # an unhealthy heartbeat or a shutdown handoff: the run
+                    # lease is deliberately retained for TTL recovery.
+                    release_hold.record_unsettled(
+                        "task_run_lease",
+                        f"task:{task_id}",
+                        "settlement deferred; lease retained for TTL recovery",
+                    )
+                else:
                     lease_settled = False
                     report = SettlementReport()
                     try:
@@ -2906,6 +2916,11 @@ def _schedule_bg(
                             task_id,
                             settle_err,
                             exc_info=True,
+                        )
+                        release_hold.record_unsettled(
+                            "task_run_lease",
+                            f"task:{task_id}",
+                            "settlement raised; lease retained for TTL recovery",
                         )
 
                     # Only when this coroutine's own settlement committed is it
