@@ -31,6 +31,7 @@ from .db_runtime import (
     propagate_deferred_cancellation,
     run_db_io_cancellation_safe,
 )
+from .release_hold import release_hold
 from .task_coordinator_service import (
     TaskExecutionContext,
     TaskLease,
@@ -893,6 +894,20 @@ class TaskCoordinator:
         await drain_async_task_cancellation_safe(self._request_close())
 
     async def _close(self) -> None:
+        """Drain everything this owner started, then release its lease if safe.
+
+        Settlement evidence: the lease counts as released only when the idle
+        check released it (``_released``) or ``_release()`` here returned
+        True. Every other way out -- skipped release (unhealthy, recovery
+        required, LOST), a release that returned False or raised, or a close
+        cancelled before it got there -- leaves the lease to TTL recovery
+        and is recorded as unsettled. The coordinator still leaves the
+        registry either way, so coordinator counts alone prove nothing.
+        """
+        # Set only by a confirmed ``_release()`` below; ``_released`` is read
+        # where it is used, since the idle check may set it before this runs.
+        released = False
+        unsettled_reason = "close ended before the lease release"
         try:
             await asyncio.gather(self._startup, return_exceptions=True)
             if self._idle_task is not None:
@@ -920,18 +935,25 @@ class TaskCoordinator:
             if self._heartbeat_done is not None:
                 await self._registry._unregister_heartbeat(self)
                 await asyncio.gather(self._heartbeat_done, return_exceptions=True)
-            if (
-                self.lease is not None
-                and not self._released
-                and self._healthy
-                and not self._recovery_required
-                and self.state != CoordinatorState.LOST
-            ):
-                await run_db_io_cancellation_safe(self._release)
+            if self.lease is not None and not self._released:
+                if self.state == CoordinatorState.LOST:
+                    unsettled_reason = "lease lost"
+                elif self._recovery_required:
+                    unsettled_reason = "recovery required"
+                elif not self._healthy:
+                    unsettled_reason = "heartbeat unhealthy"
+                else:
+                    released = await run_db_io_cancellation_safe(self._release)
+                    unsettled_reason = "lease release not confirmed"
         except Exception:
             # Leave the exact token for TTL recovery if cleanup cannot commit.
             logger.exception("Task %s coordinator cleanup failed", self.task_id)
+            unsettled_reason = "coordinator cleanup failed"
         finally:
+            if self.lease is not None and not (self._released or released):
+                release_hold.record_unsettled(
+                    "task_lease", f"task:{self.task_id}", unsettled_reason
+                )
             self.state = CoordinatorState.CLOSED
             self._registry._remove(self)
 
@@ -989,6 +1011,20 @@ async def execute_coordinated_command(
             # The transport still owns this exact claim. Re-enter through the
             # registry after the old owner has drained, without redelivering it.
             continue
+
+
+def live_coordinator_count() -> int:
+    """Coordinators registered on this loop, including ones still closing.
+
+    A coordinator leaves the registry only when its close has finished, so a
+    non-zero count is ownership this process still holds or is giving up.
+    Zero in combined mode, which never creates the registry.
+    """
+
+    registry = _registry
+    if registry is None or registry.loop is not asyncio.get_running_loop():
+        return 0
+    return len(registry._coordinators)
 
 
 def task_coordinators_closing() -> bool:

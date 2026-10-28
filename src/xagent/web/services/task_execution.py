@@ -2871,6 +2871,11 @@ async def execute_task_background(
                     e,
                     exc_info=True,
                 )
+                release_hold.record_unsettled(
+                    "task_run_lease",
+                    f"task:{task_id}",
+                    "database pool timeout; lease retained for TTL recovery",
+                )
                 raise
 
             logger.error(
@@ -4818,6 +4823,17 @@ async def execute_resume_background(
                             exc_info=True,
                         )
             finally:
+                # Every "retaining lease for TTL recovery" branch above (pool
+                # timeouts, unhealthy heartbeat, unresolvable checkpoint, a
+                # restore or settlement that failed or matched no row) ends
+                # here with the lease unreleased. Settlement is then unproven,
+                # whatever the counts say once this handle leaves the manager.
+                if lease is not None and not lease_released:
+                    release_hold.record_unsettled(
+                        "resume_lease",
+                        f"task:{task_id}",
+                        "run lease retained for TTL recovery",
+                    )
                 _clear_task_pause_accepted(task_id)
                 background_task_manager.cleanup_task(
                     task_id,

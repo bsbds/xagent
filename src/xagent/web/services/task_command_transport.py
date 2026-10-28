@@ -2687,6 +2687,29 @@ async def dispatch_one_task_command(
         )
     if not consumes_task_commands():
         return False
+    # Shared execution: one token covers the whole attempt -- candidate query,
+    # dispatch reservation, the ``registry.ensure`` wait (which may wait for an
+    # old owner's close before creating a new one) and the apply. Checked and
+    # registered in one synchronous step, so a seal either sees this attempt
+    # in the ledger until it returns or refuses it here, before any side
+    # effect. Combined mode needs no gate: it never seals, and
+    # ``_dispatch_task_command`` already counts its whole attempt.
+    attempt = release_hold.try_begin_attempt(
+        "command_attempt", str(command_db_id or "next")
+    )
+    if attempt is None:
+        return False
+    with attempt:
+        return await _dispatch_shared_task_command(
+            executor, command_db_id=command_db_id
+        )
+
+
+async def _dispatch_shared_task_command(
+    executor: CommandExecutor,
+    *,
+    command_db_id: int | None,
+) -> bool:
     from types import SimpleNamespace
 
     from .task_coordinator_runtime import (
@@ -2789,6 +2812,11 @@ async def dispatch_one_task_command(
             task_id,
             selected_id,
             kind.value,
+        )
+        release_hold.record_unsettled(
+            "command_claim",
+            f"command:{selected_id}",
+            f"{kind.value} application interrupted; claim left for recovery",
         )
         return False
     finally:
