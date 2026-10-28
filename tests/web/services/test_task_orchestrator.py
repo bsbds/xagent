@@ -5340,3 +5340,49 @@ async def test_unknown_settlement_flushes_workforce_projection(db_session):
     db_session.expire_all()
     assert db_session.get(Task, task.id).status == TaskStatus.PAUSED
     assert db_session.get(WorkforceRun, run.id).status == "paused"
+
+
+# --- unsettled evidence for a pooled release ------------------------------------
+#
+# ``_schedule_bg`` either settles its run lease or leaves it to TTL recovery
+# (deferred settlement, or a settlement that raised). Re-run unchanged, the
+# scenarios above must grow the process hold's sticky ``unsettled_total`` by
+# one exactly for a retained lease. A fenced-out settlement (``False``) is not
+# counted: by contract it also covers "already terminal, reconciled and
+# released", so it is no evidence of a retained lease.
+
+UNSETTLED_SCENARIOS = [
+    (test_runner_finalize_reconciles_orphaned_pending_delivery, 0),
+    (test_runner_finalize_reconciles_alongside_a_genuinely_completed_turn, 0),
+    (test_runner_finalize_leaves_pending_when_settle_is_fenced_out, 0),
+    (test_schedule_bg_settles_owned_terminal_task_observed_by_heartbeat, 0),
+    (test_runner_finalize_leaves_pending_when_deferred_to_ttl_recovery, 1),
+    (test_runner_finalize_leaves_pending_when_settlement_raises, 1),
+    (test_schedule_bg_heartbeat_pool_timeout_skips_settlement, 1),
+    (test_schedule_bg_pool_timeout_defers_settlement_to_lease_recovery, 1),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    UNSETTLED_SCENARIOS,
+    ids=[scenario.__name__ for scenario, _ in UNSETTLED_SCENARIOS],
+)
+async def test_schedule_bg_records_unsettled_only_when_the_lease_is_retained(
+    request: pytest.FixtureRequest, scenario, expected: int
+) -> None:
+    import inspect
+
+    from xagent.web.services import release_hold as release_hold_module
+
+    hold = release_hold_module.release_hold
+    kwargs = {
+        name: request.getfixturevalue(name)
+        for name in inspect.signature(scenario).parameters
+    }
+    before = hold.unsettled_total
+    await scenario(**kwargs)
+    assert hold.unsettled_total - before == expected
+    if expected:
+        assert hold.snapshot()["unsettled"][-1]["kind"] == "task_run_lease"
