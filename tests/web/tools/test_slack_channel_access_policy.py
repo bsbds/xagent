@@ -255,3 +255,52 @@ def test_policy_absence_preserves_legacy_user_id_posting(monkeypatch) -> None:
 
     assert result["status"] == "success"
     assert request.call_args.kwargs["json"]["channel"] == "U0123456789"
+
+
+WRITE_TOOLS = {
+    "slack_join_channel",
+    "slack_post_message",
+    "slack_add_reaction",
+    "slack_remove_reaction",
+    "slack_upload_file",
+}
+
+
+def _tool_names() -> set[str]:
+    import asyncio
+
+    return {tool.name for tool in asyncio.run(slack.mcp.list_tools())}
+
+
+@pytest.fixture
+def _restore_registry(monkeypatch):
+    # The server object is module-global; give each test its own tool table.
+    manager = slack.mcp._tool_manager
+    monkeypatch.setattr(manager, "_tools", dict(manager._tools))
+
+
+def test_write_tools_are_the_ones_classified_as_writes() -> None:
+    assert slack._WRITE_TOOL_NAMES == WRITE_TOOLS
+
+
+def test_a_policy_server_offers_no_write_tools(monkeypatch, _restore_registry) -> None:
+    _install_policy(monkeypatch)
+    before = _tool_names()
+
+    slack._drop_tools_the_policy_forbids()
+
+    after = _tool_names()
+    assert after == before - WRITE_TOOLS
+    assert {"slack_get_channel_history", "slack_search_messages"} <= after
+
+
+def test_a_server_without_a_policy_keeps_every_tool(
+    monkeypatch, _restore_registry
+) -> None:
+    monkeypatch.delenv(slack._CHANNEL_ACCESS_POLICY_ENV_VAR, raising=False)
+    before = _tool_names()
+
+    slack._drop_tools_the_policy_forbids()
+
+    assert _tool_names() == before
+    assert WRITE_TOOLS <= before
