@@ -4020,11 +4020,18 @@ def _finalize_runner_patches(
     mark_delivery=None,
     validate=None,
     snapshot=None,
+    heartbeat=None,
 ):
     """Patch scaffolding for driving ``_schedule_bg``'s ``_runner`` end-to-end.
 
     Only the agent runtime is faked by default; lease settlement and delivery
     marking run for real against SQLite unless a stub is supplied.
+
+    Pass a heartbeat stub here rather than patching ``run_task_lease_heartbeat``
+    again inside the block: a second patcher of the same attribute that is not
+    undone in LIFO order (``monkeypatch`` undoes at teardown, after this block
+    exits) restores this block's ``AsyncMock`` and leaks it into every later
+    test on the worker.
     """
     from xagent.web.services.task_execution import background_task_manager
 
@@ -4035,7 +4042,7 @@ def _finalize_runner_patches(
         ),
         patch(
             "xagent.web.services.task_orchestrator.run_task_lease_heartbeat",
-            new=AsyncMock(),
+            new=heartbeat if heartbeat is not None else AsyncMock(),
         ),
         patch(
             "xagent.web.services.task_orchestrator.load_task_setup_snapshot_sync",
@@ -5230,10 +5237,9 @@ async def test_cancelled_runner_drains_persistence_before_settlement(
         assert rolled_back.is_set() == write_fails
         return settle(*args, **kwargs)
 
-    with _finalize_runner_patches(lease, execute=execute, settle=checked_settle):
-        monkeypatch.setattr(
-            task_orchestrator_module, "run_task_lease_heartbeat", heartbeat
-        )
+    with _finalize_runner_patches(
+        lease, execute=execute, settle=checked_settle, heartbeat=heartbeat
+    ):
         bg_task = _spawn_finalize_runner(task, user, payload)
         try:
             async with asyncio.timeout(DB_PROGRESS_TIMEOUT):
