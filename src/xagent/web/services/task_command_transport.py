@@ -2679,7 +2679,11 @@ async def dispatch_one_task_command(
         # restart holds new execution: the held snapshot then applies the
         # closed-cap claim rules, so commands that would open an execution
         # stay pending for the next process while controls and commands of
-        # active tasks are still applied here.
+        # active tasks are still applied here. Its host never seals, but a
+        # seal reported by ``execution_status`` is enforced here too;
+        # ``_dispatch_task_command`` already counts the whole attempt.
+        if release_hold.sealed:
+            return False
         return await _dispatch_task_command(
             executor,
             command_db_id=command_db_id,
@@ -2692,8 +2696,7 @@ async def dispatch_one_task_command(
     # old owner's close before creating a new one) and the apply. Checked and
     # registered in one synchronous step, so a seal either sees this attempt
     # in the ledger until it returns or refuses it here, before any side
-    # effect. Combined mode needs no gate: it never seals, and
-    # ``_dispatch_task_command`` already counts its whole attempt.
+    # effect.
     attempt = release_hold.try_begin_attempt(
         "command_attempt", str(command_db_id or "next")
     )

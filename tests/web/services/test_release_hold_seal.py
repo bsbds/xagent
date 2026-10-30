@@ -551,3 +551,91 @@ async def test_shared_held_cap_keeps_new_execution_pending_and_lets_controls_thr
     while await dispatch(host):
         pass
     assert host.claimed.count((idle_task, "start")) == 1
+
+
+async def test_sealed_owner_leaves_a_queued_control_for_the_successor(
+    pool: PoolHost, hold: ReleaseHold
+) -> None:
+    """A control queued behind a running one cannot pin a sealed worker.
+
+    Closed but unsealed, a pending control keeps its task's owner (it will
+    claim it next). Once sealed this worker starts no attempt, so the owner
+    releases its lease on the idle check and leaves the control pending in
+    the database for the successor -- the only way the drain can settle.
+    """
+    host = pool
+    task = host.new_task()
+    host.block_handler = asyncio.Event()
+    host.enqueue(task, "pause")
+    first = asyncio.create_task(dispatch(host))
+    await asyncio.wait_for(host.in_handler.wait(), DB_PROGRESS_TIMEOUT)
+    queued_cancel = host.enqueue(task, "cancel")
+    hold.close("release r1")
+    host.block_handler.set()
+    assert await first is True
+
+    # Closed only: the queued control still holds the owner across idle checks.
+    await asyncio.sleep(1.5)
+    assert task in host.registry._coordinators
+    assert host.status_of(queued_cancel) == "pending"
+
+    hold.seal("release r1")
+    assert await dispatch(host) is False
+    await eventually(lambda: idle(hold))
+    assert host.status_of(queued_cancel) == "pending"
+    assert hold.unsettled_total == 0
+
+    # Abort: the successor attempt (here this worker reopened) applies it.
+    hold.reopen()
+    assert await dispatch(host) is True
+    assert host.status_of(queued_cancel) == "completed"
+
+
+@pytest.mark.parametrize("stage", ["ensure", "apply"])
+async def test_cancelled_dispatch_attempt_releases_its_token(
+    pool: PoolHost, hold: ReleaseHold, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """A dispatcher cancelled mid-attempt leaves no command_attempt behind."""
+    host = pool
+    task = host.new_task()
+    host.enqueue(task, "pause")
+    reached = asyncio.Event()
+    if stage == "ensure":
+        real_ensure = host.registry.ensure
+
+        async def stalled_ensure(task_id: int) -> Any:
+            reached.set()
+            await asyncio.Event().wait()
+            return await real_ensure(task_id)
+
+        monkeypatch.setattr(host.registry, "ensure", stalled_ensure)
+    else:
+        host.block_handler = asyncio.Event()
+        host.in_handler = reached
+
+    attempt = asyncio.create_task(dispatch(host))
+    await asyncio.wait_for(reached.wait(), DB_PROGRESS_TIMEOUT)
+    # Applying also holds the inner ``command_dispatch`` token.
+    assert "command_attempt" in {r["kind"] for r in hold.snapshot()["responsibilities"]}
+    attempt.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+    assert hold.snapshot()["responsibilities"] == []
+
+
+async def test_combined_mode_refuses_command_attempts_once_sealed(
+    pool: PoolHost, hold: ReleaseHold, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``sealed`` reported by ``execution_status`` is enforced in combined mode too."""
+    host = pool
+    monkeypatch.setenv("XAGENT_SHARED_TASK_EXECUTION_ENABLED", "false")
+    monkeypatch.delenv("XAGENT_TASK_EXECUTION_ROLE", raising=False)
+    task = host.new_task()
+    pause = host.enqueue(task, "pause")
+    hold.seal("release r1")
+    assert await dispatch(host) is False
+    assert host.claimed == []
+    assert host.status_of(pause) == "pending"
+    hold.reopen()
+    assert await dispatch(host) is True
+    assert host.claimed == [(task, "pause")]

@@ -151,6 +151,10 @@ class ReleaseHold:
         Synchronous on the event-loop thread, so an attempt either registered
         before this call (and stays counted until it returns) or is refused by
         :meth:`try_begin_attempt` after it. Only :meth:`reopen` lifts a seal.
+
+        Pending commands stay in the database for the successor: a task owner
+        on this process no longer keeps its lease for them and releases on its
+        next idle check (``TaskCoordinator._release_if_idle``).
         """
         self.close(reason)
         if not self._sealed:

@@ -674,7 +674,10 @@ class TaskCoordinator:
         )
 
     def _release_if_idle(
-        self, *, held_by_cap: DispatchCapSnapshot | None = None
+        self,
+        *,
+        held_by_cap: DispatchCapSnapshot | None = None,
+        sealed: bool = False,
     ) -> str:
         """Release the lease unless the task still has work for this owner.
 
@@ -683,8 +686,16 @@ class TaskCoordinator:
         at its batch line. When ``_queued_executions_held`` says this process
         will not start the task's queued executions now, its pending
         execution-opening commands do not keep the lease and any process with
-        room may claim them. Not applied to a RUNNING task, whose orphaned row
-        keeps the busy/recover handling.
+        room may claim them.
+
+        ``sealed`` says this process starts no command attempt at all
+        (``release_hold.seal``), so no pending command -- a queued pause or
+        cancel included -- keeps the lease: it stays pending in the database
+        for whichever process claims it next, as at shutdown. Claimed
+        (``processing``) commands still keep it.
+
+        Neither exclusion applies to a RUNNING task, whose orphaned row keeps
+        the busy/recover handling.
         """
         assert self.lease is not None
         with self._registry.session_factory() as db, db.begin():
@@ -703,12 +714,11 @@ class TaskCoordinator:
                 TaskExecutionCommand.status == "pending",
                 TaskExecutionCommand.kind.in_(sorted(EXECUTION_OPENING_KINDS)),
             )
-            exclude_held = (
-                task is not None
-                and task.status != TaskStatus.RUNNING
-                and self._queued_executions_held(db, held_by_cap)
-            )
-            if exclude_held:
+            resting = task is not None and task.status != TaskStatus.RUNNING
+            exclude_held = resting and self._queued_executions_held(db, held_by_cap)
+            if resting and sealed:
+                unfinished = unfinished.where(TaskExecutionCommand.status != "pending")
+            elif exclude_held:
                 unfinished = unfinished.where(~held_execution)
             pending = db.execute(unfinished.limit(1)).first()
             if pending is not None:
@@ -762,7 +772,9 @@ class TaskCoordinator:
                         )
                         outcome = await run_db_io_cancellation_safe(
                             functools.partial(
-                                self._release_if_idle, held_by_cap=held_by_cap
+                                self._release_if_idle,
+                                held_by_cap=held_by_cap,
+                                sealed=release_hold.sealed,
                             )
                         )
                         if outcome != "busy":
