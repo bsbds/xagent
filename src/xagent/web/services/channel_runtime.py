@@ -35,7 +35,12 @@ from .connector_runtime import (
     bind_connector_runtime_selection_snapshot,
     prepare_connector_runtime_selection_snapshot,
 )
-from .db_runtime import await_task_settlement, run_db_io_cancellation_safe
+from .db_runtime import (
+    await_task_settlement,
+    drain_async_task_cancellation_safe,
+    run_db_io_cancellation_safe,
+    task_returned,
+)
 from .managed_task_lease import (
     ManagedTaskLease,
     finalize_managed_task_lease_result,
@@ -1134,12 +1139,9 @@ async def prepare_channel_task(
     assert snapshot is None or isinstance(snapshot, _ChannelTaskClaimSnapshot)
     if cancellation is not None:
         if snapshot is not None:
-            compensated = False
+            compensation = _start_claim_compensation(snapshot)
             try:
-                compensated = await run_db_io_cancellation_safe(
-                    lambda: _compensate_channel_task_claim_sync(snapshot)
-                )
-                if not compensated:
+                if not await drain_async_task_cancellation_safe(compensation):
                     logger.warning(
                         "Channel task %s claim changed before cancelled "
                         "preparation could settle it; preserving current state",
@@ -1153,8 +1155,7 @@ async def prepare_channel_task(
                     "preparation; retaining TTL recovery",
                     snapshot.task_id,
                 )
-            if not compensated:
-                _record_uncompensated_claim(snapshot, "cancelled preparation")
+            _record_unless_compensated(compensation, snapshot, "cancelled preparation")
         raise cancellation
 
     if snapshot is None:
@@ -1164,19 +1165,19 @@ async def prepare_channel_task(
     try:
         managed_lease = start_managed_task_lease(snapshot.lease)
     except Exception:
-        compensated = False
+        compensation = _start_claim_compensation(snapshot)
         try:
-            compensated = await run_db_io_cancellation_safe(
-                lambda: _compensate_channel_task_claim_sync(snapshot)
-            )
+            await drain_async_task_cancellation_safe(compensation)
         except Exception:
             logger.exception(
                 "Failed to compensate channel task %s after heartbeat startup "
                 "failed; retaining TTL recovery",
                 snapshot.task_id,
             )
-        if not compensated:
-            _record_uncompensated_claim(snapshot, "heartbeat startup failure")
+        finally:
+            _record_unless_compensated(
+                compensation, snapshot, "heartbeat startup failure"
+            )
         raise
 
     return ClaimedChannelTask(
@@ -1188,14 +1189,30 @@ async def prepare_channel_task(
     )
 
 
-def _record_uncompensated_claim(
-    snapshot: _ChannelTaskClaimSnapshot, after: str
+def _start_claim_compensation(
+    snapshot: _ChannelTaskClaimSnapshot,
+) -> asyncio.Task[bool]:
+    """Compensate an abandoned claim in a worker thread, as an owned task.
+
+    The caller drains it and then decides on its own result
+    (:func:`_record_unless_compensated`), never on how the wait ended.
+    """
+    return asyncio.create_task(
+        asyncio.to_thread(_compensate_channel_task_claim_sync, snapshot)
+    )
+
+
+def _record_unless_compensated(
+    compensation: asyncio.Task[bool], snapshot: _ChannelTaskClaimSnapshot, after: str
 ) -> None:
     """An abandoned claim this call could not settle is left to TTL recovery.
 
-    Sticky unsettled evidence for a pooled release (``record_unsettled``):
-    the compensation raised, was cancelled, or found the claim changed.
+    Sticky unsettled evidence for a pooled release (``record_unsettled``)
+    unless the drained compensation itself returned True: it raised, found
+    the claim changed, or is not known to have committed.
     """
+    if task_returned(compensation) and compensation.result():
+        return
     release_hold.record_unsettled(
         "channel_claim",
         f"task:{snapshot.task_id}",

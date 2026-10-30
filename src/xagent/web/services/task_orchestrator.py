@@ -89,6 +89,7 @@ from .db_runtime import (
     drain_async_task_cancellation_safe,
     is_database_pool_timeout,
     run_db_io_cancellation_safe,
+    task_returned,
 )
 from .db_write_retry import (
     bound_rerun_lock_wait_no_commit,
@@ -2907,8 +2908,12 @@ def _schedule_bg(
                 else:
                     lease_settled = False
                     report = SettlementReport()
-                    try:
-                        settled = await run_db_io_cancellation_safe(
+                    # An owned task, so the record below can follow what the
+                    # settlement did even when this runner is cancelled again
+                    # while it runs (that wait then ends in CancelledError
+                    # whether the settlement committed or raised).
+                    settlement = asyncio.create_task(
+                        asyncio.to_thread(
                             lambda: settle_task_lease_isolated(
                                 lease,
                                 error_message=settlement_error,
@@ -2925,6 +2930,9 @@ def _schedule_bg(
                                 report=report,
                             )
                         )
+                    )
+                    try:
+                        settled = await drain_async_task_cancellation_safe(settlement)
                         # Gate on the returned value, not on "didn't raise":
                         # ``settle_task_lease_isolated`` returns ``False``
                         # without raising when the settlement was fenced out
@@ -2971,6 +2979,12 @@ def _schedule_bg(
                             settle_err,
                             exc_info=True,
                         )
+                    if not task_returned(settlement):
+                        # The settlement raised (possibly under a cancel that
+                        # surfaced instead). A returned ``False`` is no
+                        # retention: it also means a pre-existing terminal or
+                        # control outcome was reconciled and released, or a
+                        # cancel path already released this run.
                         release_hold.record_unsettled(
                             "task_run_lease",
                             f"task:{task_id}",

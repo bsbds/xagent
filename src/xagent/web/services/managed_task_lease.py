@@ -20,6 +20,7 @@ from .client_error_messages import CLIENT_SAFE_TASK_FAILURE
 from .db_runtime import (
     drain_async_task_cancellation_safe,
     run_db_io_cancellation_safe,
+    task_returned,
 )
 from .execution_result_projection import (
     completion_outcome_for_status,
@@ -380,22 +381,21 @@ class ManagedTaskLease:
         return await self._confirmed(cleanup_task, "finalize")
 
     async def _confirmed(self, cleanup_task: asyncio.Task[bool], action: str) -> bool:
-        """Drain one settlement attempt; record it unless the release was confirmed."""
-        try:
-            released = await drain_async_task_cancellation_safe(cleanup_task)
-        except BaseException:
-            self._record_unsettled(f"managed lease {action} raised")
-            raise
-        if not released:
-            self._record_unsettled(f"managed lease {action} not confirmed")
-        return released
+        """Drain one settlement attempt; record it unless the release was confirmed.
 
-    def _record_unsettled(self, reason: str) -> None:
-        release_hold.record_unsettled(
-            "managed_lease",
-            f"task:{self.lease.task_id}",
-            f"{reason}; run left to TTL recovery",
-        )
+        Decided on the attempt's own result: a caller cancelled meanwhile
+        still gets ``CancelledError`` once the attempt is drained, whether the
+        release committed or not.
+        """
+        try:
+            return await drain_async_task_cancellation_safe(cleanup_task)
+        finally:
+            if not (task_returned(cleanup_task) and cleanup_task.result()):
+                release_hold.record_unsettled(
+                    "managed_lease",
+                    f"task:{self.lease.task_id}",
+                    f"managed lease {action} not confirmed; run left to TTL recovery",
+                )
 
     async def _stop_heartbeat_for_settlement(self) -> bool:
         heartbeat_outcome = await stop_task_lease_heartbeat(

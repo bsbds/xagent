@@ -2148,3 +2148,125 @@ async def test_heartbeat_start_failure_records_unsettled_unless_compensated(
             channel_name="Telegram",
         )
     assert _unsettled_total() - before == expected
+
+
+def _claim_for_compensation(task_id: int) -> channel_runtime._ChannelTaskClaimSnapshot:
+    return channel_runtime._ChannelTaskClaimSnapshot(
+        user_id=7,
+        task_id=task_id,
+        is_new_task=True,
+        lease=TaskLease(task_id=task_id, runner_id="runner-a", run_id="run-a"),
+    )
+
+
+def _blocking_compensation(
+    monkeypatch: pytest.MonkeyPatch, compensated: bool
+) -> tuple[threading.Event, threading.Event]:
+    """Install a compensation that waits for the test, then returns ``compensated``."""
+    entered, proceed = threading.Event(), threading.Event()
+
+    def compensate(_snapshot: channel_runtime._ChannelTaskClaimSnapshot) -> bool:
+        entered.set()
+        assert proceed.wait(timeout=GUARD_TIMEOUT)
+        return compensated
+
+    monkeypatch.setattr(
+        "xagent.web.services.channel_runtime._compensate_channel_task_claim_sync",
+        compensate,
+    )
+    return entered, proceed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("compensated", "expected"), [(True, 0), (False, 1)])
+async def test_compensation_cancelled_again_records_its_own_outcome(
+    monkeypatch: pytest.MonkeyPatch, compensated: bool, expected: int
+) -> None:
+    """A second cancel during compensation does not decide the record.
+
+    The compensation is drained either way; only its own result says whether
+    the abandoned claim was settled or left to TTL recovery.
+    """
+    claim = _claim_for_compensation(37)
+    prepared, allow_prepare = threading.Event(), threading.Event()
+
+    def blocking_prepare(**_kwargs):  # type: ignore[no-untyped-def]
+        prepared.set()
+        assert allow_prepare.wait(timeout=GUARD_TIMEOUT)
+        return claim
+
+    monkeypatch.setattr(
+        "xagent.web.services.channel_runtime._prepare_channel_task_sync",
+        blocking_prepare,
+    )
+    entered, proceed = _blocking_compensation(monkeypatch, compensated)
+    before = _unsettled_total()
+    preparation = asyncio.create_task(
+        prepare_channel_task(
+            channel_id=3,
+            external_user_id="telegram-user",
+            active_task_id=None,
+            text="hello",
+            channel_name="Telegram",
+        )
+    )
+    try:
+        assert await asyncio.to_thread(prepared.wait, GUARD_TIMEOUT)
+        preparation.cancel()
+        allow_prepare.set()
+        assert await asyncio.to_thread(entered.wait, GUARD_TIMEOUT)
+        preparation.cancel()
+        await asyncio.sleep(0)
+        proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(preparation, timeout=GUARD_TIMEOUT)
+    finally:
+        allow_prepare.set()
+        proceed.set()
+        await asyncio.wait_for(
+            asyncio.gather(preparation, return_exceptions=True), timeout=GUARD_TIMEOUT
+        )
+    assert _unsettled_total() - before == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("compensated", "expected"), [(True, 0), (False, 1)])
+async def test_heartbeat_start_failure_cancelled_during_compensation_records_its_outcome(
+    monkeypatch: pytest.MonkeyPatch, compensated: bool, expected: int
+) -> None:
+    claim = _claim_for_compensation(41)
+
+    def failing_start(_lease: TaskLease) -> None:
+        raise RuntimeError("heartbeat start fault")
+
+    monkeypatch.setattr(
+        "xagent.web.services.channel_runtime._prepare_channel_task_sync",
+        lambda **_kwargs: claim,
+    )
+    monkeypatch.setattr(
+        "xagent.web.services.channel_runtime.start_managed_task_lease", failing_start
+    )
+    entered, proceed = _blocking_compensation(monkeypatch, compensated)
+    before = _unsettled_total()
+    preparation = asyncio.create_task(
+        prepare_channel_task(
+            channel_id=3,
+            external_user_id="telegram-user",
+            active_task_id=None,
+            text="hello",
+            channel_name="Telegram",
+        )
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, GUARD_TIMEOUT)
+        preparation.cancel()
+        await asyncio.sleep(0)
+        proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(preparation, timeout=GUARD_TIMEOUT)
+    finally:
+        proceed.set()
+        await asyncio.wait_for(
+            asyncio.gather(preparation, return_exceptions=True), timeout=GUARD_TIMEOUT
+        )
+    assert _unsettled_total() - before == expected

@@ -5392,3 +5392,59 @@ async def test_schedule_bg_records_unsettled_only_when_the_lease_is_retained(
     assert hold.unsettled_total - before == expected
     if expected:
         assert hold.snapshot()["unsettled"][-1]["kind"] == "task_run_lease"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("settle_outcome", "expected"), [(True, 0), (False, 0), ("raises", 1)]
+)
+async def test_settlement_cancelled_again_records_its_own_outcome(
+    db_session, settle_outcome, expected: int
+) -> None:
+    """A second cancel during settlement does not decide the record.
+
+    The runner was cancelled and is settling; a further cancel arrives while
+    the settlement transaction runs. The settlement is drained and the runner
+    still ends cancelled, but only a settlement that itself raised leaves the
+    lease to TTL recovery.
+    """
+    from xagent.web.services import release_hold as release_hold_module
+
+    user, task, payload, lease = _finalize_turn_fixture(
+        db_session, turn_id=f"cancel-settle-{settle_outcome}"
+    )
+    started = asyncio.Event()
+    settling, proceed = Event(), Event()
+
+    async def execute(*_args, **_kwargs) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def heartbeat(_lease, stop_event):
+        await stop_event.wait()
+        return TaskLeaseHeartbeatOutcome()
+
+    def blocking_settle(*_args, **_kwargs) -> bool:
+        settling.set()
+        assert proceed.wait(DB_PROGRESS_TIMEOUT)
+        if settle_outcome == "raises":
+            raise RuntimeError("settlement commit failed")
+        return bool(settle_outcome)
+
+    hold = release_hold_module.release_hold
+    before = hold.unsettled_total
+    with _finalize_runner_patches(
+        lease, execute=execute, settle=blocking_settle, heartbeat=heartbeat
+    ):
+        bg_task = _spawn_finalize_runner(task, user, payload)
+        try:
+            await asyncio.wait_for(started.wait(), DB_PROGRESS_TIMEOUT)
+            bg_task.cancel()
+            assert await asyncio.to_thread(settling.wait, DB_PROGRESS_TIMEOUT)
+            bg_task.cancel()
+            await asyncio.sleep(0)
+        finally:
+            proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(bg_task, DB_PROGRESS_TIMEOUT)
+    assert hold.unsettled_total - before == expected

@@ -950,3 +950,48 @@ async def test_managed_close_release_fault_records_unsettled() -> None:
     ):
         assert await managed.close() is False
     assert _unsettled_total() - before == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected"), [("released", 0), ("not_confirmed", 1), ("raises", 1)]
+)
+async def test_managed_finalize_under_caller_cancel_records_its_own_outcome(
+    outcome: str, expected: int
+) -> None:
+    """A caller cancelled mid-settlement still sees ``CancelledError``.
+
+    The record follows what the drained settlement actually did: a release
+    that committed while the caller was being cancelled is no evidence of a
+    retained lease, while one that failed or raised still is.
+    """
+    managed = _managed_for_fault()
+    entered, proceed = asyncio.Event(), asyncio.Event()
+
+    async def finalize(*_args, **_kwargs) -> bool:
+        entered.set()
+        await proceed.wait()
+        if outcome == "raises":
+            raise RuntimeError("settlement write fault")
+        return outcome == "released"
+
+    before = _unsettled_total()
+    with (
+        patch(
+            "xagent.web.services.managed_task_lease.stop_task_lease_heartbeat",
+            new=AsyncMock(return_value=TaskLeaseHeartbeatOutcome()),
+        ),
+        patch(
+            "xagent.web.services.managed_task_lease."
+            "finalize_managed_task_lease_result_isolated",
+            side_effect=finalize,
+        ),
+    ):
+        caller = asyncio.create_task(managed.finalize_result(status=TaskStatus.FAILED))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        caller.cancel()
+        await asyncio.sleep(0)
+        proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=5)
+    assert _unsettled_total() - before == expected
