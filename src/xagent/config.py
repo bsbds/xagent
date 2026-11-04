@@ -602,16 +602,19 @@ def get_task_auto_resume_enabled() -> bool:
 
 
 def get_shutdown_handoff_enabled() -> bool:
-    """Whether a shutdown hands eligible running tasks to lease recovery.
+    """Whether a shutdown hands eligible running tasks to another process.
 
     Off, a host shutting down cancels its runs and fails them immediately.
     On, a run the shutdown cancelled (not one a user cancelled) whose task
-    is eligible for automatic recovery keeps its lease instead: lease
-    recovery pauses it once the lease expires and automatic resume picks it
-    up, exactly as after a crash. Only takes effect while
-    :func:`get_task_auto_resume_enabled` is on. Channel tasks, status-only
-    (SDK) tasks and the sources automatic recovery excludes still fail
-    immediately.
+    is eligible for automatic recovery is paused with the ``shutdown``
+    interruption reason, its lease released, and an automatic resume is
+    scheduled with no backoff (a few seconds of jitter at most), so another
+    process continues it right away instead of after the lease TTL. Only takes
+    effect while :func:`get_task_auto_resume_enabled` is on, and the pause
+    itself follows :func:`get_task_infra_failure_pause_enabled` (when that is
+    off the run fails as before). A run the shutdown stopped without a usable
+    checkpoint still fails. Channel tasks, status-only (SDK) tasks and the
+    sources automatic recovery excludes still fail immediately.
 
     Priority:
         1. XAGENT_SHUTDOWN_HANDOFF_ENABLED environment variable

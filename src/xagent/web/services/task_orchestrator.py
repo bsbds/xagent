@@ -2689,7 +2689,8 @@ def _schedule_bg(
         settlement_interruption: InterruptionReason | None = None
         defer_settlement_to_ttl_recovery = False
         # Set when a host shutdown, not a user, cancelled the run; settlement
-        # then checks whether the task can be left to lease recovery instead.
+        # then checks whether the task can be handed off (paused for an
+        # immediate automatic resume elsewhere) instead of failed.
         shutdown_handoff_candidate = False
         skip_delivery_reconciliation = False
         # Positive evidence for finalize's delivery target: once
@@ -3061,37 +3062,40 @@ def _schedule_bg(
                     )
 
                 if shutdown_handoff_candidate and not defer_settlement_to_ttl_recovery:
-                    # Treat the shutdown like a crash: keep the lease so lease
-                    # recovery pauses the run once it expires and automatic
-                    # resume continues it on another host. A task automatic
-                    # recovery would not resume still fails now, so its caller
-                    # sees a terminal state. Any doubt settles as before.
+                    # A planned stop, not a failure: settle the run as a
+                    # ``shutdown`` interruption. The settlement pauses it,
+                    # releases the lease and schedules an automatic resume with
+                    # no backoff, so another process continues it at once
+                    # instead of waiting out the lease TTL. Whether the run can
+                    # be paused at all is still the settlement's call (its
+                    # checkpoint); an unrecoverable one fails as before. A task
+                    # automatic recovery would not resume fails now too, so its
+                    # caller sees a terminal state. Any doubt settles as before.
                     try:
-                        defer_settlement_to_ttl_recovery = (
-                            await run_db_io_cancellation_safe(
-                                lambda: _shutdown_handoff_eligible_sync(task_id)
+                        if await run_db_io_cancellation_safe(
+                            lambda: _shutdown_handoff_eligible_sync(task_id)
+                        ):
+                            settlement_interruption = InterruptionReason.SHUTDOWN
+                            logger.info(
+                                "task_id=%s component=shutdown-handoff run "
+                                "cancelled by host shutdown; settling it as paused "
+                                "for an immediate automatic resume",
+                                task_id,
                             )
-                        )
                     except asyncio.CancelledError as exc:
                         cleanup_cancellation = cleanup_cancellation or exc
                     except Exception:
                         logger.warning(
                             "task %s shutdown handoff check failed; settling "
-                            "the cancelled run immediately",
+                            "the cancelled run as a failure",
                             task_id,
                             exc_info=True,
                         )
-                    if defer_settlement_to_ttl_recovery:
-                        logger.info(
-                            "task_id=%s component=shutdown-handoff run cancelled "
-                            "by host shutdown; retaining lease for TTL recovery",
-                            task_id,
-                        )
 
                 if defer_settlement_to_ttl_recovery:
-                    # Lease loss, a pool timeout, an unresolvable checkpoint,
-                    # an unhealthy heartbeat or a shutdown handoff: the run
-                    # lease is deliberately retained for TTL recovery.
+                    # Lease loss, a pool timeout, an unresolvable checkpoint or
+                    # an unhealthy heartbeat: the run lease is deliberately
+                    # retained for TTL recovery.
                     release_hold.record_unsettled(
                         "task_run_lease",
                         f"task:{task_id}",

@@ -508,6 +508,40 @@ def test_due_row_is_dispatched_as_one_fenced_resume_command(factory, notified):
     assert "total_resumes" not in str(message)
 
 
+def test_a_shutdown_resume_is_not_counted_as_a_resume_without_progress(
+    factory, notified
+):
+    """A planned shutdown says nothing about progress: its dispatch counts
+    toward the run's total, not toward ``no_progress_resumes``, and no number of
+    earlier no-progress resumes exhausts it."""
+    now = utc_now()
+    with factory() as db:
+        task_id = _seed(db, now, reason="shutdown", no_progress=50, total=2)
+        db.commit()
+
+    report = run_auto_resume_tick(now=now)
+
+    assert (report.dispatched, report.staged_commands) == (1, 1)
+    row = _row(factory, task_id)
+    assert row.state == "dispatched"
+    assert (row.no_progress_resumes, row.total_resumes) == (50, 3)
+    (command,) = _commands(factory, task_id)
+    assert command.payload["auto_resume"]["reason"] == "shutdown"
+
+
+def test_a_shutdown_resume_still_stops_at_the_total_cap(factory, notified):
+    now = utc_now()
+    with factory() as db:
+        task_id = _seed(db, now, reason="shutdown", total=20)
+        db.commit()
+
+    report = run_auto_resume_tick(now=now)
+
+    assert (report.dispatched, report.gave_up) == (0, 1)
+    assert _row(factory, task_id).state == "exhausted"
+    assert _commands(factory, task_id) == []
+
+
 @pytest.mark.parametrize(
     ("source", "previous", "expected"),
     [

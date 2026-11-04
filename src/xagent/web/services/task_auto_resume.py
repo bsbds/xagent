@@ -96,6 +96,7 @@ from .task_auto_recovery import (
 )
 from .task_auto_recovery_policy import (
     auto_resume_limit,
+    auto_resume_policy,
     auto_resume_recovery_state,
     next_auto_resume_at,
     scheduled_trigger_superseded,
@@ -840,6 +841,9 @@ def _process_due_candidate_no_commit(
     paused_state_version = int(row.paused_state_version)
     attempt = int(row.total_resumes or 0) + 1
     command_id = auto_resume_command_id(paused_state_version, attempt, run_id)
+    # ``_limit_state`` above has already stopped a reason without a policy.
+    policy = auto_resume_policy(row.reason)
+    assert policy is not None
     next_check_at = now + timedelta(seconds=DISPATCH_CHECK_GRACE_SECONDS)
     updated = _rowcount(
         db.execute(
@@ -853,7 +857,10 @@ def _process_due_candidate_no_commit(
             .values(
                 state=_DISPATCHED.value,
                 state_detail=None,
-                no_progress_resumes=TaskAutoRecovery.no_progress_resumes + 1,
+                no_progress_resumes=(
+                    TaskAutoRecovery.no_progress_resumes
+                    + (1 if policy.counts_no_progress else 0)
+                ),
                 total_resumes=TaskAutoRecovery.total_resumes + 1,
                 last_command_id=command_id,
                 next_attempt_at=next_check_at,

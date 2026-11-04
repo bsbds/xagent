@@ -85,9 +85,16 @@ def test_web_role_does_not_run_the_sweeper(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_application_shutdown_stops_the_sweeper_before_lease_recovery(
+async def test_application_shutdown_stops_every_claim_path_before_cancelling_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A shutting-down host must not claim an automatic resume.
+
+    A run the shutdown cancels is paused with an automatic resume due at
+    once, so the command dispatcher and the sweeper (each could pick that
+    resume up on this host) stop before the coordinators close and cancel
+    the runs; lease recovery stops with them.
+    """
     order: list[str] = []
 
     async def record(name: str) -> None:
@@ -130,14 +137,22 @@ async def test_application_shutdown_stops_the_sweeper_before_lease_recovery(
     )
     monkeypatch.setattr(
         "xagent.web.services.task_execution.background_task_manager.shutdown",
-        lambda: record("other"),
+        lambda: record("executions"),
+    )
+    monkeypatch.setattr(
+        "xagent.web.services.task_coordinator_runtime.close_task_coordinators",
+        lambda: record("coordinators"),
+    )
+    monkeypatch.setattr(
+        "xagent.web.services.task_command_transport.stop_task_command_dispatcher",
+        lambda: record("claims"),
     )
     monkeypatch.setattr(
         "xagent.web.services.task_lease_service.wait_for_heartbeat_manager_idle",
         lambda: record("other"),
     )
+    monkeypatch.setattr(app_module, "_task_command_dispatcher_task", object())
     for name in (
-        "_task_command_dispatcher_task",
         "_sandbox_idle_sweep_task",
         "_file_storage_startup_sync_task",
         "_trigger_dispatcher_task",
@@ -156,4 +171,10 @@ async def test_application_shutdown_stops_the_sweeper_before_lease_recovery(
     await app_module.shutdown_event()
 
     stops = [name for name in order if name != "other"]
-    assert stops == ["auto_resume", "lease_recovery"]
+    assert stops == [
+        "claims",
+        "auto_resume",
+        "lease_recovery",
+        "coordinators",
+        "executions",
+    ]

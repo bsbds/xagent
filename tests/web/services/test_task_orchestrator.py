@@ -42,6 +42,7 @@ from tests.web.pool_contention_shared import (
     wait_for_ticks,
 )
 from xagent.core.agent.checkpoint import CHECKPOINT_TYPE
+from xagent.core.agent.interruption import InterruptionReason
 from xagent.core.tools.adapters.vibe.config import RequiredMCPUnavailableError
 from xagent.core.tools.adapters.vibe.connector_runtime import (
     ConnectorRef,
@@ -96,6 +97,7 @@ from xagent.web.services.mcp_runtime import (
     MCPBuiltinOAuthActorPolicy,
     MCPBuiltinOAuthActorPolicyRequiredError,
 )
+from xagent.web.services.release_hold import release_hold
 from xagent.web.services.task_execution_controller import task_execution_controller
 from xagent.web.services.task_lease_service import (
     TaskLease,
@@ -2527,7 +2529,6 @@ async def test_schedule_bg_settles_off_loop_and_registers_failure_flag(
     failure_point,
     expect_flag,
 ) -> None:
-    from xagent.core.agent.interruption import InterruptionReason
     from xagent.web.services.task_execution import background_task_manager
 
     user = _create_user(db_session)
@@ -4475,11 +4476,15 @@ def _shutdown_handoff_fixture(
 
 
 async def _run_cancelled_turn(task, user, payload, lease, *, user_cancel=False):
+    """Run the cancelled turn with real settlement; returns a spy on it."""
     from xagent.web.services.task_execution import background_task_manager
 
+    settle = MagicMock(wraps=task_orchestrator_module.settle_task_lease_isolated)
     with (
         _finalize_runner_patches(
-            lease, execute=AsyncMock(side_effect=asyncio.CancelledError())
+            lease,
+            execute=AsyncMock(side_effect=asyncio.CancelledError()),
+            settle=settle,
         ),
         patch.object(
             background_task_manager,
@@ -4490,22 +4495,18 @@ async def _run_cancelled_turn(task, user, payload, lease, *, user_cancel=False):
         bg_task = _spawn_finalize_runner(task, user, payload)
         with pytest.raises(asyncio.CancelledError):
             await bg_task
+    return settle
+
+
+def _settlement_interruption(settle: MagicMock) -> InterruptionReason | None:
+    """The interruption the cancelled run's one settlement was asked to decide."""
+    settle.assert_called_once()
+    return settle.call_args.kwargs["interruption"]
 
 
 def _stored_task(db_session, task_id: int) -> Task:
     db_session.expire_all()
     return db_session.query(Task).filter(Task.id == task_id).one()
-
-
-def _assert_lease_retained(db_session, task: Task, turn_id: str) -> None:
-    stored = _stored_task(db_session, int(task.id))
-    assert stored.status == TaskStatus.RUNNING
-    assert stored.runner_id == "test-runner"
-    assert stored.lease_attempt_id == "test-attempt"
-    assert stored.run_id == "run-a"
-    assert stored.error_message is None
-    # Lease recovery closes the orphaned delivery row, as for any deferral.
-    assert _delivery_status(db_session, turn_id) == DELIVERY_PENDING
 
 
 def _assert_settled_cancelled(
@@ -4518,18 +4519,28 @@ def _assert_settled_cancelled(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancel_hands_eligible_run_to_lease_recovery(
+async def test_shutdown_cancel_settles_eligible_run_as_a_shutdown_interruption(
     db_session, monkeypatch
 ) -> None:
-    """A host shutdown leaves an auto-resumable run RUNNING under its exact
-    lease, so lease recovery pauses it and automatic resume continues it."""
+    """A host shutdown settles an auto-resumable run at once, as a ``shutdown``
+    interruption: the settlement (not TTL recovery) pauses it, releases the
+    lease and plans the resume. Nothing is retained, so nothing is recorded as
+    unsettled for a pooled release drain to wait on.
+
+    This run has no checkpoint, so the settlement itself fails it (the real
+    pause is in ``test_shutdown_handoff_pause.py``); what is pinned here is
+    that the interruption is asked for and the lease is not kept."""
     user, task, payload, lease = _shutdown_handoff_fixture(
         db_session, monkeypatch, turn_id="turn-shutdown-handoff"
     )
+    unsettled_before = release_hold.unsettled_total
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
 
-    _assert_lease_retained(db_session, task, "turn-shutdown-handoff")
+    assert _settlement_interruption(settle) is InterruptionReason.SHUTDOWN
+    assert settle.call_args.kwargs["error_message"] == "task execution cancelled"
+    assert release_hold.unsettled_total == unsettled_before
+    _assert_settled_cancelled(db_session, task)
 
 
 @pytest.mark.asyncio
@@ -4540,7 +4551,8 @@ async def test_user_cancel_during_shutdown_still_settles(
         db_session, monkeypatch, turn_id="turn-shutdown-user-cancel"
     )
 
-    await _run_cancelled_turn(task, user, payload, lease, user_cancel=True)
+    settle = await _run_cancelled_turn(task, user, payload, lease, user_cancel=True)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 
@@ -4560,7 +4572,8 @@ async def test_shutdown_cancel_settles_sources_auto_recovery_excludes(
         source=source,
     )
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 
@@ -4576,7 +4589,8 @@ async def test_shutdown_cancel_settles_external_task_with_visitor_message(
         source=EXTERNAL_TASK_SOURCE,
     )
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(
         db_session, task, error_message=EXTERNAL_TURN_INTERRUPTED_MESSAGE
@@ -4602,7 +4616,8 @@ async def test_shutdown_cancel_settles_channel_task(db_session, monkeypatch) -> 
     task.channel_id = int(channel.id)
     db_session.commit()
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 
@@ -4615,7 +4630,8 @@ async def test_shutdown_cancel_settles_preview_task(db_session, monkeypatch) -> 
     task.is_visible = False
     db_session.commit()
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 
@@ -4625,14 +4641,15 @@ async def test_shutdown_cancel_does_not_retain_a_row_another_writer_settled(
     db_session, monkeypatch
 ) -> None:
     """A row that already left RUNNING (a pause that landed while the host was
-    going down) is not left under the cancelled run's lease."""
+    going down) is not handed off, and its lease is released."""
     user, task, payload, lease = _shutdown_handoff_fixture(
         db_session, monkeypatch, turn_id="turn-shutdown-already-paused"
     )
     task.status = TaskStatus.PAUSED
     db_session.commit()
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     stored = _stored_task(db_session, int(task.id))
     assert stored.status == TaskStatus.PAUSED
@@ -4652,7 +4669,8 @@ async def test_shutdown_cancel_settles_when_switch_off(
         switch=switch,
     )
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 
@@ -4667,7 +4685,8 @@ async def test_shutdown_cancel_settles_when_auto_resume_off(
         db_session, monkeypatch, turn_id="turn-shutdown-auto-resume-off"
     )
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 
@@ -4683,7 +4702,8 @@ async def test_cancel_outside_shutdown_settles_with_switch_on(
         host_shutting_down=False,
     )
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 
@@ -4699,7 +4719,8 @@ async def test_shutdown_handoff_check_failure_settles(db_session, monkeypatch) -
         MagicMock(side_effect=RuntimeError("database unavailable")),
     )
 
-    await _run_cancelled_turn(task, user, payload, lease)
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+    assert _settlement_interruption(settle) is None
 
     _assert_settled_cancelled(db_session, task)
 

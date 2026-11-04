@@ -122,8 +122,26 @@ def test_model_output_invalid_is_immediate() -> None:
     assert policy.jitter_cap_seconds == 5
 
 
+def test_shutdown_is_immediate_and_never_a_lack_of_progress() -> None:
+    policy = _policy(R.SHUTDOWN)
+    assert [backoff_seconds(policy, n) for n in range(4)] == [0, 0, 0, 0]
+    assert policy.jitter_cap_seconds == 5
+    # No limit of its own beyond the window and the absolute per-run cap, and
+    # its dispatches stay out of ``no_progress_resumes``.
+    assert policy.max_no_progress is None
+    assert policy.max_elapsed_seconds is None
+    assert policy.counts_no_progress is False
+    for other in (
+        R.LEASE_EXPIRED,
+        R.PERSISTENCE_FAILURE,
+        R.LLM_UNAVAILABLE,
+        R.MODEL_OUTPUT_INVALID,
+    ):
+        assert _policy(other).counts_no_progress is True
+
+
 @pytest.mark.parametrize(
-    "reason", [R.LEASE_EXPIRED, R.LLM_UNAVAILABLE, R.MODEL_OUTPUT_INVALID]
+    "reason", [R.LEASE_EXPIRED, R.LLM_UNAVAILABLE, R.MODEL_OUTPUT_INVALID, R.SHUTDOWN]
 )
 def test_backoff_overflow_safe(reason) -> None:
     policy = _policy(reason)
@@ -133,7 +151,6 @@ def test_backoff_overflow_safe(reason) -> None:
 @pytest.mark.parametrize(
     "reason",
     [
-        R.SHUTDOWN,
         R.USER_PAUSE,
         R.UNKNOWN_TOOL_EFFECT,
         R.NOT_RECOVERABLE,
@@ -215,6 +232,15 @@ def test_schedule_model_output_invalid_within_five_seconds() -> None:
     assert v.next_attempt_at == NOW + timedelta(seconds=5)
 
 
+def test_schedule_shutdown_within_five_seconds() -> None:
+    assert _plan(reason=R.SHUTDOWN, rng=LO).next_attempt_at == NOW
+    assert _plan(reason=R.SHUTDOWN, rng=HI).next_attempt_at == NOW + timedelta(
+        seconds=5
+    )
+    # However many shutdowns a run has lived through, the backoff stays zero.
+    assert _plan(reason=R.SHUTDOWN, no_progress=50, rng=LO).next_attempt_at == NOW
+
+
 def test_non_schedule_verdicts_have_no_next_attempt() -> None:
     assert _plan(reason=R.USER_PAUSE).next_attempt_at is None
     assert _plan(total=20).next_attempt_at is None
@@ -271,6 +297,20 @@ def test_no_progress_boundary() -> None:
     mo = R.MODEL_OUTPUT_INVALID
     assert _plan(reason=mo, no_progress=1).outcome is AutoResumeOutcome.SCHEDULED
     assert _plan(reason=mo, no_progress=2).outcome is AutoResumeOutcome.EXHAUSTED
+
+
+def test_shutdown_is_not_exhausted_by_no_progress_or_elapsed_time() -> None:
+    v = _plan(reason=R.SHUTDOWN, no_progress=500, episode_ago=10**6)
+    assert v.outcome is AutoResumeOutcome.SCHEDULED
+
+
+def test_shutdown_counts_toward_the_total_cap_and_the_window() -> None:
+    # The absolute cap is what stops a run that keeps dying with its host.
+    assert _plan(reason=R.SHUTDOWN, total=19).outcome is AutoResumeOutcome.SCHEDULED
+    assert _plan(reason=R.SHUTDOWN, total=20).outcome is AutoResumeOutcome.EXHAUSTED
+    assert _plan(reason=R.SHUTDOWN, interrupted_ago=86401).outcome is (
+        AutoResumeOutcome.EXPIRED
+    )
 
 
 def test_llm_has_no_no_progress_limit() -> None:

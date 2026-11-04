@@ -54,8 +54,8 @@ class InterruptionReason(str, Enum):
     """Why a run was interrupted rather than finished.
 
     Only the system-caused reasons (``LEASE_EXPIRED``, ``PERSISTENCE_FAILURE``,
-    ``LLM_UNAVAILABLE``, ``MODEL_OUTPUT_INVALID`` and the reserved
-    ``SHUTDOWN``) describe a run that may be resumed without the user. The
+    ``LLM_UNAVAILABLE``, ``MODEL_OUTPUT_INVALID`` and ``SHUTDOWN``)
+    describe a run that may be resumed without the user. The
     rest are recorded so a paused task can say why it is paused.
     """
 
@@ -70,7 +70,9 @@ class InterruptionReason(str, Enum):
     # The model kept producing an unusable response (invalid tool protocol,
     # empty or unparsable content) after in-run repair.
     MODEL_OUTPUT_INVALID = "model_output_invalid"
-    # Reserved for graceful shutdown hand-off; nothing produces it yet.
+    # A host shutdown cancelled the run and handed it off: the settlement
+    # pauses it and releases its lease so another process resumes it at once.
+    # Nothing classifies it; the orchestrator names it directly.
     SHUTDOWN = "shutdown"
     # The user paused the task, or it was PAUSE_REQUESTED when the run died.
     USER_PAUSE = "user_pause"

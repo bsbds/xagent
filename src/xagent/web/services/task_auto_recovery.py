@@ -7,8 +7,9 @@ control state or error message; the one projection it decides is the
 TriggerRun of a PAUSED task, which stays RUNNING while an automatic resume
 is scheduled (see :func:`apply_interruption_outcome_no_commit`).
 
-Which outcome a run-settling path (a run that raised, or returned an
-unsuccessful result) writes for an interruption is decided by
+Which outcome a run-settling path (a run that raised, returned an
+unsuccessful result, or was cancelled by a host shutdown) writes for an
+interruption is decided by
 :func:`decide_interruption`: an eligible run with a recoverable checkpoint
 rests PAUSED instead of FAILED, so its user can resume it. Lease-expiry
 recovery keeps its own verdict mapping.
@@ -240,17 +241,22 @@ def auto_recovery_eligibility(db: Session, task: Task) -> AutoRecoveryEligibilit
 
 
 def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
-    """Whether a run a host shutdown cancelled may be left to lease recovery.
+    """Whether a run a host shutdown cancelled is handed off to another process.
 
-    Such a run keeps its lease instead of failing, so lease recovery pauses
-    it and automatic resume picks it up, as after a crash. That only helps a
-    task automatic recovery would resume (:func:`auto_recovery_eligibility`);
-    the others must still fail now so their callers see a terminal state.
-    Tasks of a status-only source (:func:`is_status_only_source`) still fail
-    now as well, as their settlement interruptions do: their caller reads
-    nothing but the status, and a deploy should not keep it waiting on a
-    lease TTL. Channel tasks are excluded too until their resumed reply is
-    proven, and nothing is handed off while automatic resume is off.
+    Such a run settles as a ``shutdown`` interruption: PAUSED, its lease
+    released, an automatic resume scheduled with no backoff
+    (:func:`~xagent.web.services.task_auto_recovery_policy.auto_resume_policy`),
+    so another process takes it over at once. That only helps a task automatic
+    recovery would resume (:func:`auto_recovery_eligibility`); the others must
+    still fail now so their callers see a terminal state. Tasks of a
+    status-only source (:func:`is_status_only_source`) still fail now as well:
+    their caller reads nothing but the status and would not see the resume.
+    Channel tasks are excluded too until their resumed reply is proven, and
+    nothing is handed off while automatic resume is off.
+
+    This is a precondition only: the settlement still decides from the run's
+    checkpoint (:func:`decide_interruption`) whether it can be paused, and
+    fails it otherwise.
     """
 
     if not get_task_auto_resume_enabled():
@@ -833,6 +839,11 @@ def record_lease_expiry_interruption_no_commit(
 # failures into an ordinary failed result without a reason, so it never
 # pauses for either (it still pauses for a persistence failure).
 #
+# ``shutdown`` is the exception: it classifies no failure or result. The
+# orchestrator passes it when a host shutdown cancelled a run that automatic
+# recovery may resume (:func:`shutdown_handoff_eligible`), so the run is
+# paused and released at once for another process to pick up.
+#
 # Every one of them is recorded; ``_pausable_with_infra_switch`` says which
 # of them the infra switch decides (``model_output_invalid`` also needs an
 # automatic resume to resample it).
@@ -841,6 +852,7 @@ SETTLEMENT_INTERRUPTION_REASONS = frozenset(
         InterruptionReason.PERSISTENCE_FAILURE,
         InterruptionReason.LLM_UNAVAILABLE,
         InterruptionReason.MODEL_OUTPUT_INVALID,
+        InterruptionReason.SHUTDOWN,
     }
 )
 
