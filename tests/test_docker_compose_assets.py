@@ -148,6 +148,21 @@ def _services_mounting_storage() -> set[str]:
     }
 
 
+def test_celery_worker_requeues_running_jobs_when_docker_stops_it():
+    """SIGTERM must interrupt and requeue running jobs, not wait for them.
+
+    Without ``REMAP_SIGTERM=SIGQUIT`` Celery's SIGTERM is a warm shutdown that
+    waits for every running job -- hours, for a web ingest -- until Docker's
+    SIGKILL; the grace period then has to outlast the jobs unwinding.
+    """
+    worker = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text("utf-8"))[
+        "services"
+    ]["worker"]
+
+    assert _environment(worker)["REMAP_SIGTERM"] == "SIGQUIT"
+    assert worker["stop_grace_period"] == "60s"
+
+
 def test_overlay_binds_one_host_storage_root_into_every_container_that_reads_it():
     source = "${XAGENT_HOST_STORAGE_ROOT:-/root/.xagent}"
     expected = _services_mounting_storage()

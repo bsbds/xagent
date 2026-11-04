@@ -35,6 +35,24 @@ def create_celery_app() -> Any:
     sweep_interval = get_background_job_sweep_interval_seconds()
     cleanup_interval = get_kb_milvus_cleanup_interval_seconds()
     app = Celery("xagent", broker=broker_url, backend=result_backend)
+    # Stopping a worker (Celery 5.6, prefork pool, Redis broker):
+    #
+    # * ``task_acks_late`` keeps a running job's message unacknowledged, so the
+    #   broker, not the worker, owns it until the job ends. If only the pool
+    #   child dies, ``task_reject_on_worker_lost`` requeues the message at once;
+    #   if the whole worker process is killed, it comes back only after
+    #   ``visibility_timeout``.
+    # * SIGTERM alone starts Celery's warm shutdown: the worker waits for every
+    #   running job, however long (KB web ingests run for hours). Starting it
+    #   with ``REMAP_SIGTERM=SIGQUIT`` in its environment makes SIGTERM a cold
+    #   shutdown instead. The pool child of each running job gets SystemExit;
+    #   ``execute_background_job`` gives the job its attempt back, and once the
+    #   child has exited the worker puts the unacknowledged message straight
+    #   back on the queue ("Restoring N unacknowledged message(s)"), for the
+    #   next worker to pick up. The compose ``worker`` services set it.
+    # * ``worker_soft_shutdown_timeout`` stays 0: a planned stop does not wait
+    #   for jobs to finish, because requeueing one is cheap and waiting on a
+    #   long one is not.
     app.conf.update(
         broker_connection_retry_on_startup=True,
         broker_transport_options={"visibility_timeout": visibility_timeout},

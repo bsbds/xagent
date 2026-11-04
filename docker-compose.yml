@@ -81,10 +81,18 @@ services:
       - xagent_network
 
   # Celery worker for triggers and KB ingestion. Agent execution stays in backend.
+  #
+  # REMAP_SIGTERM=SIGQUIT makes `docker stop` (SIGTERM) a Celery cold shutdown:
+  # running jobs are interrupted and go straight back on the queue without
+  # using up a retry attempt, instead of the worker waiting for them -- hours,
+  # for a web ingest -- until Docker kills it. The grace period only has to
+  # cover the interrupted jobs unwinding; a job still unwinding when it expires
+  # is recovered by the broker/stale-job sweep and does use up an attempt.
   worker:
     image: xprobe/xagent-backend:0.8.5
     container_name: xagent_worker
     restart: unless-stopped
+    stop_grace_period: 60s
     command:
       [
         "celery",
@@ -109,6 +117,7 @@ services:
       - XAGENT_CELERY_ENABLED=${XAGENT_CELERY_ENABLED:-true}
       - XAGENT_CELERY_BROKER_URL=redis://redis:6379/1
       - XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS=${XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS:-3600}
+      - REMAP_SIGTERM=SIGQUIT
     env_file:
       - .env
     volumes:

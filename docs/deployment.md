@@ -1,5 +1,32 @@
 # Deployment changes
 
+## 2026-11-04 — Stopping the Celery worker requeues running jobs
+
+A Celery worker used to wait for every running background job when it received
+SIGTERM, which for a knowledge-base web ingest can be hours; a stop that gave up
+waiting (Docker's SIGKILL after the grace period) left the job to be redelivered
+up to `XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS` later and counted the
+interrupted run as one of its attempts.
+
+Start the worker with `REMAP_SIGTERM=SIGQUIT` in its environment, which the
+bundled Compose `worker` service now does (with `stop_grace_period: 60s`), and
+SIGTERM makes Celery interrupt its running jobs instead. Each interrupted job is
+put straight back on the queue for the next worker, with
+`Requeued after a planned worker stop` as its progress and error message, and the
+attempt the interrupted run used is given back: `attempts` is what it was before
+that run, so a release never moves a job towards `max_attempts` (the last
+attempt rolls a failed ingest back). The job runs again from the start; web
+crawls do not resume. A worker started without `REMAP_SIGTERM` keeps the old
+behaviour. Other deployments that run the worker themselves (for example a
+supervisor or another Compose file) must set the variable and give the worker
+time to unwind (about a minute) before any SIGKILL; a job killed before it has
+finished unwinding is still redelivered later and does use an attempt.
+
+Verify with `docker compose stop worker` while a job runs: the worker logs
+`Cold shutdown`, `Background job <id> interrupted by a planned worker stop` and
+`Restoring 1 unacknowledged message(s)`, and exits within seconds. To roll back,
+remove `REMAP_SIGTERM` from the worker's environment.
+
 ## 2026-10-17 — PyJWT migration and DeepDoc 0.2.4
 
 This authentication update uses `PyJWT[crypto]>=2.15.1,<3` and pins the released
