@@ -230,6 +230,11 @@ def list_background_jobs(
 
 
 def mark_job_running(db: Session, job: BackgroundJob) -> BackgroundJob:
+    """Start a run of ``job``, which consumes one of its ``max_attempts``.
+
+    A run that a planned worker stop cuts short gives its attempt back through
+    ``requeue_job_after_planned_stop``; every other way a run ends keeps it.
+    """
     setattr(job, "status", BackgroundJobStatus.RUNNING.value)
     setattr(job, "attempts", int(job.attempts or 0) + 1)
     setattr(job, "started_at", datetime.now(timezone.utc))
@@ -263,6 +268,63 @@ def update_job_progress(
     db.commit()
     db.refresh(job)
     return job
+
+
+# Shown on a job that a planned worker stop handed back to the queue. It is not
+# a failure: the next run clears it, like every other requeue message.
+PLANNED_STOP_REQUEUE_MESSAGE = "Requeued after a planned worker stop"
+
+
+def requeue_job_after_planned_stop(
+    db: Session, job_id: str, *, claimed_attempt: int
+) -> bool:
+    """Mark a job interrupted by a planned worker stop as waiting for its next run.
+
+    A release or graceful shutdown stops the Celery worker mid-job. Celery puts
+    the unacknowledged message back on the broker by itself (see
+    ``celery_app``), so the only thing left to fix is the row: the interrupted
+    run consumed an attempt, but the job did not fail. Giving that attempt back
+    keeps ``attempts`` at what it was before the interrupted run, so releases
+    never push a job towards its final attempt, where a failure rolls back the
+    ingest and releases its target generation.
+
+    The row is only touched while it still shows the run that was interrupted:
+    ``RUNNING`` with ``attempts == claimed_attempt``. If the stale sweep or
+    another delivery has moved the job on since, that newer state is not ours to
+    rewrite and nothing changes.
+
+    Args:
+        db: Session of the interrupted run. It may hold whatever the interrupted
+            code left half-done, so it is rolled back first.
+        job_id: The interrupted job.
+        claimed_attempt: ``attempts`` as ``mark_job_running`` set it for the
+            interrupted run.
+
+    Returns:
+        Whether the row was requeued.
+    """
+    db.rollback()
+    requeued = (
+        db.query(BackgroundJob)
+        .filter(BackgroundJob.id == job_id)
+        .filter(BackgroundJob.status == BackgroundJobStatus.RUNNING.value)
+        .filter(BackgroundJob.attempts == claimed_attempt)
+        .update(
+            {
+                "status": BackgroundJobStatus.ENQUEUED.value,
+                "attempts": claimed_attempt - 1,
+                "error_message": PLANNED_STOP_REQUEUE_MESSAGE,
+                "progress": {
+                    "message": PLANNED_STOP_REQUEUE_MESSAGE,
+                    "completed": 0,
+                    "total": 1,
+                },
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return bool(requeued)
 
 
 def requeue_stale_background_jobs(

@@ -16,6 +16,7 @@ from ..services.background_jobs import (
     mark_job_failed,
     mark_job_running,
     mark_job_succeeded,
+    requeue_job_after_planned_stop,
 )
 from .celery_app import celery_app
 from .exceptions import BackgroundJobHandlerError
@@ -107,6 +108,50 @@ def _execute_job_handler(db: Session, job: BackgroundJob) -> dict[str, Any]:
     )
 
 
+def _requeue_after_planned_stop(
+    db: Session, job: BackgroundJob, *, claimed_attempt: int
+) -> None:
+    """Repair the job row of a run that a planned worker stop interrupted.
+
+    Called from ``execute_background_job`` when ``SystemExit`` unwinds a running
+    handler. A planned stop (release, ``docker stop``) makes the Celery worker
+    cancel its running tasks, which its prefork pool delivers to the pool child
+    as a termination signal; billiard turns that into ``SystemExit`` in the
+    child's main thread (``billiard.common._shutdown_cleanup``). ``SystemExit``
+    is not an ``Exception``, so it unwinds the handler past every ``except
+    Exception``: no retry bookkeeping, no failure rollback, and no release of a
+    KB ingest target generation (``coordinate_ingest_job`` releases only on a
+    normal return or an ``Exception``). That is what makes the run safe to
+    simply run again. The one thing left to fix is the row, which still says
+    ``RUNNING`` and still counts the attempt.
+
+    The message is deliberately not re-sent. The task is acks-late, so its
+    message is still unacknowledged and Celery puts that same message back on
+    the broker once the pool child has exited; sending another one here would
+    run the job twice.
+    """
+    try:
+        requeued = requeue_job_after_planned_stop(
+            db, str(job.id), claimed_attempt=claimed_attempt
+        )
+    except Exception:  # noqa: BLE001
+        # Stopping must not hang on a database that is gone. Celery still
+        # redelivers the message, and the job then reruns and consumes an
+        # attempt, exactly as it would after a crash.
+        logger.exception(
+            "Failed to requeue background job %s after a planned worker stop",
+            job.id,
+        )
+        return
+    logger.warning(
+        "Background job %s interrupted by a planned worker stop (requeued=%s); "
+        "attempt %s not consumed",
+        job.id,
+        requeued,
+        claimed_attempt,
+    )
+
+
 @celery_app.task(
     bind=True,
     name="xagent.web.jobs.tasks.execute_background_job",
@@ -127,6 +172,7 @@ def execute_background_job(self: Any, job_id: str) -> dict[str, Any]:
             return dict(job.result or {"status": "succeeded"})
 
         mark_job_running(db, job)
+        claimed_attempt = int(job.attempts)
         try:
             result = _execute_job_handler(db, job)
         except BackgroundJobHandlerError as exc:
@@ -149,6 +195,9 @@ def execute_background_job(self: Any, job_id: str) -> dict[str, Any]:
                 db.commit()
                 raise self.retry(exc=exc, max_retries=int(job.max_attempts or 1))
             mark_job_failed(db, job, error_message=str(exc))
+            raise
+        except SystemExit:
+            _requeue_after_planned_stop(db, job, claimed_attempt=claimed_attempt)
             raise
 
         db.refresh(job)

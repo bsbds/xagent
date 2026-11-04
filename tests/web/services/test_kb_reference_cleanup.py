@@ -1040,6 +1040,64 @@ def test_retryable_worker_failure_keeps_generation_and_staged_source(
     assert path.exists()
 
 
+def test_worker_stop_on_final_attempt_keeps_generation_and_staged_source(
+    boundary, tmp_path, monkeypatch
+):
+    """A planned worker stop reaches the handler as ``SystemExit``.
+
+    Even on the last attempt it must neither roll the ingest back nor release
+    the target generation: the job is requeued and runs again.
+    """
+    from xagent.core.tools.core.RAG_tools.core.schemas import IngestionConfig
+    from xagent.web.jobs import kb_tasks
+    from xagent.web.services.background_jobs import create_background_job
+
+    sessions, store, path = boundary
+    staged = tmp_path / "stopped.txt"
+    staged.write_text("interrupted source")
+
+    def stopped(**_kwargs):
+        raise SystemExit(-241)
+
+    rollback_calls = []
+    monkeypatch.setattr(kb_tasks, "run_document_ingestion", stopped)
+    monkeypatch.setattr(
+        kb_tasks,
+        "_rollback_raised_staged_document_ingestion",
+        lambda *args: rollback_calls.append(args),
+    )
+    with sessions() as db:
+        job = create_background_job(
+            db,
+            user_id=1,
+            job_type="kb.ingest.document",
+            payload={
+                "user_id": 2,
+                "collection": "kb",
+                "file_id": "source",
+                "target_path": "canonical/source",
+                "source_path": str(staged),
+                "generation_id": "one",
+                "collection_existed_before": True,
+                "ingestion_config": IngestionConfig().model_dump(mode="json"),
+            },
+        )
+        job_id = str(job.id)
+    admit(sessions, job_id=job_id)
+    with sessions() as db:
+        job = db.get(type(job), job_id)
+        job.attempts = job.max_attempts
+        db.commit()
+        with pytest.raises(SystemExit):
+            kb_tasks.handle_kb_ingest_document(db, job)
+        assert db.query(KBIngestTarget).one().deleted_at is None
+    assert rollback_calls == []
+    assert staged.read_text() == "interrupted source"
+    assert not store.list_document_records_by_file_ids(["source"])
+    assert claim(sessions).deleted == 0
+    assert path.exists()
+
+
 def test_compensating_canonical_upload_rejects_admission_with_safe_conflict(
     boundary, submit_ingest, tmp_path
 ):
