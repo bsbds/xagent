@@ -42,10 +42,7 @@ from xagent.web.services import (
     task_lease_recovery,
     task_lease_service,
 )
-from xagent.web.services.task_auto_recovery import (
-    record_interruption_no_commit,
-    resolution_tool_call_in_flight,
-)
+from xagent.web.services.task_auto_recovery import record_interruption_no_commit
 from xagent.web.services.task_execution_event_writer import append_fact_no_commit
 from xagent.web.services.task_lease_recovery import (
     TASK_LEASE_EXPIRED_ERROR,
@@ -313,41 +310,14 @@ def _react_snapshot(label: str, *, pending: bool) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("checkpoint", ["legacy", "encoded"])
-@pytest.mark.parametrize("label", ["before_tool", "before_tool_batch"])
-def test_legacy_run_stopped_inside_a_tool_call_waits_for_its_user(
-    factory, checkpoint, label
-):
-    # Resuming from a legacy checkpoint written just before a tool call runs
-    # that call again: the task still pauses, but nothing resumes it.
-    with factory() as db:
-        task_id = int(
-            _task(
-                db,
-                _user(db),
-                checkpoint=checkpoint,
-                snapshot_fields=_react_snapshot(label, pending=True),
-            ).id
-        )
-
-    assert _recover() == 1
-
-    task, row, events = _state(factory, task_id)
-    assert task.status == TaskStatus.PAUSED
-    assert task.error_message is None
-    assert (row.reason, row.state, row.state_detail) == (
-        "lease_expired",
-        "manual",
-        "tool_in_flight",
-    )
-    assert row.next_attempt_at is None
-    assert [(e.event, e.reason) for e in events] == [("interrupted", "lease_expired")]
-    assert events[0].detail["state"] == "manual"
-    assert events[0].detail["state_detail"] == "tool_in_flight"
-
-
 @pytest.mark.parametrize(
     "label, pending",
     [
+        # A run stopped inside a tool call is scheduled like any other: the
+        # resume closes its calls as interrupted instead of replaying them
+        # (``mark_possibly_started_tool_calls``), so nothing waits for a person.
+        ("before_tool", True),
+        ("before_tool_batch", True),
         # Calls planned by the LLM response have not started yet.
         ("after_llm", True),
         # The next serial call writes its own before_tool before it starts.
@@ -357,24 +327,38 @@ def test_legacy_run_stopped_inside_a_tool_call_waits_for_its_user(
         ("before_tool", False),
     ],
 )
-def test_legacy_run_stopped_outside_a_tool_call_is_scheduled(factory, label, pending):
+def test_legacy_run_is_scheduled_whether_or_not_a_tool_call_was_in_flight(
+    factory, checkpoint, label, pending
+):
     with factory() as db:
         task_id = int(
             _task(
                 db,
                 _user(db),
+                checkpoint=checkpoint,
                 snapshot_fields=_react_snapshot(label, pending=pending),
             ).id
         )
 
     assert _recover() == 1
 
-    _, row, events = _state(factory, task_id)
-    assert (row.state, row.state_detail) == ("scheduled", None)
-    assert [e.event for e in events] == ["interrupted", "scheduled"]
+    task, row, events = _state(factory, task_id)
+    assert task.status == TaskStatus.PAUSED
+    assert (row.reason, row.state, row.state_detail) == (
+        "lease_expired",
+        "scheduled",
+        None,
+    )
+    assert row.next_attempt_at is not None
+    assert [(e.event, e.reason) for e in events] == [
+        ("interrupted", "lease_expired"),
+        ("scheduled", "lease_expired"),
+    ]
+    assert events[0].detail["state"] == "scheduled"
+    assert "state_detail" not in events[0].detail
 
 
-def test_legacy_dag_step_inside_a_tool_call_waits_for_its_user(factory):
+def test_legacy_dag_step_inside_a_tool_call_is_scheduled(factory):
     snapshot = {
         "pattern": "DAGPattern",
         "label": "dag_after_llm",
@@ -394,65 +378,7 @@ def test_legacy_dag_step_inside_a_tool_call_waits_for_its_user(factory):
     assert _recover() == 1
 
     _, row, _ = _state(factory, task_id)
-    assert (row.state, row.state_detail) == ("manual", "tool_in_flight")
-
-
-@pytest.mark.parametrize(
-    "resolution, expected",
-    [
-        (
-            CheckpointRecoveryResolution(
-                CheckpointRecoveryVerdict.RECOVERABLE,
-                checkpoint={"snapshot": _react_snapshot("before_tool", pending=True)},
-                encoded=True,
-            ),
-            True,
-        ),
-        # A version-two checkpoint: recovery already judges every started
-        # tool attempt from the event ledger, so the label is not consulted.
-        (
-            CheckpointRecoveryResolution(
-                CheckpointRecoveryVerdict.RECOVERABLE,
-                checkpoint={"snapshot": _react_snapshot("before_tool", pending=True)},
-            ),
-            False,
-        ),
-        (
-            CheckpointRecoveryResolution(
-                CheckpointRecoveryVerdict.UNKNOWN_TOOL_EFFECT, encoded=True
-            ),
-            False,
-        ),
-        (
-            CheckpointRecoveryResolution(
-                CheckpointRecoveryVerdict.RECOVERABLE, checkpoint=None, encoded=True
-            ),
-            False,
-        ),
-    ],
-)
-def test_only_legacy_recoverable_checkpoints_are_checked(resolution, expected):
-    assert resolution_tool_call_in_flight(resolution) is expected
-
-
-def test_tool_in_flight_holds_a_settlement_pause_too(factory):
-    with factory() as db:
-        task = _task(db, _user(db), checkpoint=None)
-        task.status = TaskStatus.PAUSED
-        db.flush()
-        row = record_interruption_no_commit(
-            db,
-            task=task,
-            reason=InterruptionReason.PERSISTENCE_FAILURE,
-            task_status=TaskStatus.PAUSED,
-            interrupted_at=utc_now(),
-            progress_marker=None,
-            gated_by_settlement_switches=True,
-            tool_call_in_flight=True,
-        )
-        assert row is not None
-        assert (row.state, row.state_detail) == ("manual", "tool_in_flight")
-        assert row.next_attempt_at is None
+    assert (row.state, row.state_detail) == ("scheduled", None)
 
 
 def test_pause_requested_at_crash_records_user_pause(factory):
@@ -1753,20 +1679,3 @@ def test_record_time_limits_stop_a_continued_episode(
         recorded = _record_again(db, task, reason=reason)
         assert recorded.state == "exhausted"
         assert recorded.next_attempt_at is None
-
-
-@pytest.mark.parametrize("case", ["superseded", "expired"])
-def test_tool_in_flight_only_holds_a_resume_that_would_be_scheduled(factory, case):
-    # A verdict that already stops automatic resume keeps its own state.
-    task_id, _ = _scheduled_trigger_task(
-        factory,
-        later_run=case == "superseded",
-        snapshot_fields=_react_snapshot("before_tool", pending=True),
-    )
-    if case == "expired":
-        _lapse(factory, task_id, ago=86_400 + 60)
-
-    assert _recover() == 1
-
-    _, row, _ = _state(factory, task_id)
-    assert (row.state, row.state_detail) == (case, None)
