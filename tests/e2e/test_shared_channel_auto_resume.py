@@ -355,6 +355,57 @@ async def test_channel_run_survives_worker_web_and_ingress_restart(
     assert len(model_calls(app)) == 3
 
 
+@pytest.mark.asyncio
+async def test_graceful_backend_stop_does_not_hand_a_channel_run_to_auto_resume(
+    shared_app, ingress, monkeypatch
+):
+    """Characterization (recovery spike): a clean stop, unlike a SIGKILL.
+
+    ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` hands cancelled runs to lease
+    recovery, but ``shutdown_handoff_eligible`` excludes channel tasks
+    ("until their resumed reply is proven"), so a release that cancels the
+    worker settles the run immediately instead of resuming it.
+    """
+    from xagent.web.services import shared_channel_execution
+
+    app = shared_app
+    monkeypatch.setattr(
+        shared_channel_execution, "get_task_reply_wait_timeout_seconds", lambda: 120
+    )
+    waiting = asyncio.create_task(_send(ingress, "e2e:gate", "m1"))
+    await asyncio.to_thread(
+        wait_for, lambda: (app.root / "model-entered").exists(), app, "model call"
+    )
+    await asyncio.to_thread(
+        wait_for, lambda: "sender" in ingress.bot.active_tasks, app, "acceptance"
+    )
+    task_id = int(ingress.bot.active_tasks["sender"])
+    run_id = task_state(task_id)["run_id"]
+    waiting.cancel()
+    await asyncio.gather(waiting, return_exceptions=True)
+
+    await asyncio.to_thread(
+        restart_hosts,
+        app,
+        "web",
+        "worker",
+        XAGENT_SHUTDOWN_HANDOFF_ENABLED="true",
+    )
+    (app.root / "model-release").touch()
+    await asyncio.sleep(25)
+
+    state = task_state(task_id)
+    row, events = recovery_state(task_id)
+    (start,) = _starts(task_id)
+    # Settled by the stop itself: failed, no recovery row, nothing resumed.
+    assert (state["status"], state["run_id"]) == ("failed", run_id)
+    assert (row, events) == (None, [])
+    assert auto_resume_commands(task_id) == []
+    # Its reply is still owed; the channel will be told the run failed.
+    assert start["delivery"] == "pending"
+    assert start["channel_result"] is None
+
+
 # --------------------------------------------------------------------------
 # E9b: a new channel message replaces the waiting resume
 # --------------------------------------------------------------------------
