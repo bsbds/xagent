@@ -1,0 +1,293 @@
+{
+ "checkpoint_type": "agent_execution_checkpoint",
+ "snapshot_schema_version": 1,
+ "root_execution_id": "compat-exec",
+ "execution_id": "compat-exec",
+ "sequence": null,
+ "status": "running",
+ "label": "dag_after_step",
+ "saved_at": "2026-01-01T00:00:01+00:00",
+ "snapshot": {
+  "type": "checkpoint",
+  "label": "dag_after_step",
+  "execution_id": "compat-exec",
+  "pattern": "DAGPattern",
+  "pattern_state": {
+   "status": "running",
+   "plan": {
+    "steps": [
+     {
+      "id": "alpha",
+      "task": "Collect alpha",
+      "dependencies": [],
+      "description": null,
+      "termination_condition": null,
+      "completion_evidence": null,
+      "tool_names": [
+       "record"
+      ],
+      "status": "completed",
+      "result": "done",
+      "error": null,
+      "failure_code": null
+     },
+     {
+      "id": "beta",
+      "task": "Collect beta",
+      "dependencies": [
+       "alpha"
+      ],
+      "description": null,
+      "termination_condition": null,
+      "completion_evidence": null,
+      "tool_names": [
+       "record"
+      ],
+      "status": "pending",
+      "result": null,
+      "error": null,
+      "failure_code": null
+     }
+    ]
+   },
+   "active_step_id": null,
+   "active_step_pattern_state": null,
+   "active_step_context": null,
+   "active_step_ids": [],
+   "active_step_pattern_states": {},
+   "active_step_contexts": {},
+   "step_results": {
+    "alpha": "done"
+   },
+   "failed_step_evidence": {},
+   "failure_delivery_attempted": false,
+   "planned_user_message_count": 1,
+   "replan_owed_step_ids": [],
+   "memory_input_text": "Do the work.",
+   "max_concurrency": 2,
+   "completion_feedback": null,
+   "completion_replan_count": 0,
+   "max_completion_replans": 3
+  },
+  "context": {
+   "execution_id": "compat-exec",
+   "user_id": null,
+   "session_id": null,
+   "components": {
+    "workspace": {
+     "workspace_id": null,
+     "workspace_path": null,
+     "cwd": null,
+     "state": {}
+    },
+    "memory": {
+     "session_id": null,
+     "snapshot": null
+    }
+   },
+   "messages": [
+    {
+     "role": "user",
+     "content": "Do the work.",
+     "timestamp": "2026-01-01T00:00:02+00:00",
+     "metadata": {
+      "turn_id": "00000000-0000-4000-8000-000000000001"
+     },
+     "tool_calls": null,
+     "tool_call_id": null,
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    }
+   ],
+   "system_prompt": null,
+   "metadata": {
+    "tool_evidence_removed": false,
+    "task": "Do the work.",
+    "_accepted_user_turn_ids": [
+     [
+      "00000000-0000-4000-8000-000000000001",
+      "2048027dc7ced3c3a0a4db24725f20b9"
+     ]
+    ],
+    "_xagent_top_level_user_request": {
+     "execution_text": "Do the work.",
+     "language_text": "Do the work.",
+     "display_state": "missing"
+    }
+   },
+   "execution_budget": null,
+   "evidence_marker_writer": 1,
+   "created_at": "2026-01-01T00:00:03+00:00",
+   "llm_calls": [],
+   "compact_config": {
+    "enabled": true,
+    "threshold": 32000,
+    "threshold_source": "default",
+    "max_messages": 20
+   },
+   "workspace_id": null,
+   "workspace_path": null,
+   "cwd": null,
+   "workspace_state": {},
+   "memory_session_id": null,
+   "memory_snapshot": null
+  },
+  "status": "running",
+  "metadata": {
+   "completed_step_id": "alpha"
+  },
+  "execution_snapshot": {
+   "root_execution_id": "compat-exec",
+   "status": "running",
+   "frames": {
+    "compat-exec:dag": {
+     "frame_id": "compat-exec:dag",
+     "parent_frame_id": null,
+     "root_execution_id": "compat-exec",
+     "pattern_type": "dag",
+     "status": "running",
+     "context": {
+      "execution_id": "compat-exec",
+      "user_id": null,
+      "session_id": null,
+      "components": {
+       "workspace": {
+        "workspace_id": null,
+        "workspace_path": null,
+        "cwd": null,
+        "state": {}
+       },
+       "memory": {
+        "session_id": null,
+        "snapshot": null
+       }
+      },
+      "messages": [
+       {
+        "role": "user",
+        "content": "Do the work.",
+        "timestamp": "2026-01-01T00:00:02+00:00",
+        "metadata": {
+         "turn_id": "00000000-0000-4000-8000-000000000001"
+        },
+        "tool_calls": null,
+        "tool_call_id": null,
+        "hidden": false,
+        "output_tokens": null,
+        "context_refs": []
+       }
+      ],
+      "system_prompt": null,
+      "metadata": {
+       "tool_evidence_removed": false,
+       "task": "Do the work.",
+       "_accepted_user_turn_ids": [
+        [
+         "00000000-0000-4000-8000-000000000001",
+         "2048027dc7ced3c3a0a4db24725f20b9"
+        ]
+       ],
+       "_xagent_top_level_user_request": {
+        "execution_text": "Do the work.",
+        "language_text": "Do the work.",
+        "display_state": "missing"
+       }
+      },
+      "execution_budget": null,
+      "evidence_marker_writer": 1,
+      "created_at": "2026-01-01T00:00:03+00:00",
+      "llm_calls": [],
+      "compact_config": {
+       "enabled": true,
+       "threshold": 32000,
+       "threshold_source": "default",
+       "max_messages": 20
+      },
+      "workspace_id": null,
+      "workspace_path": null,
+      "cwd": null,
+      "workspace_state": {},
+      "memory_session_id": null,
+      "memory_snapshot": null
+     },
+     "pattern_state": {
+      "status": "running",
+      "plan": {
+       "steps": [
+        {
+         "id": "alpha",
+         "task": "Collect alpha",
+         "dependencies": [],
+         "description": null,
+         "termination_condition": null,
+         "completion_evidence": null,
+         "tool_names": [
+          "record"
+         ],
+         "status": "completed",
+         "result": "done",
+         "error": null,
+         "failure_code": null
+        },
+        {
+         "id": "beta",
+         "task": "Collect beta",
+         "dependencies": [
+          "alpha"
+         ],
+         "description": null,
+         "termination_condition": null,
+         "completion_evidence": null,
+         "tool_names": [
+          "record"
+         ],
+         "status": "pending",
+         "result": null,
+         "error": null,
+         "failure_code": null
+        }
+       ]
+      },
+      "active_step_id": null,
+      "active_step_pattern_state": null,
+      "active_step_context": null,
+      "active_step_ids": [],
+      "active_step_pattern_states": {},
+      "active_step_contexts": {},
+      "step_results": {
+       "alpha": "done"
+      },
+      "failed_step_evidence": {},
+      "failure_delivery_attempted": false,
+      "planned_user_message_count": 1,
+      "replan_owed_step_ids": [],
+      "memory_input_text": "Do the work.",
+      "max_concurrency": 2,
+      "completion_feedback": null,
+      "completion_replan_count": 0,
+      "max_completion_replans": 3
+     },
+     "children": [],
+     "active_child_id": null,
+     "tool_calls": {},
+     "metadata": {
+      "active_step_id": null,
+      "active_step_ids": [],
+      "plan_step_count": 2
+     }
+    }
+   },
+   "active_frame_ids": [
+    "compat-exec:dag"
+   ],
+   "control_state": {
+    "planned_user_message_count": 1,
+    "replan_owed_step_ids": [],
+    "max_concurrency": 2
+   },
+   "updated_at": "2026-01-01T00:00:04+00:00",
+   "schema_version": 1
+  }
+ }
+}

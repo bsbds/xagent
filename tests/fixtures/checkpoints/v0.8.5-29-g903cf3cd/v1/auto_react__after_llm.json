@@ -1,0 +1,582 @@
+{
+ "checkpoint_type": "agent_execution_checkpoint",
+ "snapshot_schema_version": 1,
+ "root_execution_id": "compat-exec",
+ "execution_id": "compat-exec",
+ "sequence": null,
+ "status": "running",
+ "label": "auto_child_after_llm",
+ "saved_at": "2026-01-01T00:00:01+00:00",
+ "snapshot": {
+  "type": "checkpoint",
+  "label": "auto_child_after_llm",
+  "execution_id": "compat-exec",
+  "pattern": "AutoPattern",
+  "pattern_state": {
+   "status": "running",
+   "decision": {
+    "action": "react",
+    "reason": "compat",
+    "requires_current_or_external_facts": false,
+    "existing_context_sufficient": true,
+    "evidence_basis": "current conversation",
+    "missing_verification": ""
+   },
+   "decision_user_messages": {
+    "count": 1,
+    "latest": "Do the work."
+   },
+   "routing_skill_loads": 0,
+   "routing_skill_load_failures": 0,
+   "selected_pattern": "react",
+   "react_state": {
+    "reasoning_mode": "tool_calling",
+    "status": "acting",
+    "current_iteration": 0,
+    "iteration_limit_delivery_attempted": false,
+    "max_iterations": 6,
+    "finalize_after_tool_result": false,
+    "tool_parallel_enabled": true,
+    "tool_max_concurrency": 3,
+    "repeated_tool_decision_after_consecutive_tool_calls": 4,
+    "repeated_tool_decision_after_consecutive_work_tool_calls": 10,
+    "force_final_answer_next": false,
+    "forced_answer_reads_used": 0,
+    "forced_answer_reads_rejected": 0,
+    "forced_answer_read_open": false,
+    "forced_answer_extra_iterations": 0,
+    "settlement_final_answer_fence": false,
+    "settlement_fence_turn_id": null,
+    "repeated_tool_decision": null,
+    "waiting_for_user_request": null,
+    "pending_tool_interaction_responses": [],
+    "task_text": "Do the work.",
+    "memory_input_text": "Do the work.",
+    "last_response": {
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "call_task_0_0",
+       "function": {
+        "name": "record",
+        "arguments": "{\"value\": \"task-1\"}"
+       }
+      },
+      {
+       "id": "call_task_0_1",
+       "function": {
+        "name": "record",
+        "arguments": "{\"value\": \"task-2\"}"
+       }
+      }
+     ],
+     "done": false
+    },
+    "pending_tool_calls": [
+     {
+      "id": "call_task_0_0",
+      "invocation_id": "00000000000000000000000000000001",
+      "issued_at": 1767225602.0,
+      "name": "record",
+      "args": {
+       "value": "task-1"
+      }
+     },
+     {
+      "id": "call_task_0_1",
+      "invocation_id": "00000000000000000000000000000002",
+      "issued_at": 1767225602.0,
+      "name": "record",
+      "args": {
+       "value": "task-2"
+      }
+     }
+    ],
+    "pending_tool_call_content": {},
+    "tool_ledger": {},
+    "tool_call_id_index": {}
+   },
+   "dag_state": null,
+   "last_result": null
+  },
+  "context": {
+   "execution_id": "compat-exec",
+   "user_id": null,
+   "session_id": null,
+   "components": {
+    "workspace": {
+     "workspace_id": null,
+     "workspace_path": null,
+     "cwd": null,
+     "state": {}
+    },
+    "memory": {
+     "session_id": null,
+     "snapshot": null
+    }
+   },
+   "messages": [
+    {
+     "role": "user",
+     "content": "Do the work.",
+     "timestamp": "2026-01-01T00:00:03+00:00",
+     "metadata": {
+      "turn_id": "00000000-0000-4000-8000-000000000003"
+     },
+     "tool_calls": null,
+     "tool_call_id": null,
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "timestamp": "2026-01-01T00:00:04+00:00",
+     "metadata": {},
+     "tool_calls": [
+      {
+       "id": "call_task_0_0",
+       "type": "function",
+       "function": {
+        "name": "record",
+        "arguments": "{\"value\": \"task-1\"}"
+       }
+      },
+      {
+       "id": "call_task_0_1",
+       "type": "function",
+       "function": {
+        "name": "record",
+        "arguments": "{\"value\": \"task-2\"}"
+       }
+      }
+     ],
+     "tool_call_id": null,
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    }
+   ],
+   "system_prompt": null,
+   "metadata": {
+    "tool_evidence_removed": false,
+    "task": "Do the work.",
+    "_accepted_user_turn_ids": [
+     [
+      "00000000-0000-4000-8000-000000000003",
+      "2048027dc7ced3c3a0a4db24725f20b9"
+     ]
+    ],
+    "_xagent_top_level_user_request": {
+     "execution_text": "Do the work.",
+     "language_text": "Do the work.",
+     "display_state": "missing"
+    },
+    "image_edit_unavailable": false
+   },
+   "execution_budget": null,
+   "evidence_marker_writer": 1,
+   "created_at": "2026-01-01T00:00:05+00:00",
+   "llm_calls": [],
+   "compact_config": {
+    "enabled": true,
+    "threshold": 32000,
+    "threshold_source": "default",
+    "max_messages": 20
+   },
+   "workspace_id": null,
+   "workspace_path": null,
+   "cwd": null,
+   "workspace_state": {},
+   "memory_session_id": null,
+   "memory_snapshot": null
+  },
+  "status": "running",
+  "metadata": {
+   "child_label": "after_llm",
+   "child_pattern": "ReActPattern"
+  },
+  "execution_snapshot": {
+   "root_execution_id": "compat-exec",
+   "status": "running",
+   "frames": {
+    "compat-exec:auto": {
+     "frame_id": "compat-exec:auto",
+     "parent_frame_id": null,
+     "root_execution_id": "compat-exec",
+     "pattern_type": "auto",
+     "status": "running",
+     "context": {
+      "execution_id": "compat-exec",
+      "user_id": null,
+      "session_id": null,
+      "components": {
+       "workspace": {
+        "workspace_id": null,
+        "workspace_path": null,
+        "cwd": null,
+        "state": {}
+       },
+       "memory": {
+        "session_id": null,
+        "snapshot": null
+       }
+      },
+      "messages": [
+       {
+        "role": "user",
+        "content": "Do the work.",
+        "timestamp": "2026-01-01T00:00:03+00:00",
+        "metadata": {
+         "turn_id": "00000000-0000-4000-8000-000000000003"
+        },
+        "tool_calls": null,
+        "tool_call_id": null,
+        "hidden": false,
+        "output_tokens": null,
+        "context_refs": []
+       },
+       {
+        "role": "assistant",
+        "content": "",
+        "timestamp": "2026-01-01T00:00:04+00:00",
+        "metadata": {},
+        "tool_calls": [
+         {
+          "id": "call_task_0_0",
+          "type": "function",
+          "function": {
+           "name": "record",
+           "arguments": "{\"value\": \"task-1\"}"
+          }
+         },
+         {
+          "id": "call_task_0_1",
+          "type": "function",
+          "function": {
+           "name": "record",
+           "arguments": "{\"value\": \"task-2\"}"
+          }
+         }
+        ],
+        "tool_call_id": null,
+        "hidden": false,
+        "output_tokens": null,
+        "context_refs": []
+       }
+      ],
+      "system_prompt": null,
+      "metadata": {
+       "tool_evidence_removed": false,
+       "task": "Do the work.",
+       "_accepted_user_turn_ids": [
+        [
+         "00000000-0000-4000-8000-000000000003",
+         "2048027dc7ced3c3a0a4db24725f20b9"
+        ]
+       ],
+       "_xagent_top_level_user_request": {
+        "execution_text": "Do the work.",
+        "language_text": "Do the work.",
+        "display_state": "missing"
+       },
+       "image_edit_unavailable": false
+      },
+      "execution_budget": null,
+      "evidence_marker_writer": 1,
+      "created_at": "2026-01-01T00:00:05+00:00",
+      "llm_calls": [],
+      "compact_config": {
+       "enabled": true,
+       "threshold": 32000,
+       "threshold_source": "default",
+       "max_messages": 20
+      },
+      "workspace_id": null,
+      "workspace_path": null,
+      "cwd": null,
+      "workspace_state": {},
+      "memory_session_id": null,
+      "memory_snapshot": null
+     },
+     "pattern_state": {
+      "status": "running",
+      "decision": {
+       "action": "react",
+       "reason": "compat",
+       "requires_current_or_external_facts": false,
+       "existing_context_sufficient": true,
+       "evidence_basis": "current conversation",
+       "missing_verification": ""
+      },
+      "decision_user_messages": {
+       "count": 1,
+       "latest": "Do the work."
+      },
+      "routing_skill_loads": 0,
+      "routing_skill_load_failures": 0,
+      "selected_pattern": "react",
+      "react_state": {
+       "reasoning_mode": "tool_calling",
+       "status": "acting",
+       "current_iteration": 0,
+       "iteration_limit_delivery_attempted": false,
+       "max_iterations": 6,
+       "finalize_after_tool_result": false,
+       "tool_parallel_enabled": true,
+       "tool_max_concurrency": 3,
+       "repeated_tool_decision_after_consecutive_tool_calls": 4,
+       "repeated_tool_decision_after_consecutive_work_tool_calls": 10,
+       "force_final_answer_next": false,
+       "forced_answer_reads_used": 0,
+       "forced_answer_reads_rejected": 0,
+       "forced_answer_read_open": false,
+       "forced_answer_extra_iterations": 0,
+       "settlement_final_answer_fence": false,
+       "settlement_fence_turn_id": null,
+       "repeated_tool_decision": null,
+       "waiting_for_user_request": null,
+       "pending_tool_interaction_responses": [],
+       "task_text": "Do the work.",
+       "memory_input_text": "Do the work.",
+       "last_response": {
+        "content": "",
+        "tool_calls": [
+         {
+          "id": "call_task_0_0",
+          "function": {
+           "name": "record",
+           "arguments": "{\"value\": \"task-1\"}"
+          }
+         },
+         {
+          "id": "call_task_0_1",
+          "function": {
+           "name": "record",
+           "arguments": "{\"value\": \"task-2\"}"
+          }
+         }
+        ],
+        "done": false
+       },
+       "pending_tool_calls": [
+        {
+         "id": "call_task_0_0",
+         "invocation_id": "00000000000000000000000000000001",
+         "issued_at": 1767225602.0,
+         "name": "record",
+         "args": {
+          "value": "task-1"
+         }
+        },
+        {
+         "id": "call_task_0_1",
+         "invocation_id": "00000000000000000000000000000002",
+         "issued_at": 1767225602.0,
+         "name": "record",
+         "args": {
+          "value": "task-2"
+         }
+        }
+       ],
+       "pending_tool_call_content": {},
+       "tool_ledger": {},
+       "tool_call_id_index": {}
+      },
+      "dag_state": null,
+      "last_result": null
+     },
+     "children": [
+      "compat-exec:auto:react"
+     ],
+     "active_child_id": "compat-exec:auto:react",
+     "tool_calls": {},
+     "metadata": {
+      "selected_pattern": "react"
+     }
+    },
+    "compat-exec:auto:react": {
+     "frame_id": "compat-exec:auto:react",
+     "parent_frame_id": "compat-exec:auto",
+     "root_execution_id": "compat-exec",
+     "pattern_type": "react",
+     "status": "running",
+     "context": {
+      "execution_id": "compat-exec",
+      "user_id": null,
+      "session_id": null,
+      "components": {
+       "workspace": {
+        "workspace_id": null,
+        "workspace_path": null,
+        "cwd": null,
+        "state": {}
+       },
+       "memory": {
+        "session_id": null,
+        "snapshot": null
+       }
+      },
+      "messages": [
+       {
+        "role": "user",
+        "content": "Do the work.",
+        "timestamp": "2026-01-01T00:00:03+00:00",
+        "metadata": {
+         "turn_id": "00000000-0000-4000-8000-000000000003"
+        },
+        "tool_calls": null,
+        "tool_call_id": null,
+        "hidden": false,
+        "output_tokens": null,
+        "context_refs": []
+       },
+       {
+        "role": "assistant",
+        "content": "",
+        "timestamp": "2026-01-01T00:00:04+00:00",
+        "metadata": {},
+        "tool_calls": [
+         {
+          "id": "call_task_0_0",
+          "type": "function",
+          "function": {
+           "name": "record",
+           "arguments": "{\"value\": \"task-1\"}"
+          }
+         },
+         {
+          "id": "call_task_0_1",
+          "type": "function",
+          "function": {
+           "name": "record",
+           "arguments": "{\"value\": \"task-2\"}"
+          }
+         }
+        ],
+        "tool_call_id": null,
+        "hidden": false,
+        "output_tokens": null,
+        "context_refs": []
+       }
+      ],
+      "system_prompt": null,
+      "metadata": {
+       "tool_evidence_removed": false,
+       "task": "Do the work.",
+       "_accepted_user_turn_ids": [
+        [
+         "00000000-0000-4000-8000-000000000003",
+         "2048027dc7ced3c3a0a4db24725f20b9"
+        ]
+       ],
+       "_xagent_top_level_user_request": {
+        "execution_text": "Do the work.",
+        "language_text": "Do the work.",
+        "display_state": "missing"
+       },
+       "image_edit_unavailable": false
+      },
+      "execution_budget": null,
+      "evidence_marker_writer": 1,
+      "created_at": "2026-01-01T00:00:05+00:00",
+      "llm_calls": [],
+      "compact_config": {
+       "enabled": true,
+       "threshold": 32000,
+       "threshold_source": "default",
+       "max_messages": 20
+      },
+      "workspace_id": null,
+      "workspace_path": null,
+      "cwd": null,
+      "workspace_state": {},
+      "memory_session_id": null,
+      "memory_snapshot": null
+     },
+     "pattern_state": {
+      "reasoning_mode": "tool_calling",
+      "status": "acting",
+      "current_iteration": 0,
+      "iteration_limit_delivery_attempted": false,
+      "max_iterations": 6,
+      "finalize_after_tool_result": false,
+      "tool_parallel_enabled": true,
+      "tool_max_concurrency": 3,
+      "repeated_tool_decision_after_consecutive_tool_calls": 4,
+      "repeated_tool_decision_after_consecutive_work_tool_calls": 10,
+      "force_final_answer_next": false,
+      "forced_answer_reads_used": 0,
+      "forced_answer_reads_rejected": 0,
+      "forced_answer_read_open": false,
+      "forced_answer_extra_iterations": 0,
+      "settlement_final_answer_fence": false,
+      "settlement_fence_turn_id": null,
+      "repeated_tool_decision": null,
+      "waiting_for_user_request": null,
+      "pending_tool_interaction_responses": [],
+      "task_text": "Do the work.",
+      "memory_input_text": "Do the work.",
+      "last_response": {
+       "content": "",
+       "tool_calls": [
+        {
+         "id": "call_task_0_0",
+         "function": {
+          "name": "record",
+          "arguments": "{\"value\": \"task-1\"}"
+         }
+        },
+        {
+         "id": "call_task_0_1",
+         "function": {
+          "name": "record",
+          "arguments": "{\"value\": \"task-2\"}"
+         }
+        }
+       ],
+       "done": false
+      },
+      "pending_tool_calls": [
+       {
+        "id": "call_task_0_0",
+        "invocation_id": "00000000000000000000000000000001",
+        "issued_at": 1767225602.0,
+        "name": "record",
+        "args": {
+         "value": "task-1"
+        }
+       },
+       {
+        "id": "call_task_0_1",
+        "invocation_id": "00000000000000000000000000000002",
+        "issued_at": 1767225602.0,
+        "name": "record",
+        "args": {
+         "value": "task-2"
+        }
+       }
+      ],
+      "pending_tool_call_content": {},
+      "tool_ledger": {},
+      "tool_call_id_index": {}
+     },
+     "children": [],
+     "active_child_id": null,
+     "tool_calls": {},
+     "metadata": {}
+    }
+   },
+   "active_frame_ids": [
+    "compat-exec:auto",
+    "compat-exec:auto:react"
+   ],
+   "control_state": {
+    "selected_pattern": "react"
+   },
+   "updated_at": "2026-01-01T00:00:06+00:00",
+   "schema_version": 1
+  }
+ }
+}

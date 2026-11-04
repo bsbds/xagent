@@ -1,0 +1,294 @@
+{
+ "checkpoint_type": "agent_execution_checkpoint",
+ "snapshot_schema_version": 1,
+ "root_execution_id": "compat-exec",
+ "execution_id": "compat-exec",
+ "sequence": null,
+ "status": "deciding",
+ "label": "auto_after_decision",
+ "saved_at": "2026-01-01T00:00:01+00:00",
+ "snapshot": {
+  "type": "checkpoint",
+  "label": "auto_after_decision",
+  "execution_id": "compat-exec",
+  "pattern": "AutoPattern",
+  "pattern_state": {
+   "status": "deciding",
+   "decision": {
+    "action": "react",
+    "reason": "compat",
+    "requires_current_or_external_facts": false,
+    "existing_context_sufficient": true,
+    "evidence_basis": "current conversation",
+    "missing_verification": ""
+   },
+   "decision_user_messages": {
+    "count": 1,
+    "latest": "Do the work."
+   },
+   "routing_skill_loads": 0,
+   "routing_skill_load_failures": 0,
+   "selected_pattern": "react",
+   "react_state": null,
+   "dag_state": null,
+   "last_result": null
+  },
+  "context": {
+   "execution_id": "compat-exec",
+   "user_id": null,
+   "session_id": null,
+   "components": {
+    "workspace": {
+     "workspace_id": null,
+     "workspace_path": null,
+     "cwd": null,
+     "state": {}
+    },
+    "memory": {
+     "session_id": null,
+     "snapshot": null
+    }
+   },
+   "messages": [
+    {
+     "role": "user",
+     "content": "Do the work.",
+     "timestamp": "2026-01-01T00:00:02+00:00",
+     "metadata": {
+      "turn_id": "00000000-0000-4000-8000-000000000001"
+     },
+     "tool_calls": null,
+     "tool_call_id": null,
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    }
+   ],
+   "system_prompt": null,
+   "metadata": {
+    "tool_evidence_removed": false,
+    "task": "Do the work.",
+    "_accepted_user_turn_ids": [
+     [
+      "00000000-0000-4000-8000-000000000001",
+      "2048027dc7ced3c3a0a4db24725f20b9"
+     ]
+    ],
+    "_xagent_top_level_user_request": {
+     "execution_text": "Do the work.",
+     "language_text": "Do the work.",
+     "display_state": "missing"
+    }
+   },
+   "execution_budget": null,
+   "evidence_marker_writer": 1,
+   "created_at": "2026-01-01T00:00:03+00:00",
+   "llm_calls": [],
+   "compact_config": {
+    "enabled": true,
+    "threshold": 32000,
+    "threshold_source": "default",
+    "max_messages": 20
+   },
+   "workspace_id": null,
+   "workspace_path": null,
+   "cwd": null,
+   "workspace_state": {},
+   "memory_session_id": null,
+   "memory_snapshot": null
+  },
+  "status": "deciding",
+  "metadata": {},
+  "execution_snapshot": {
+   "root_execution_id": "compat-exec",
+   "status": "running",
+   "frames": {
+    "compat-exec:auto": {
+     "frame_id": "compat-exec:auto",
+     "parent_frame_id": null,
+     "root_execution_id": "compat-exec",
+     "pattern_type": "auto",
+     "status": "running",
+     "context": {
+      "execution_id": "compat-exec",
+      "user_id": null,
+      "session_id": null,
+      "components": {
+       "workspace": {
+        "workspace_id": null,
+        "workspace_path": null,
+        "cwd": null,
+        "state": {}
+       },
+       "memory": {
+        "session_id": null,
+        "snapshot": null
+       }
+      },
+      "messages": [
+       {
+        "role": "user",
+        "content": "Do the work.",
+        "timestamp": "2026-01-01T00:00:02+00:00",
+        "metadata": {
+         "turn_id": "00000000-0000-4000-8000-000000000001"
+        },
+        "tool_calls": null,
+        "tool_call_id": null,
+        "hidden": false,
+        "output_tokens": null,
+        "context_refs": []
+       }
+      ],
+      "system_prompt": null,
+      "metadata": {
+       "tool_evidence_removed": false,
+       "task": "Do the work.",
+       "_accepted_user_turn_ids": [
+        [
+         "00000000-0000-4000-8000-000000000001",
+         "2048027dc7ced3c3a0a4db24725f20b9"
+        ]
+       ],
+       "_xagent_top_level_user_request": {
+        "execution_text": "Do the work.",
+        "language_text": "Do the work.",
+        "display_state": "missing"
+       }
+      },
+      "execution_budget": null,
+      "evidence_marker_writer": 1,
+      "created_at": "2026-01-01T00:00:03+00:00",
+      "llm_calls": [],
+      "compact_config": {
+       "enabled": true,
+       "threshold": 32000,
+       "threshold_source": "default",
+       "max_messages": 20
+      },
+      "workspace_id": null,
+      "workspace_path": null,
+      "cwd": null,
+      "workspace_state": {},
+      "memory_session_id": null,
+      "memory_snapshot": null
+     },
+     "pattern_state": {
+      "status": "deciding",
+      "decision": {
+       "action": "react",
+       "reason": "compat",
+       "requires_current_or_external_facts": false,
+       "existing_context_sufficient": true,
+       "evidence_basis": "current conversation",
+       "missing_verification": ""
+      },
+      "decision_user_messages": {
+       "count": 1,
+       "latest": "Do the work."
+      },
+      "routing_skill_loads": 0,
+      "routing_skill_load_failures": 0,
+      "selected_pattern": "react",
+      "react_state": null,
+      "dag_state": null,
+      "last_result": null
+     },
+     "children": [
+      "compat-exec:auto:react"
+     ],
+     "active_child_id": "compat-exec:auto:react",
+     "tool_calls": {},
+     "metadata": {
+      "selected_pattern": "react"
+     }
+    },
+    "compat-exec:auto:react": {
+     "frame_id": "compat-exec:auto:react",
+     "parent_frame_id": "compat-exec:auto",
+     "root_execution_id": "compat-exec",
+     "pattern_type": "react",
+     "status": "running",
+     "context": {
+      "execution_id": "compat-exec",
+      "user_id": null,
+      "session_id": null,
+      "components": {
+       "workspace": {
+        "workspace_id": null,
+        "workspace_path": null,
+        "cwd": null,
+        "state": {}
+       },
+       "memory": {
+        "session_id": null,
+        "snapshot": null
+       }
+      },
+      "messages": [
+       {
+        "role": "user",
+        "content": "Do the work.",
+        "timestamp": "2026-01-01T00:00:02+00:00",
+        "metadata": {
+         "turn_id": "00000000-0000-4000-8000-000000000001"
+        },
+        "tool_calls": null,
+        "tool_call_id": null,
+        "hidden": false,
+        "output_tokens": null,
+        "context_refs": []
+       }
+      ],
+      "system_prompt": null,
+      "metadata": {
+       "tool_evidence_removed": false,
+       "task": "Do the work.",
+       "_accepted_user_turn_ids": [
+        [
+         "00000000-0000-4000-8000-000000000001",
+         "2048027dc7ced3c3a0a4db24725f20b9"
+        ]
+       ],
+       "_xagent_top_level_user_request": {
+        "execution_text": "Do the work.",
+        "language_text": "Do the work.",
+        "display_state": "missing"
+       }
+      },
+      "execution_budget": null,
+      "evidence_marker_writer": 1,
+      "created_at": "2026-01-01T00:00:03+00:00",
+      "llm_calls": [],
+      "compact_config": {
+       "enabled": true,
+       "threshold": 32000,
+       "threshold_source": "default",
+       "max_messages": 20
+      },
+      "workspace_id": null,
+      "workspace_path": null,
+      "cwd": null,
+      "workspace_state": {},
+      "memory_session_id": null,
+      "memory_snapshot": null
+     },
+     "pattern_state": {},
+     "children": [],
+     "active_child_id": null,
+     "tool_calls": {},
+     "metadata": {}
+    }
+   },
+   "active_frame_ids": [
+    "compat-exec:auto",
+    "compat-exec:auto:react"
+   ],
+   "control_state": {
+    "selected_pattern": "react"
+   },
+   "updated_at": "2026-01-01T00:00:04+00:00",
+   "schema_version": 1
+  }
+ }
+}
