@@ -87,7 +87,9 @@ async def test_pending_control_call_recovers_original_message(
         elif window == "before_broadcast":
             broadcasts.side_effect = OSError("crash")
         else:
-            runtime.checkpoint.side_effect = OSError("crash")
+            # The call's own ``before_tool`` checkpoint is written first; the
+            # crash is the status checkpoint after the message went out.
+            runtime.checkpoint.side_effect = [None, OSError("crash")]
         with pytest.raises((OSError, ExecutionEventPersistenceError)):
             await pattern._execute_pending_tool_calls(
                 context=ExecutionContext(), tools=[], llm=None, runtime=runtime

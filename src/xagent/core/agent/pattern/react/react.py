@@ -5407,6 +5407,23 @@ class ReActPattern(AgentPattern):
 
             if kind == "control":
                 tool_call = segment[0]
+                # send_message and ask_user_question reach the user before the
+                # status checkpoint below, so they are tool starts like any
+                # other: without this a stop in that window left ``after_llm``
+                # (or the previous ``after_tool``) as the latest checkpoint,
+                # which says the call had not started, and a resume delivered
+                # the message again. final_answer is exempt: nothing it does is
+                # visible before its own ``final`` checkpoint, so a stop before
+                # that is safely replayed, whereas a ``before_tool`` here would
+                # have a failed ``final`` write close a good answer as
+                # interrupted and cost the model another turn.
+                if tool_call["name"] in USER_INTERACTION_CONTROL_TOOL_NAMES:
+                    await runtime.checkpoint(
+                        "before_tool",
+                        context=context,
+                        pattern=self,
+                        metadata={"tool_call": tool_call},
+                    )
                 control_result: dict[str, Any] | None = await self._execute_tool_safely(
                     tool_call,
                     tools,
