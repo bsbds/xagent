@@ -3342,6 +3342,74 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
 
 
 @pytest.mark.asyncio
+async def test_schedule_bg_removes_actor_runtime_when_the_run_is_cancelled(
+    db_session,
+) -> None:
+    """Characterization (recovery spike): a host-shutdown cancel of an actor turn.
+
+    ``remove_agent`` also deletes the task's workspace directory
+    (``AgentServiceManager.remove_agent``), and the runner calls it from its
+    ``finally`` -- also when the turn was cancelled and its lease is retained
+    so that automatic resume can continue the run. A resumed run of such a
+    task therefore starts on an emptied workspace, while a SIGKILL (no
+    ``finally``) leaves the workspace intact.
+    """
+    import asyncio
+
+    from xagent.web.services.task_execution import background_task_manager
+    from xagent.web.services.task_lease_service import TaskLease
+
+    user = _create_user(db_session)
+    task = _create_task(db_session, user.id, status=TaskStatus.RUNNING)
+    fake_lease = TaskLease(
+        task_id=int(task.id), runner_id="test-runner", attempt_id="test-attempt"
+    )
+    payload = TaskTurnPayload(transcript_message="long running work")
+    actor_policy = MCPBuiltinOAuthActorPolicy(resource_owner_key="actor:alice")
+    agent_manager = MagicMock()
+
+    with (
+        patch(
+            "xagent.web.services.task_orchestrator.acquire_task_lease_isolated",
+            return_value=fake_lease,
+        ),
+        patch(
+            "xagent.web.services.task_orchestrator.run_task_lease_heartbeat",
+            new=AsyncMock(),
+        ),
+        patch(
+            "xagent.web.services.task_execution.execute_task_background",
+            new=AsyncMock(side_effect=asyncio.CancelledError()),
+        ),
+        patch(
+            "xagent.web.services.task_orchestrator.settle_task_lease_isolated",
+        ),
+        patch.object(background_task_manager, "register_task"),
+        patch(
+            "xagent.web.services.task_orchestrator._get_agent_manager",
+            return_value=agent_manager,
+        ),
+    ):
+        bg_task = _schedule_bg(
+            task_id=int(task.id),
+            task_owner_user_id=int(user.id),
+            task_source=task.source,
+            payload=payload,
+            force_fresh=False,
+            context=None,
+            mcp_runtime_authorization_policy=actor_policy,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await bg_task
+
+    agent_manager.remove_agent.assert_called_once_with(
+        int(task.id),
+        int(user.id),
+        expected_run_id=fake_lease.run_id,
+    )
+
+
+@pytest.mark.asyncio
 async def test_schedule_bg_acquires_expired_lease_on_first_try(db_session) -> None:
     """Expired lease columns are granted by acquire_task_lease's atomic WHERE."""
     from xagent.web.services.task_execution import background_task_manager
