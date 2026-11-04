@@ -251,6 +251,111 @@ async def test_killed_channel_run_resumes_and_answers_its_channel(shared_app, in
 
 
 # --------------------------------------------------------------------------
+# E9a-restart: worker, web host AND ingress die together (a release)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_channel_run_survives_worker_web_and_ingress_restart(
+    shared_app, ingress, monkeypatch
+):
+    """Nothing of the ingress's memory is needed to deliver the answer.
+
+    M1 is accepted and its worker is gated on the model. Then the worker, the
+    web host (lease recovery and the auto-resume sweeper) and the ingress
+    (the bot, its Redis bridge, the turn still waiting on the result) all die
+    at once, as in a release that restarts the whole backend. Fresh hosts, a
+    fresh bridge (new host id, empty origin registry) and a fresh bot must
+    finish the run on its checkpoint and deliver the answer exactly once.
+    """
+    from xagent.web.channels.feishu.bot import FeishuBotInstance
+    from xagent.web.services import shared_channel_execution
+    from xagent.web.services.task_event_bridge import (
+        get_task_event_bridge,
+        start_task_event_bridge,
+        stop_task_event_bridge,
+    )
+
+    app = shared_app
+    # The first ingress is still inside its wait when it dies: it never
+    # sends the "still being processed" notice.
+    monkeypatch.setattr(
+        shared_channel_execution, "get_task_reply_wait_timeout_seconds", lambda: 120
+    )
+    first_host = get_task_event_bridge().host_id
+    first_bot = ingress.bot
+    waiting = asyncio.create_task(_send(ingress, "e2e:gate", "m1"))
+    await asyncio.to_thread(
+        wait_for, lambda: (app.root / "model-entered").exists(), app, "model call"
+    )
+    await asyncio.to_thread(
+        wait_for, lambda: "sender" in first_bot.active_tasks, app, "acceptance"
+    )
+    task_id = int(first_bot.active_tasks["sender"])
+    run_id = task_state(task_id)["run_id"]
+    (start,) = _starts(task_id)
+    assert start["delivery"] == "pending"
+
+    # Everything dies. The web host and the worker are SIGKILLed; the
+    # ingress's in-memory turn is dropped and its bridge torn down.
+    for process in list(app.processes):
+        kill_host(app, process)
+    waiting.cancel()
+    await asyncio.gather(waiting, return_exceptions=True)
+    await stop_task_event_bridge()
+
+    # The replacement backend and a brand-new ingress.
+    (app.root / "model-release").touch()
+    await asyncio.to_thread(app.start_all, "web", "worker")
+    await start_task_event_bridge()
+    assert get_task_event_bridge().host_id != first_host
+
+    async def send_text(_chat_id, text, **_kwargs):
+        ingress.sent.append(text)
+        return f"message-{len(ingress.sent)}"
+
+    async def update_text(_chat_id, _message_id, text, **_kwargs):
+        ingress.sent.append(text)
+        return True
+
+    bot = FeishuBotInstance("test-id", "test-secret", "e2e", ingress.channel_id, "E2E")
+    assert bot is not first_bot
+    bot.api_client = Mock()
+    bot._send_text = AsyncMock(side_effect=send_text)
+    bot._update_text = AsyncMock(side_effect=update_text)
+    ingress.bot = bot
+
+    delivering = asyncio.create_task(
+        _deliver_until_done(ingress, task_id, app, timeout=SETTLE_TIMEOUT + 30)
+    )
+    settled = await asyncio.to_thread(app.wait_task, task_id, timeout=SETTLE_TIMEOUT)
+    await delivering
+
+    assert settled["run_id"] == run_id
+    assert ANSWER in (settled["output"] or "")
+    row, events = recovery_state(task_id)
+    assert row is not None
+    assert (row["reason"], row["run_id"], row["total_resumes"]) == (
+        "lease_expired",
+        run_id,
+        1,
+    )
+    assert events[:3] == ["interrupted", "scheduled", "auto_resumed"]
+    (start,) = _starts(task_id)
+    assert start["run_id"] == run_id
+    assert start["channel_result"]["status"] == "completed"
+    assert start["delivery"] == "delivered"
+    # The answer reached the channel once, never as "stopped"; the notice
+    # belonged to the dead ingress's wait, so none is sent.
+    assert _count(ingress.sent, ANSWER) == 1
+    assert _count(ingress.sent, INTERRUPTED_USER_MESSAGE) == 0
+    assert _count(ingress.sent, PROCESSING) == 0
+    # The killed run's routing call and its gated call, then the resumed
+    # call from the checkpoint: nothing ran twice.
+    assert len(model_calls(app)) == 3
+
+
+# --------------------------------------------------------------------------
 # E9b: a new channel message replaces the waiting resume
 # --------------------------------------------------------------------------
 
