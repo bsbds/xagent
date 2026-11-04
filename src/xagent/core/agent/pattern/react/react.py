@@ -5323,6 +5323,17 @@ class ReActPattern(AgentPattern):
 
             if kind == "control":
                 tool_call = segment[0]
+                # A control call is a tool start like any other: send_message
+                # delivers its message before the status checkpoint below, so
+                # without this a stop in that window left ``after_llm`` (or the
+                # previous ``after_tool``) as the latest checkpoint, which says
+                # the call had not started, and a resume delivered it again.
+                await runtime.checkpoint(
+                    "before_tool",
+                    context=context,
+                    pattern=self,
+                    metadata={"tool_call": tool_call},
+                )
                 control_result: dict[str, Any] | None = await self._execute_tool_safely(
                     tool_call,
                     tools,

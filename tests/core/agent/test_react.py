@@ -5576,6 +5576,8 @@ _EMPTY_REGISTRY_BASELINES: dict[str, dict[str, Any]] = {
             ("repeated_tool_decision_continue", False),
             ("before_llm", False),
             ("after_llm", False),
+            # A control call (here final_answer) is a tool start too.
+            ("before_tool", False),
             ("final", False),
             ("completed", False),
         ],
@@ -13614,7 +13616,13 @@ async def test_react_final_checkpoint_failure_preserves_completed_call(
     ]
     runtime = PatternRuntime()
     failure = RuntimeError("checkpoint unavailable")
-    mocker.patch.object(runtime, "checkpoint", side_effect=failure)
+
+    async def fail_after_tool_start(label: str, **_: Any) -> None:
+        # The checkpoint before the call goes through; the final one fails.
+        if label != "before_tool":
+            raise failure
+
+    mocker.patch.object(runtime, "checkpoint", side_effect=fail_after_tool_start)
     records = mocker.spy(pattern, "_record_tool_call")
     context = ExecutionContext()
 

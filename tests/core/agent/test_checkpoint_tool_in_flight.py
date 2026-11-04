@@ -106,6 +106,69 @@ async def test_calls_planned_after_llm_have_not_started() -> None:
     assert checkpoint_tool_call_in_flight(checkpoint) is False
 
 
+@pytest.mark.asyncio
+async def test_control_tool_is_in_flight_from_before_tool_until_its_status() -> None:
+    # send_message delivers its message inside the call. The latest checkpoint
+    # at that moment must already say a tool call started, or a run stopped
+    # right after the delivery would resume from ``after_llm`` and send it again.
+    at_delivery: list[dict[str, Any]] = []
+    runtime = PatternRuntime(execution_id="control-in-flight")
+    runtime.outbound_message_handler = lambda _payload: at_delivery.append(
+        runtime.last_checkpoint
+    )
+    pattern = _pattern()
+    pattern.pending_tool_calls = [
+        make_tool_call(
+            "send_message",
+            {"message": "hello", "message_type": "info", "expect_response": False},
+        )
+    ]
+
+    await pattern._execute_pending_tool_calls(
+        context=RecordingContext(), tools=[], llm=None, runtime=runtime
+    )
+
+    [checkpoint] = at_delivery
+    assert checkpoint["label"] == "before_tool"
+    assert checkpoint_tool_call_in_flight(checkpoint) is True
+    # Delivered and recorded: the call is no longer pending.
+    assert runtime.last_checkpoint["label"] == "message_sent"
+    assert checkpoint_tool_call_in_flight(runtime.last_checkpoint) is False
+
+
+@pytest.mark.asyncio
+async def test_control_segment_between_work_calls_writes_its_own_before_tool() -> None:
+    tools = [FakeTool("u1"), FakeTool("u2")]
+    pattern = _pattern()
+    pattern.pending_tool_calls = [
+        make_tool_call("u1"),
+        make_tool_call(
+            "send_message",
+            {"message": "hello", "message_type": "info", "expect_response": False},
+        ),
+        make_tool_call("u2"),
+    ]
+    runtime = PatternRuntime(execution_id="control-between")
+
+    await pattern._execute_pending_tool_calls(
+        context=RecordingContext(), tools=tools, llm=None, runtime=runtime
+    )
+
+    assert [checkpoint["label"] for checkpoint in runtime.checkpoints] == [
+        "before_tool",
+        "after_tool",
+        "before_tool",  # the control segment
+        "message_sent",
+        "before_tool",
+        "after_tool",
+    ]
+    # The pending plan still lists the send_message call at its before_tool.
+    control_start = runtime.checkpoints[2]
+    assert [
+        call["name"] for call in control_start["pattern_state"]["pending_tool_calls"]
+    ] == ["send_message", "u2"]
+
+
 @pytest.mark.parametrize(
     "label, expected",
     [
