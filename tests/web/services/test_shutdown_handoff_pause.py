@@ -31,7 +31,7 @@ from tests.web.services.test_persistence_failure_pause import (
     task_id,
 )
 from xagent.core.agent.interruption import InterruptionReason
-from xagent.web.models.task import TaskStatus
+from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.trigger import TriggerRunStatus
 from xagent.web.services import task_coordinator_runtime
 from xagent.web.services import task_orchestrator as orchestrator
@@ -45,6 +45,9 @@ from xagent.web.services.task_lease_service import TaskLease
 from xagent.web.services.task_orchestrator import (
     TaskTurnPayload,
     settle_task_lease_isolated,
+)
+from xagent.web.services.task_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
 )
 
 # Fixtures the suite reuses; imported names pytest collects.
@@ -227,6 +230,32 @@ async def test_shutdown_cancel_of_an_sdk_task_is_handed_off_like_any_other(canon
 
 
 @pytest.mark.asyncio
+async def test_shutdown_cancel_of_an_actor_marked_task_fails_despite_a_checkpoint(
+    canonical,
+):
+    """An actor-marked task cannot be resumed (``get_agent_for_task`` refuses to
+    rebuild it), so a handoff would leave it PAUSED behind resumes that cannot
+    start; it fails now, as before."""
+    factory, _tid = canonical
+    ids = _projected_task(factory)
+    lease = _prepare_run(factory, ids)
+    with factory() as db:
+        task = db.get(Task, ids["task"])
+        task.agent_config = {
+            **task.agent_config,
+            MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True,
+        }
+        db.commit()
+
+    await _shutdown_cancel_turn(ids, lease)
+
+    task, row, _events = _state(factory, ids["task"])
+    assert task.status == TaskStatus.FAILED
+    assert task.runner_id is None
+    assert row is None or row.state != "scheduled"
+
+
+@pytest.mark.asyncio
 async def test_shutdown_cancel_fails_as_before_when_settlement_pausing_is_off(
     canonical, monkeypatch
 ):
@@ -252,8 +281,6 @@ async def test_shutdown_cancel_of_a_run_the_user_paused_is_not_resumed(canonical
     ids = _projected_task(factory)
     lease = _prepare_run(factory, ids)
     with factory() as db:
-        from xagent.web.models.task import Task
-
         db.get(Task, ids["task"]).control_state = "pause_requested"
         db.commit()
 

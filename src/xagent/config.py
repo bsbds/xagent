@@ -615,8 +615,9 @@ def get_shutdown_handoff_enabled() -> bool:
     off the run fails as before). A run the shutdown stopped without a usable
     checkpoint still fails, and so do the tasks automatic recovery excludes (the
     a2a, external, widget and shared-link sources, previews, and channel tasks
-    of a combined host); every other kind is handed off, SDK tasks and
-    shared-execution channel tasks included.
+    of a combined host) and actor-marked tasks (their agent can only be built
+    by a fresh create, so they cannot resume); every other kind is handed off,
+    SDK tasks and shared-execution channel tasks included.
 
     Priority:
         1. XAGENT_SHUTDOWN_HANDOFF_ENABLED environment variable

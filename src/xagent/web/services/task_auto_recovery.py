@@ -85,6 +85,7 @@ from .task_lease_service import (
     task_lease_attempt_predicate,
     utc_now,
 )
+from .task_runtime import mcp_runtime_authorization_policy_required
 from .task_settlement_report import RecordedInterruption
 from .workforce_runtime import extract_workforce_run_id
 
@@ -251,12 +252,19 @@ def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
     still fail now so their callers see a terminal state. Nothing is handed off
     while automatic resume is off, nor for a task that is no longer RUNNING.
 
-    Every eligible kind is handed off alike, SDK and shared-execution channel
-    tasks included. An SDK caller keeps waiting on the PAUSED task, as it does
-    for any other interruption (``status_only_terminal_view`` reports ``failed``
-    only once automatic resume stops), and a channel reply is held while the
-    resume is scheduled (``channel_reply_waits_for_auto_resume``); with no
-    backoff either waits seconds, not a lease TTL.
+    An actor-marked task (``mcp_runtime_authorization_policy_required``) is
+    never handed off: it is built only from a trusted fresh CREATE, and
+    ``AgentServiceManager.get_agent_for_task`` refuses to reuse or reconstruct
+    it, which every resume path would have to do. Its resume could not start,
+    so the run fails now, and its turn still removes its runtime and workspace
+    as it ends.
+
+    Every other eligible kind is handed off alike, SDK and shared-execution
+    channel tasks included. An SDK caller keeps waiting on the PAUSED task, as
+    it does for any other interruption (``status_only_terminal_view`` reports
+    ``failed`` only once automatic resume stops), and a channel reply is held
+    while the resume is scheduled (``channel_reply_waits_for_auto_resume``);
+    with no backoff either waits seconds, not a lease TTL.
 
     This is a precondition only: the settlement still decides from the run's
     checkpoint (:func:`decide_interruption`) whether it can be paused, and
@@ -267,6 +275,8 @@ def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
         return False
     task = db.get(Task, task_id)
     if task is None or task.status != TaskStatus.RUNNING:
+        return False
+    if mcp_runtime_authorization_policy_required(task.agent_config):
         return False
     return auto_recovery_eligibility(db, task).eligible
 

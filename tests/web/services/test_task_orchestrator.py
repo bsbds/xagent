@@ -3345,14 +3345,16 @@ async def test_schedule_bg_forwards_execution_message_to_execute_task_background
 async def test_schedule_bg_removes_actor_runtime_when_the_run_is_cancelled(
     db_session,
 ) -> None:
-    """Characterization (recovery spike): a host-shutdown cancel of an actor turn.
+    """A cancelled actor turn removes its runtime and workspace as it ends.
 
     ``remove_agent`` also deletes the task's workspace directory
     (``AgentServiceManager.remove_agent``), and the runner calls it from its
-    ``finally`` -- also when the turn was cancelled and its lease is retained
-    so that automatic resume can continue the run. A resumed run of such a
-    task therefore starts on an emptied workspace, while a SIGKILL (no
-    ``finally``) leaves the workspace intact.
+    ``finally`` whatever ended the turn. That is right for an actor-marked
+    task: no path can resume it (``get_agent_for_task`` refuses to reuse or
+    reconstruct it, and every resume builds the agent without the policy), so
+    nothing continues the run on the workspace this turn leaves behind. A
+    host shutdown does not hand such a run off either (see
+    ``test_shutdown_cancel_settles_an_actor_marked_task_and_removes_its_runtime``).
     """
     import asyncio
 
@@ -4722,6 +4724,62 @@ async def test_shutdown_cancel_settles_an_inline_channel_task(
 
     assert _settlement_interruption(settle) is None
     _assert_settled_cancelled(db_session, task)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancel_settles_an_actor_marked_task_and_removes_its_runtime(
+    db_session, monkeypatch
+) -> None:
+    """An actor-marked task cannot be resumed (its agent is only ever built
+    from a trusted fresh CREATE), so a handoff would strand it PAUSED behind
+    resumes that cannot start: it fails now, and its turn still removes the
+    runtime and workspace it built."""
+    from xagent.web.services.mcp_runtime import MCPBuiltinOAuthActorPolicy
+    from xagent.web.services.task_execution import background_task_manager
+    from xagent.web.services.task_runtime import (
+        MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
+    )
+
+    user, task, payload, lease = _shutdown_handoff_fixture(
+        db_session, monkeypatch, turn_id="turn-shutdown-actor"
+    )
+    task.agent_config = {MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True}
+    db_session.commit()
+    agent_manager = MagicMock()
+    settle = MagicMock(wraps=task_orchestrator_module.settle_task_lease_isolated)
+
+    with (
+        _finalize_runner_patches(
+            lease,
+            execute=AsyncMock(side_effect=asyncio.CancelledError()),
+            settle=settle,
+        ),
+        patch.object(
+            background_task_manager, "cancel_was_requested", return_value=False
+        ),
+        patch(
+            "xagent.web.services.task_orchestrator._get_agent_manager",
+            return_value=agent_manager,
+        ),
+    ):
+        bg_task = _spawn_finalize_runner(
+            task,
+            user,
+            payload,
+            mcp_runtime_authorization_policy=MCPBuiltinOAuthActorPolicy(
+                resource_owner_key="actor:alice"
+            ),
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await bg_task
+
+    assert _settlement_interruption(settle) is None
+    _assert_settled_cancelled(db_session, task)
+    # No pre-acquired lease or run id was scheduled with, so the cleanup is
+    # not fenced to a run.
+    agent_manager.remove_agent.assert_called_once_with(
+        int(task.id), int(user.id), expected_run_id=None
+    )
 
 
 @pytest.mark.asyncio
