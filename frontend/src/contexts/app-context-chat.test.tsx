@@ -1043,6 +1043,50 @@ describe("AppProvider websocket message routing", () => {
     expect(screen.getByTestId("stream-recovery").textContent).toBe("")
   })
 
+  it.each([false, true])("spike: frames of a resumed attempt of the same run are dropped until the next snapshot (snapshot while paused=%s)", (pausedSnapshotSeen) => {
+    render(<AppProvider token="token"><SeedRunningTask /><StateProbe /></AppProvider>)
+    const send = (message: Partial<TestWebSocketMessage>) => act(() => {
+      webSocketOptions.current?.onMessage?.({
+        task_id: 1, timestamp: "2026-05-27T05:00:00Z", ...message,
+      } as TestWebSocketMessage)
+    })
+    const answer = (id: string, attempt: string, text: string) => {
+      send({ type: "final_answer_start", stream_run_id: "run-1", stream_attempt_id: attempt, data: { message_id: id } })
+      send({ type: "final_answer_end", stream_run_id: "run-1", stream_attempt_id: attempt, data: { message_id: id, content: text } })
+    }
+    send({ type: "task_started", run_id: "run-1", state_version: 1, status: "running", control_state: "running" })
+    // The periodic snapshot while the first attempt runs names its lease attempt.
+    send({
+      type: "task_stream_snapshot", run_id: "run-1", state_version: 1,
+      status: "running", control_state: "running", data: { lease_attempt_id: "attempt-1" },
+    })
+    // A release pauses the run and automatic resume continues the SAME run
+    // within seconds, before the next snapshot: only a new attempt id changes.
+    send({ type: "task_paused", run_id: "run-1", state_version: 2, status: "paused", control_state: "paused" })
+    if (pausedSnapshotSeen) {
+      // A snapshot taken while paused carries no lease attempt, which clears it.
+      send({
+        type: "task_stream_snapshot", run_id: "run-1", state_version: 2,
+        status: "paused", control_state: "paused", data: { lease_attempt_id: null },
+      })
+    }
+    send({ type: "task_resumed", run_id: "run-1", state_version: 3, status: "running", control_state: "running" })
+    answer("final_answer_1", "attempt-2", "RESUMED LIVE ANSWER")
+    const droppedBeforeSnapshot = !screen.getByTestId("messages").textContent?.includes("RESUMED LIVE ANSWER")
+    // Characterization of today's behaviour, not a requirement: the frames
+    // are lost only when no paused snapshot cleared the old attempt.
+    expect(droppedBeforeSnapshot).toBe(!pausedSnapshotSeen)
+    if (!pausedSnapshotSeen) {
+      // The next periodic snapshot adopts the new attempt; frames flow again.
+      send({
+        type: "task_stream_snapshot", run_id: "run-1", state_version: 3,
+        status: "running", control_state: "running", data: { lease_attempt_id: "attempt-2" },
+      })
+      answer("final_answer_2", "attempt-2", "RESUMED LIVE ANSWER AFTER SNAPSHOT")
+      expect(screen.getByTestId("messages").textContent).toContain("RESUMED LIVE ANSWER AFTER SNAPSHOT")
+    }
+  })
+
   it("resumes shared deltas when a start establishes the missing prefix", () => {
     render(<AppProvider token="token"><SeedRunningTask /><StateProbe /></AppProvider>)
     const send = (type: string, data: Record<string, unknown>) => act(() => {
