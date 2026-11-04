@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -258,6 +259,15 @@ def _accumulate_pattern_progress(state: Any, totals: dict[str, int]) -> None:
 _TOOL_START_LABELS = frozenset({"before_tool", "before_tool_batch"})
 # A child runtime re-labels its child's checkpoint with one of these prefixes.
 _CHILD_LABEL_PREFIXES = ("auto_child_", "dag_")
+# Set on a ReAct state dict inside a checkpoint that is being resumed (see
+# :func:`mark_possibly_started_tool_calls`). ``ReActPattern.load_state`` reads
+# it and closes the pending calls instead of replaying them. It is a fact about
+# the restored dict only: ``ReActPattern.get_state`` never writes it, so no
+# state a running pattern produces can carry it into a later checkpoint. A DAG
+# or Auto parent re-emits the restored dict unchanged until its ReAct child
+# checkpoints, which is intended: the mark stays beside the pending calls it
+# describes and is replaced together with them.
+TOOL_CALLS_MAY_HAVE_STARTED_KEY = "tool_calls_may_have_started"
 
 
 def _innermost_label(label: Any) -> str | None:
@@ -275,15 +285,20 @@ def _innermost_label(label: Any) -> str | None:
 
 
 def _react_states_with_pending_calls(
-    state: Any, step_id: str | None, found: list[str | None]
+    state: Any,
+    step_id: str | None,
+    found: list[tuple[str | None, dict[str, Any]]],
 ) -> None:
-    """Append the DAG step id (``None`` outside a step) of every ReAct state
-    under ``state`` that still lists pending tool calls."""
+    """Append ``(step id, state)`` -- the id is ``None`` outside a DAG step --
+    for every ReAct state under ``state`` that still lists pending tool calls.
+
+    The states are the dicts themselves, not copies, so a caller may annotate
+    them in place."""
 
     if not isinstance(state, dict):
         return
     if _count(state.get("pending_tool_calls")):
-        found.append(step_id)
+        found.append((step_id, state))
     raw_step_states = state.get("active_step_pattern_states")
     step_states = dict(raw_step_states) if isinstance(raw_step_states, dict) else {}
     active_step_id = state.get("active_step_id")
@@ -299,36 +314,22 @@ def _react_states_with_pending_calls(
     _react_states_with_pending_calls(state.get("dag_state"), step_id, found)
 
 
-def checkpoint_tool_call_in_flight(checkpoint: dict[str, Any] | None) -> bool:
-    """Whether a tool call may have started after ``checkpoint`` was written.
+def _possibly_started_react_states(
+    checkpoint: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """The ReAct states of ``checkpoint`` whose pending calls may have started.
 
-    On a run without a per-attempt tool ledger, resuming from such a
-    checkpoint runs that call again, so an effect it already had (a message
-    sent, a write) would happen twice.
-
-    A ReAct state's pending calls are planned after ``after_llm`` and started
-    after ``before_tool``/``before_tool_batch``; nothing in the state itself
-    tells the two apart, so the checkpoint label does. Control tools are the
-    exception: a control segment (``send_message`` and the other
-    ``kind == "control"`` calls) runs with no checkpoint before it, so while
-    one is being handled the latest checkpoint is still ``after_llm`` (or the
-    previous ``after_tool``) and this returns False. A run stopped after a
-    ``send_message`` was delivered but before its status checkpoint is
-    therefore resumed and delivers the message again; that window is short,
-    and closing it needs a checkpoint before the control segment. The label belongs to
-    whichever state wrote the checkpoint: the only ReAct state outside a DAG
-    (Auto nests one), or the DAG step named by ``metadata.active_step_id``.
-    Another DAG step that still lists pending calls ran concurrently and its
-    position is unknown, so it counts as in flight. Missing or malformed
-    fields count as no pending calls.
+    The one place the rule lives: both :func:`checkpoint_tool_call_in_flight`
+    and :func:`mark_possibly_started_tool_calls` are built on it. The states
+    are the checkpoint's own dicts, not copies.
     """
 
     if not isinstance(checkpoint, dict):
-        return False
-    pending: list[str | None] = []
+        return []
+    pending: list[tuple[str | None, dict[str, Any]]] = []
     _react_states_with_pending_calls(checkpoint.get("pattern_state"), None, pending)
     if not pending:
-        return False
+        return []
     metadata = checkpoint.get("metadata")
     writer_step_id = (
         metadata.get("active_step_id") if isinstance(metadata, dict) else None
@@ -336,13 +337,79 @@ def checkpoint_tool_call_in_flight(checkpoint: dict[str, Any] | None) -> bool:
     writer_started_tools = (
         _innermost_label(checkpoint.get("label")) in _TOOL_START_LABELS
     )
-    for step_id in pending:
-        if step_id is None or step_id == writer_step_id:
-            if writer_started_tools:
-                return True
-        else:
+
+    def may_have_started(step_id: str | None, state: dict[str, Any]) -> bool:
+        # An earlier resume already marked it: a checkpoint written before
+        # ReAct closed the calls (a DAG or Auto parent re-emits the restored
+        # dict as it is) carries the pending calls under a label that says
+        # nothing about them, and the mark is all that is left of the fact.
+        if state.get(TOOL_CALLS_MAY_HAVE_STARTED_KEY) is True:
             return True
-    return False
+        if step_id is None or step_id == writer_step_id:
+            return writer_started_tools
+        # Another step ran concurrently with the writer; where it was in its
+        # own tool call is unknown.
+        return True
+
+    return [state for step_id, state in pending if may_have_started(step_id, state)]
+
+
+def checkpoint_tool_call_in_flight(checkpoint: dict[str, Any] | None) -> bool:
+    """Whether a tool call may have started after ``checkpoint`` was written.
+
+    Without a per-attempt tool ledger (conversation storage version 1) nothing
+    records whether such a call ran or what it did, so resuming must not replay
+    it: :func:`mark_possibly_started_tool_calls` flags its ReAct state, and
+    ReAct closes the call with an "interrupted, outcome unknown" result instead
+    of running it, so the model replans rather than repeating an effect (a
+    message sent, a write) that may already have happened.
+
+    A ReAct state's pending calls are planned after ``after_llm`` and started
+    after ``before_tool``/``before_tool_batch``; nothing in the state itself
+    tells the two apart, so the checkpoint label does. Calls that had not
+    started (``after_llm``) are replayed as they are. Control tools are the
+    exception: a control segment (``send_message`` and the other
+    ``kind == "control"`` calls) runs with no checkpoint before it, so while
+    one is being handled the latest checkpoint is still ``after_llm`` (or the
+    previous ``after_tool``) and this returns False. A run stopped after a
+    ``send_message`` was delivered but before its status checkpoint is
+    therefore resumed and delivers the message again; that window is short,
+    and closing it needs a checkpoint before the control segment.
+
+    The label belongs to whichever state wrote the checkpoint: the only ReAct
+    state outside a DAG (Auto nests one), or the DAG step named by
+    ``metadata.active_step_id``. Another DAG step that still lists pending
+    calls ran concurrently and its position is unknown, so it counts as in
+    flight. So does a state already carrying
+    ``TOOL_CALLS_MAY_HAVE_STARTED_KEY``, whatever the label. Missing or
+    malformed fields count as no pending calls.
+    """
+
+    return bool(_possibly_started_react_states(checkpoint))
+
+
+def mark_possibly_started_tool_calls(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Flag every ReAct state of ``checkpoint`` whose pending calls may have
+    started (:func:`checkpoint_tool_call_in_flight`) with
+    ``TOOL_CALLS_MAY_HAVE_STARTED_KEY``.
+
+    Apply it to a checkpoint that is about to be resumed, before the patterns
+    load their state: DAG and Auto rebuild their ReAct children from the raw
+    state dicts, so a flag on the dict is the one channel that reaches every
+    one of them, including a DAG step that ran concurrently with the writer.
+
+    Pure: ``checkpoint`` is not modified, because the caller may hold it
+    elsewhere (a live runtime's last checkpoint, a baseline a later write is
+    merged into) and a flag stored there would outlive the resume. A
+    checkpoint with nothing to mark is returned as it is.
+    """
+
+    if not _possibly_started_react_states(checkpoint):
+        return checkpoint
+    marked = {**checkpoint, "pattern_state": copy.deepcopy(checkpoint["pattern_state"])}
+    for state in _possibly_started_react_states(marked):
+        state[TOOL_CALLS_MAY_HAVE_STARTED_KEY] = True
+    return marked
 
 
 def checkpoint_progress_marker(checkpoint: dict[str, Any] | None) -> str:

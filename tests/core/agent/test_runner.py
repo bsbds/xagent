@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import openai
@@ -24,6 +25,7 @@ from xagent.core.agent import (
 from xagent.core.agent import runtime as runtime_module
 from xagent.core.agent.attachments import build_image_context_references
 from xagent.core.agent.checkpoint import (
+    TOOL_CALLS_MAY_HAVE_STARTED_KEY,
     CheckpointCorruptError,
     CheckpointPersistenceError,
     CheckpointUnavailableError,
@@ -48,6 +50,7 @@ from xagent.core.agent.language import (
 from xagent.core.agent.pattern.dag import dag as dag_module
 from xagent.core.agent.runner import AgentRunner, UserMessageInjectionOutcome
 from xagent.core.agent.runtime import LLMCallInterrupted
+from xagent.core.agent.trace import Tracer
 from xagent.core.model.chat.exceptions import (
     LLMEmptyContentError,
     LLMTimeoutError,
@@ -3269,3 +3272,75 @@ def test_the_marker_is_stamped_before_any_client_metadata_is_merged(
     runner._apply_request_context = record  # type: ignore[method-assign]
     runner._merge_context_metadata(context, {"request_context": {"a": 1}})
     assert seen == [False]
+
+
+def _tool_call_checkpoint(label: str) -> dict[str, Any]:
+    """A checkpoint of run "tool-call-resume" with one pending tool call."""
+    context = ExecutionContext(execution_id="tool-call-resume")
+    context.add_user_message("Continue")
+    return {
+        "label": label,
+        "context": context.to_dict(),
+        "pattern_state": {
+            "output": "restored",
+            "pending_tool_calls": [{"id": "call-1", "name": "send", "args": {}}],
+        },
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "marked"),
+    [
+        ("before_tool", True),
+        ("before_tool_batch", True),
+        # Planned after the LLM response, not started: replayed as it is.
+        ("after_llm", False),
+    ],
+)
+async def test_resume_flags_pending_calls_the_checkpoint_says_may_have_started(
+    tmp_path: Path, label: str, marked: bool
+) -> None:
+    pattern = StatefulPattern()
+    runner = AgentRunner(
+        agent=Agent(name="tool-call-resume", patterns=[pattern]),
+        workspace_manager=FakeWorkspaceManager(tmp_path),
+    )
+    checkpoint = _tool_call_checkpoint(label)
+    original = copy.deepcopy(checkpoint)
+
+    result = await runner.run(
+        task=None, execution_id="tool-call-resume", checkpoint=checkpoint
+    )
+
+    assert result["success"] is True
+    assert (pattern.state.get(TOOL_CALLS_MAY_HAVE_STARTED_KEY) is True) is marked
+    # The checkpoint the caller passed in is never flagged.
+    assert checkpoint == original
+
+
+@pytest.mark.asyncio
+async def test_resume_of_a_run_that_records_tool_attempts_loads_its_state_as_it_is(
+    tmp_path: Path,
+) -> None:
+    # Version-2 storage records every tool attempt and recovery judges the ones
+    # that started, so the pending calls are left for it to replay.
+    tracer = Tracer()
+    tracer.event_writer = AsyncMock()
+    assert tracer.records_execution_events is True
+    pattern = StatefulPattern()
+    runner = AgentRunner(
+        agent=Agent(name="tool-call-resume", patterns=[pattern]),
+        tracer=tracer,
+        workspace_manager=FakeWorkspaceManager(tmp_path),
+    )
+
+    result = await runner.run(
+        task=None,
+        execution_id="tool-call-resume",
+        checkpoint=_tool_call_checkpoint("before_tool"),
+    )
+
+    assert result["success"] is True
+    assert TOOL_CALLS_MAY_HAVE_STARTED_KEY not in pattern.state
+    assert pattern.state["pending_tool_calls"]

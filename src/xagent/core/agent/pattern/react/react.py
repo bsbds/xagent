@@ -44,7 +44,13 @@ flag never changes observable results, only latency:
   cancelled call may still have committed externally before cancellation was
   observed, so ``concurrency_safe`` is an explicit idempotency contract as well
   as a concurrency contract. A crash before backfill leaves the whole segment
-  pending for resume under the same contract.
+  pending in the checkpoint. A resume does not replay it when the checkpoint
+  says its calls may have started (written at ``before_tool`` or
+  ``before_tool_batch``, see ``checkpoint_tool_call_in_flight``): every pending
+  call is closed with an "interrupted, outcome unknown" result and the model
+  replans (``_close_pending_calls_that_may_have_started``). Only calls the
+  checkpoint says had not started (``after_llm``), or that a cooperative
+  interrupt cancelled, are replayed verbatim.
 - I6 (trace pairing): tool trace spans pair START with END/ERROR by
   ``tool_call_id`` rather than tool name, so concurrent same-name calls do not
   cross-attribute (see ``tracing/langfuse/handler.py``).
@@ -106,7 +112,11 @@ from ....tools.user_interaction import (
     tool_result_waits_for_user,
     user_interaction_resume_callable,
 )
-from ...checkpoint import CheckpointPersistenceError, ExecutionEventPersistenceError
+from ...checkpoint import (
+    TOOL_CALLS_MAY_HAVE_STARTED_KEY,
+    CheckpointPersistenceError,
+    ExecutionEventPersistenceError,
+)
 from ...clarification import draft_from_waiting_request
 from ...context.enrichment import (
     IMAGE_EDIT_UNAVAILABLE_METADATA_KEY,
@@ -271,6 +281,14 @@ _SETTLED_SETTLEMENT_STATUSES = frozenset({"succeeded"}) | _GUARDED_SETTLEMENT_ST
 # Ledger ``status`` values that mean the row already reached a terminal
 # outcome, so re-delivering a response for it is an idempotent replay.
 _SETTLED_ROW_STATUSES = frozenset({"completed", "failed"})
+# The result of a pending call a resume closed instead of replaying (see
+# ``_close_pending_calls_that_may_have_started``). It is written for the model,
+# which has to decide whether the call's effect still needs to be produced.
+INTERRUPTED_TOOL_CALL_ERROR = (
+    "This tool call was interrupted by a system restart before its outcome was "
+    "recorded. It may or may not have taken effect. Verify the current state "
+    "before retrying any operation with side effects."
+)
 
 
 @dataclass
@@ -805,6 +823,11 @@ class ReActPattern(AgentPattern):
         self.iteration_limit_delivery_attempted = False
         self.last_response: Any = None
         self.pending_tool_calls: list[dict[str, Any]] = []
+        # Set by ``load_state`` when the restored dict says the pending calls
+        # may already have started, and cleared once ``run`` has closed them.
+        # Deliberately not part of ``get_state``: it describes the checkpoint
+        # that was loaded, and no checkpoint this pattern writes may inherit it.
+        self._pending_calls_may_have_started = False
         self.pending_tool_call_content: dict[str, str] = {}
         # One row per concrete invocation, keyed by ``_ledger_key``: the
         # invocation id, or the provider tool-call id for a legacy row.
@@ -886,6 +909,10 @@ class ReActPattern(AgentPattern):
                 result=waiting_result,
             )
             return waiting_result
+        # First, before memory enrichment can append to the context or any
+        # checkpoint is written: the interrupted results must sit right behind
+        # the assistant message that issued the calls.
+        self._close_pending_calls_that_may_have_started(context)
 
         if self.reasoning_mode == ReActReasoningMode.REASONING_ACTION:
             self.status = "failed"
@@ -2992,6 +3019,9 @@ class ReActPattern(AgentPattern):
             self.memory_input_text = str(stored_memory_input)
         self.last_response = state.get("last_response")
         self.pending_tool_calls = list(state.get("pending_tool_calls", []))
+        self._pending_calls_may_have_started = (
+            state.get(TOOL_CALLS_MAY_HAVE_STARTED_KEY) is True
+        )
         self.pending_tool_call_content = dict(
             state.get("pending_tool_call_content", {})
         )
@@ -4923,22 +4953,76 @@ class ReActPattern(AgentPattern):
         )
 
     def _cancel_tool_calls(
-        self, tool_calls: list[dict[str, Any]], context: Any, *, reason: str
+        self,
+        tool_calls: list[dict[str, Any]],
+        context: Any,
+        *,
+        reason: str,
+        status: str = "cancelled",
     ) -> None:
-        """Close calls that will never run, one result each.
+        """Close calls that will not run, one result each.
 
         Preserves I2 (one result per ``tool_call_id``) for abandoned calls, so a
         discarded batch cannot leave a tool call dangling without a result.
+        ``status`` is the result's and the ledger record's status: "cancelled"
+        for a call that never started, "interrupted" for one a restart cut off
+        and whose outcome is unknown (the same status a call interrupted while
+        running is recorded with).
         """
 
         for tool_call in tool_calls:
-            result = {"success": False, "status": "cancelled", "error": reason}
+            result = {"success": False, "status": status, "error": reason}
             self._backfill_result(tool_call, result, context)
             self._record_tool_call(
                 tool_call,
-                status="cancelled",
+                status=status,
                 result=result,
             )
+
+    def _close_pending_calls_that_may_have_started(self, context: Any) -> None:
+        """Close, instead of replaying, calls a restart may have cut off mid-run.
+
+        ``load_state`` records that the restored plan may already have started
+        (``mark_possibly_started_tool_calls``). Without a per-attempt ledger
+        there is no telling which of its calls ran, or what they did, so each
+        gets the failed result "interrupted, outcome unknown" (I2: exactly one
+        result per call) and the next turn goes to the model, which replans
+        with that on the page. A call a segment had not reached yet is closed
+        the same way: the model checks the state of the world rather than
+        trusting a plan made before the restart.
+
+        The turn's tool round counts as finished, as it does after a normal
+        pass, so the loop continues with the next iteration. Nothing is
+        checkpointed here, and need not be: the next checkpoint is written by
+        this pattern's own ``get_state``, which carries neither the plan nor
+        the mark, and a crash before it resumes from the old checkpoint, which
+        is marked again and closed the same way.
+        """
+
+        if not self._pending_calls_may_have_started:
+            return
+        self._pending_calls_may_have_started = False
+        if not self.pending_tool_calls:
+            # Already discarded, e.g. by a waiting_for_user resume.
+            return
+        logger.warning(
+            "ReAct closing %d pending tool call(s) that may have started before "
+            "the run was interrupted: %s",
+            len(self.pending_tool_calls),
+            [call.get("name") for call in self.pending_tool_calls],
+        )
+        # Replay guarantees the assistant message these results answer (a
+        # legacy checkpoint may lack it); so must closing.
+        self._ensure_pending_tool_call_envelope(context)
+        interrupted_calls = self.pending_tool_calls
+        self.pending_tool_calls = []
+        self._cancel_tool_calls(
+            interrupted_calls,
+            context,
+            reason=INTERRUPTED_TOOL_CALL_ERROR,
+            status="interrupted",
+        )
+        self.current_iteration += 1
 
     def _refuse_forced_answer_read(
         self, tool_call: dict[str, Any], refusal: str, context: Any

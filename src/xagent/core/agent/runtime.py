@@ -64,6 +64,7 @@ from .checkpoint import (
     CheckpointPersistenceError,
     ExecutionEventPersistenceError,
     TraceCheckpointStore,
+    mark_possibly_started_tool_calls,
 )
 from .context.execution import (
     COMPACT_SUMMARY_FALLBACK_BUDGETS,
@@ -2418,14 +2419,30 @@ class PatternRuntime:
         return "agent.task"
 
 
-def load_pattern_checkpoint(pattern: Any, checkpoint: dict[str, Any] | None) -> None:
-    """Restore a pattern from a checkpoint when the payload matches it."""
+def load_pattern_checkpoint(
+    pattern: Any,
+    checkpoint: dict[str, Any] | None,
+    *,
+    close_started_tool_calls: bool = False,
+) -> None:
+    """Restore a pattern from a checkpoint when the payload matches it.
+
+    ``close_started_tool_calls`` says the run keeps no per-attempt tool ledger
+    (conversation storage version 1), so a pending call the checkpoint says may
+    have started cannot be replayed safely: those calls are flagged
+    (``mark_possibly_started_tool_calls``) and ReAct closes them with an
+    "interrupted, outcome unknown" result instead of running them again. With a
+    ledger (version 2), recovery judges every started attempt from the recorded
+    events and replays the rest, so the state is loaded as it is.
+    """
     if not checkpoint:
         return
     if checkpoint.get("pattern") not in {None, pattern.__class__.__name__}:
         return
 
     load_state = getattr(pattern, "load_state", None)
+    if close_started_tool_calls:
+        checkpoint = mark_possibly_started_tool_calls(checkpoint)
     state = checkpoint.get("pattern_state")
     if callable(load_state) and isinstance(state, dict):
         load_state(state)

@@ -11,6 +11,7 @@ from unittest.mock import ANY
 
 import pytest
 
+from tests.core.agent.crash_resume_harness import Crash, CrashAtCheckpoint
 from xagent.core.agent import (
     Agent,
     AgentRunner,
@@ -26,6 +27,7 @@ from xagent.core.agent import (
     PlanValidationError,
 )
 from xagent.core.agent.checkpoint import (
+    TOOL_CALLS_MAY_HAVE_STARTED_KEY,
     CheckpointPersistenceError,
     TraceCheckpointStore,
 )
@@ -51,6 +53,7 @@ from xagent.core.agent.pattern.dag.plan_generator import (
 )
 from xagent.core.agent.pattern.react import ReActPattern
 from xagent.core.agent.pattern.react.react import ToolCallRecord
+from xagent.core.agent.runtime import load_pattern_checkpoint
 from xagent.core.memory.core import MemoryNote as StoredMemoryNote
 from xagent.core.memory.core import MemoryResponse
 from xagent.core.model.chat.exceptions import ModelProviderError
@@ -8517,3 +8520,125 @@ def test_a_restored_step_context_keeps_the_marker(state: str) -> None:
         # not read as intact.
         assert restored.metadata[key] is (state == "removed")
     assert execution_module.tool_evidence_state(restored) == state
+
+
+def _publish_call_response() -> dict[str, Any]:
+    return {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "do-publish",
+                "function": {"name": "publish_post", "arguments": "{}"},
+            }
+        ],
+        "done": False,
+    }
+
+
+def _publish_dag() -> DAGPattern:
+    return DAGPattern(
+        lambda **_: build_plan(PlanStep(id="answer", task="Publish the post"))
+    )
+
+
+async def _crash_dag_step_at(label: str) -> dict[str, Any]:
+    """Run a one-step DAG until the process would die at ``label``."""
+    context = ExecutionContext(execution_id="dag-resume-in-flight")
+    context.add_user_message("Publish the post")
+    runtime = CrashAtCheckpoint(label)
+    with pytest.raises(Crash):
+        await _publish_dag().run(
+            context=context,
+            tools=[FakeTool("publish_post")],
+            llm=SequenceLLM([_publish_call_response()]),
+            runtime=runtime,
+        )
+    assert runtime.last_checkpoint is not None
+    assert runtime.last_checkpoint["label"] == label
+    return runtime.last_checkpoint
+
+
+async def _resume_dag_step(
+    checkpoint: dict[str, Any], *, runtime: PatternRuntime | None = None
+) -> tuple[dict[str, Any], FakeTool, SequenceLLM]:
+    restored = _publish_dag()
+    load_pattern_checkpoint(restored, checkpoint, close_started_tool_calls=True)
+    tool = FakeTool("publish_post")
+    llm = SequenceLLM([{"content": "Checked the post; it is up.", "done": True}])
+    result = await restored.run(
+        context=ExecutionContext.from_dict(checkpoint["context"]),
+        tools=[tool],
+        llm=llm,
+        runtime=runtime,
+    )
+    return result, tool, llm
+
+
+def _step_tool_messages(llm: SequenceLLM) -> list[dict[str, Any]]:
+    return [m for m in llm.seen_messages[0] if m["role"] == "tool"]
+
+
+@pytest.mark.asyncio
+async def test_dag_resume_closes_a_step_tool_call_that_may_have_started() -> None:
+    checkpoint = await _crash_dag_step_at("dag_before_tool")
+    resume_runtime = PatternRuntime()
+
+    result, tool, llm = await _resume_dag_step(checkpoint, runtime=resume_runtime)
+
+    assert result["success"] is True, result
+    assert tool.calls == []
+    [message] = _step_tool_messages(llm)
+    assert message["tool_call_id"] == "do-publish"
+    assert "interrupted" in message["content"]
+    # The step's restored dict is re-emitted as it is by ``dag_before_step``,
+    # mark included (so a second crash cannot lose it); every checkpoint the
+    # step's own ReAct writes after closing is free of both mark and plan.
+    labels = [cp["label"] for cp in resume_runtime.checkpoints]
+    own = resume_runtime.checkpoints[labels.index("dag_before_step") + 1 :]
+    assert own
+    for cp in own:
+        step_state = cp["pattern_state"]["active_step_pattern_states"].get("answer")
+        assert step_state is None or (
+            TOOL_CALLS_MAY_HAVE_STARTED_KEY not in step_state
+            and step_state["pending_tool_calls"] == []
+        )
+
+
+@pytest.mark.asyncio
+async def test_dag_second_crash_before_the_step_closes_its_calls_still_closes_them() -> (
+    None
+):
+    # The first resume restored the step and wrote ``dag_before_step``, then died
+    # before ReAct closed anything. That checkpoint's label says nothing about
+    # tools, but its step state still carries the pending call and the mark.
+    first = await _crash_dag_step_at("dag_before_tool")
+    context = ExecutionContext.from_dict(first["context"])
+    restored = _publish_dag()
+    load_pattern_checkpoint(restored, first, close_started_tool_calls=True)
+    crash = CrashAtCheckpoint("dag_before_step")
+    with pytest.raises(Crash):
+        await restored.run(
+            context=context,
+            tools=[FakeTool("publish_post")],
+            llm=SequenceLLM([]),
+            runtime=crash,
+        )
+    second = crash.last_checkpoint
+    assert second is not None and second["label"] == "dag_before_step"
+
+    result, tool, llm = await _resume_dag_step(second)
+
+    assert result["success"] is True, result
+    assert tool.calls == []
+    [message] = _step_tool_messages(llm)
+    assert "interrupted" in message["content"]
+
+
+@pytest.mark.asyncio
+async def test_dag_resume_replays_a_step_tool_call_planned_after_the_llm() -> None:
+    checkpoint = await _crash_dag_step_at("dag_after_llm")
+
+    result, tool, _ = await _resume_dag_step(checkpoint)
+
+    assert result["success"] is True, result
+    assert tool.calls == [{}]

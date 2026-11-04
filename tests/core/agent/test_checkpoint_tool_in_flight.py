@@ -1,9 +1,14 @@
 """``checkpoint_tool_call_in_flight``: may a tool call have started after a
-checkpoint was written, so that resuming from it would run the call again?"""
+checkpoint was written, so that resuming from it would run the call again?
+
+``mark_possibly_started_tool_calls`` flags exactly the ReAct states the predicate
+counts, so a resume closes those calls instead of replaying them.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import Any
 
 import pytest
@@ -15,7 +20,11 @@ from tests.core.agent.concurrency_harness import (
     make_tool_call,
 )
 from xagent.core.agent import PatternRuntime
-from xagent.core.agent.checkpoint import checkpoint_tool_call_in_flight
+from xagent.core.agent.checkpoint import (
+    TOOL_CALLS_MAY_HAVE_STARTED_KEY,
+    checkpoint_tool_call_in_flight,
+    mark_possibly_started_tool_calls,
+)
 
 _PENDING = {"pending_tool_calls": [{"id": "call-1", "name": "send", "args": {}}]}
 _IDLE = {"pending_tool_calls": []}
@@ -200,3 +209,230 @@ def test_auto_dag_step_label_carries_both_prefixes() -> None:
 )
 def test_missing_or_malformed_fields_mean_no_call_in_flight(checkpoint: Any) -> None:
     assert checkpoint_tool_call_in_flight(checkpoint) is False
+
+
+# --- mark_possibly_started_tool_calls ---------------------------------------
+
+
+def _marks(state: Any) -> bool:
+    return state.get(TOOL_CALLS_MAY_HAVE_STARTED_KEY) is True
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        ("before_tool", True),
+        ("before_tool_batch", True),
+        # Planned after the LLM response, not yet started: replayed as it is.
+        ("after_llm", False),
+        ("after_tool", False),
+        ("interrupted", False),
+    ],
+)
+def test_single_react_state_is_marked_from_the_tool_start_labels(
+    label: str, expected: bool
+) -> None:
+    checkpoint = {"label": label, "pattern_state": copy.deepcopy(_PENDING)}
+
+    marked = mark_possibly_started_tool_calls(checkpoint)
+
+    assert _marks(marked["pattern_state"]) is expected
+    assert checkpoint_tool_call_in_flight(checkpoint) is expected
+
+
+def test_marking_does_not_modify_the_checkpoint_it_is_given() -> None:
+    # The caller may hold the checkpoint elsewhere (a runtime's last
+    # checkpoint, a merge baseline); a flag left there would outlive the resume.
+    checkpoint = {"label": "before_tool", "pattern_state": copy.deepcopy(_PENDING)}
+    original = copy.deepcopy(checkpoint)
+
+    marked = mark_possibly_started_tool_calls(checkpoint)
+
+    assert marked is not checkpoint
+    assert checkpoint == original
+    assert TOOL_CALLS_MAY_HAVE_STARTED_KEY not in checkpoint["pattern_state"]
+
+
+def test_a_checkpoint_with_nothing_to_mark_is_returned_as_it_is() -> None:
+    checkpoint = {"label": "after_llm", "pattern_state": copy.deepcopy(_PENDING)}
+
+    assert mark_possibly_started_tool_calls(checkpoint) is checkpoint
+
+
+def test_marking_ignores_idle_react_states() -> None:
+    checkpoint = {"label": "before_tool", "pattern_state": copy.deepcopy(_IDLE)}
+
+    assert mark_possibly_started_tool_calls(checkpoint) is checkpoint
+
+
+@pytest.mark.parametrize(
+    "label, marked_steps",
+    [
+        # The writer started its calls; the idle sibling has none to mark.
+        ("dag_before_tool", {"a"}),
+        ("dag_before_tool_batch", {"a"}),
+        # The writer's calls had not started.
+        ("dag_after_llm", set()),
+    ],
+)
+def test_dag_marks_the_writer_step_by_label(label: str, marked_steps: set[str]) -> None:
+    checkpoint = _dag_checkpoint(
+        label, "a", {"a": copy.deepcopy(_PENDING), "b": copy.deepcopy(_IDLE)}
+    )
+
+    marked = mark_possibly_started_tool_calls(checkpoint)
+
+    steps = marked["pattern_state"]["active_step_pattern_states"]
+    assert {step for step, state in steps.items() if _marks(state)} == marked_steps
+
+
+def test_dag_marks_a_concurrent_step_even_when_the_writer_had_not_started() -> None:
+    # "a" wrote after its LLM response, so its calls are replayed; "b" ran
+    # concurrently and may be inside a tool call, so its calls are closed.
+    checkpoint = _dag_checkpoint(
+        "dag_after_llm",
+        "a",
+        {"a": copy.deepcopy(_PENDING), "b": copy.deepcopy(_PENDING)},
+    )
+
+    marked = mark_possibly_started_tool_calls(checkpoint)
+
+    steps = marked["pattern_state"]["active_step_pattern_states"]
+    assert not _marks(steps["a"])
+    assert _marks(steps["b"])
+    # Neither the checkpoint nor its step states are touched.
+    assert not _marks(checkpoint["pattern_state"]["active_step_pattern_states"]["b"])
+
+
+def test_dag_marks_both_when_the_writer_started_and_a_sibling_ran() -> None:
+    checkpoint = _dag_checkpoint(
+        "dag_before_tool",
+        "a",
+        {"a": copy.deepcopy(_PENDING), "b": copy.deepcopy(_PENDING)},
+    )
+
+    steps = mark_possibly_started_tool_calls(checkpoint)["pattern_state"][
+        "active_step_pattern_states"
+    ]
+
+    assert _marks(steps["a"]) and _marks(steps["b"])
+
+
+def test_dag_legacy_singular_step_state_is_marked_where_load_state_reads_it() -> None:
+    checkpoint = {
+        "label": "dag_before_tool",
+        "metadata": {"active_step_id": "a"},
+        "pattern_state": {
+            "active_step_id": "a",
+            "active_step_pattern_state": copy.deepcopy(_PENDING),
+        },
+    }
+
+    marked = mark_possibly_started_tool_calls(checkpoint)
+
+    assert _marks(marked["pattern_state"]["active_step_pattern_state"])
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        ("auto_child_before_tool", True),
+        ("auto_child_before_tool_batch", True),
+        ("auto_child_after_llm", False),
+    ],
+)
+def test_auto_nested_react_state_is_marked_by_its_own_label(
+    label: str, expected: bool
+) -> None:
+    checkpoint = {
+        "label": label,
+        "pattern_state": {"react_state": copy.deepcopy(_PENDING), "dag_state": None},
+    }
+
+    marked = mark_possibly_started_tool_calls(checkpoint)
+
+    assert _marks(marked["pattern_state"]["react_state"]) is expected
+
+
+def test_auto_nested_dag_step_state_is_marked() -> None:
+    checkpoint = {
+        "label": "auto_child_dag_before_tool",
+        "metadata": {"active_step_id": "a"},
+        "pattern_state": {
+            "react_state": None,
+            "dag_state": {
+                "active_step_pattern_states": {
+                    "a": copy.deepcopy(_PENDING),
+                    "b": copy.deepcopy(_PENDING),
+                }
+            },
+        },
+    }
+
+    steps = mark_possibly_started_tool_calls(checkpoint)["pattern_state"]["dag_state"][
+        "active_step_pattern_states"
+    ]
+
+    assert _marks(steps["a"]) and _marks(steps["b"])
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        # A DAG checkpoint written right after a resume restored the step
+        # (``dag_before_step``) or an Auto one before its child ran
+        # (``auto_before_child``): its label says nothing about the calls, the
+        # mark on the restored dict is what remains of "may have started".
+        _dag_checkpoint(
+            "dag_before_step",
+            "a",
+            {"a": {**_PENDING, TOOL_CALLS_MAY_HAVE_STARTED_KEY: True}},
+        ),
+        {
+            "label": "auto_before_child",
+            "pattern_state": {
+                "react_state": {**_PENDING, TOOL_CALLS_MAY_HAVE_STARTED_KEY: True}
+            },
+        },
+    ],
+)
+def test_a_state_that_is_already_marked_stays_in_flight_under_any_label(
+    checkpoint: dict[str, Any],
+) -> None:
+    assert checkpoint_tool_call_in_flight(checkpoint) is True
+
+    # Marking again is idempotent.
+    again = mark_possibly_started_tool_calls(checkpoint)
+    assert again["pattern_state"] == checkpoint["pattern_state"]
+
+
+def test_an_unmarked_state_beside_a_marked_one_follows_its_own_label() -> None:
+    checkpoint = _dag_checkpoint(
+        "dag_before_step",
+        "a",
+        {"a": {**_PENDING, TOOL_CALLS_MAY_HAVE_STARTED_KEY: True}, "b": _IDLE},
+    )
+
+    steps = mark_possibly_started_tool_calls(checkpoint)["pattern_state"][
+        "active_step_pattern_states"
+    ]
+
+    assert _marks(steps["a"])
+    assert not _marks(steps["b"])
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        {},
+        {"label": "before_tool", "pattern_state": None},
+        {"label": "before_tool", "pattern_state": {"pending_tool_calls": "bad"}},
+        {
+            "label": "dag_before_tool",
+            "metadata": "bad",
+            "pattern_state": {"active_step_pattern_states": ["bad"]},
+        },
+    ],
+)
+def test_marking_tolerates_missing_or_malformed_fields(checkpoint: Any) -> None:
+    assert mark_possibly_started_tool_calls(checkpoint) is checkpoint

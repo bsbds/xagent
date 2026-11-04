@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from tests.core.agent.crash_resume_harness import Crash, CrashAtCheckpoint
 from xagent.core.agent import (
     Agent,
     AgentRunner,
@@ -20,6 +21,7 @@ from xagent.core.agent import (
     PatternRuntime,
     ReActPattern,
 )
+from xagent.core.agent.checkpoint import TOOL_CALLS_MAY_HAVE_STARTED_KEY
 from xagent.core.agent.context.enrichment import MEMORY_CONTEXT_METADATA_KEY
 from xagent.core.agent.grounding import VALUE_KINDS
 from xagent.core.agent.language import (
@@ -29,6 +31,7 @@ from xagent.core.agent.language import (
 )
 from xagent.core.agent.pattern.auto.auto import DECISION_TOOL_NAME, _AutoChildRuntime
 from xagent.core.agent.pattern.dag.dag import _DAGStepRuntime
+from xagent.core.agent.runtime import load_pattern_checkpoint
 from xagent.core.memory.in_memory import InMemoryMemoryStore
 from xagent.core.model.chat.basic.router import RouterLLM
 from xagent.core.model.chat.exceptions import LLMToolProtocolError
@@ -2739,3 +2742,77 @@ async def test_auto_ordinary_tool(action):
     )
     assert result["success"]
     assert len(tool.calls) == 1
+
+
+def _search_call_response() -> dict[str, Any]:
+    return {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_search",
+                "function": {
+                    "name": "zhipu_web_search",
+                    "arguments": '{"query": "xagent"}',
+                },
+            }
+        ],
+    }
+
+
+def _decided_auto() -> AutoPattern:
+    """An Auto pattern whose routing decision is already made: ReAct."""
+    pattern = AutoPattern(react_pattern=ReActPattern())
+    pattern.load_state(
+        {
+            "status": "running",
+            "decision": {"action": "react", "reason": "Already decided."},
+            "selected_pattern": "react",
+        }
+    )
+    return pattern
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_closes_the_nested_react_calls_that_may_have_started() -> (
+    None
+):
+    context = ExecutionContext(execution_id="auto-resume-in-flight")
+    context.add_user_message("Search for xagent")
+    crash = CrashAtCheckpoint("auto_child_before_tool")
+    with pytest.raises(Crash):
+        await _decided_auto().run(
+            context=context,
+            tools=[FakeSearchTool()],
+            llm=FakeLLM([_search_call_response()]),
+            runtime=crash,
+        )
+    checkpoint = crash.last_checkpoint
+    assert checkpoint is not None
+    assert checkpoint["pattern_state"]["react_state"]["pending_tool_calls"]
+
+    restored = AutoPattern(react_pattern=ReActPattern())
+    load_pattern_checkpoint(restored, checkpoint, close_started_tool_calls=True)
+    tool = FakeSearchTool()
+    llm = FakeLLM(["Searched again after checking."])
+    resume_runtime = PatternRuntime()
+    result = await restored.run(
+        context=ExecutionContext.from_dict(checkpoint["context"]),
+        tools=[tool],
+        llm=llm,
+        runtime=resume_runtime,
+    )
+
+    assert result["success"] is True
+    assert tool.calls == []
+    [message] = [m for m in llm.calls[0]["messages"] if m["role"] == "tool"]
+    assert message["tool_call_id"] == "call_search"
+    assert "interrupted" in message["content"]
+    # ``auto_before_child`` re-emits the restored dict, mark and all; what the
+    # nested ReAct writes afterwards carries neither the mark nor the plan.
+    labels = [cp["label"] for cp in resume_runtime.checkpoints]
+    own = resume_runtime.checkpoints[labels.index("auto_before_child") + 1 :]
+    assert own
+    for cp in own:
+        react_state = cp["pattern_state"]["react_state"]
+        assert TOOL_CALLS_MAY_HAVE_STARTED_KEY not in react_state
+        assert react_state["pending_tool_calls"] == []

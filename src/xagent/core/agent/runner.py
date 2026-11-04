@@ -596,8 +596,20 @@ class AgentRunner:
 
             try:
                 await self._setup_tools(tools, task_id=execution_id)
+                # A run that records tool attempts (version-2 storage) has its
+                # started calls judged by recovery; one that does not cannot
+                # tell whether a call that may have started did, so it is
+                # closed rather than replayed (see ``load_pattern_checkpoint``).
+                close_started_tool_calls = (
+                    getattr(runtime.tracer, "records_execution_events", False)
+                    is not True
+                )
                 for pattern in patterns:
-                    load_pattern_checkpoint(pattern, checkpoint)
+                    load_pattern_checkpoint(
+                        pattern,
+                        checkpoint,
+                        close_started_tool_calls=close_started_tool_calls,
+                    )
                     self._reconcile_memory_retrieval_cache(
                         context,
                         pattern,
