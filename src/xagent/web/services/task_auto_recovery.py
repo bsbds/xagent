@@ -248,11 +248,15 @@ def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
     (:func:`~xagent.web.services.task_auto_recovery_policy.auto_resume_policy`),
     so another process takes it over at once. That only helps a task automatic
     recovery would resume (:func:`auto_recovery_eligibility`); the others must
-    still fail now so their callers see a terminal state. Tasks of a
-    status-only source (:func:`is_status_only_source`) still fail now as well:
-    their caller reads nothing but the status and would not see the resume.
-    Channel tasks are excluded too until their resumed reply is proven, and
-    nothing is handed off while automatic resume is off.
+    still fail now so their callers see a terminal state. Nothing is handed off
+    while automatic resume is off, nor for a task that is no longer RUNNING.
+
+    Every eligible kind is handed off alike, SDK and shared-execution channel
+    tasks included. An SDK caller keeps waiting on the PAUSED task, as it does
+    for any other interruption (``status_only_terminal_view`` reports ``failed``
+    only once automatic resume stops), and a channel reply is held while the
+    resume is scheduled (``channel_reply_waits_for_auto_resume``); with no
+    backoff either waits seconds, not a lease TTL.
 
     This is a precondition only: the settlement still decides from the run's
     checkpoint (:func:`decide_interruption`) whether it can be paused, and
@@ -263,8 +267,6 @@ def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
         return False
     task = db.get(Task, task_id)
     if task is None or task.status != TaskStatus.RUNNING:
-        return False
-    if is_status_only_source(task.source) or task.channel_id is not None:
         return False
     return auto_recovery_eligibility(db, task).eligible
 

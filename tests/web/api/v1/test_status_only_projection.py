@@ -17,7 +17,7 @@ import contextlib
 import json
 import pathlib
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
@@ -182,6 +182,34 @@ def test_overlay_after_cache_read(factory, shared_mode, real_cache):
     assert appended.status == "paused"
     assert cache_get(task_snapshot_key(tid))["response"]["status"] == "paused"
     assert _stored(factory, tid)[:2] == (TaskStatus.PAUSED, "paused")
+
+
+def test_a_shutdown_pause_keeps_an_sdk_caller_waiting_until_resume_stops(
+    factory, shared_mode, real_cache
+):
+    """A host shutdown hands an SDK run off (``shutdown_handoff_eligible``), so
+    its caller must read the paused task as non-terminal while the resume is
+    scheduled or running, and as ``failed`` only once automatic resume stops."""
+    tid, principal = _sdk_task(factory, reason="shutdown", due_in=5, total=0)
+
+    scheduled = v1_tasks._load_task_info_snapshot(tid, principal)
+    assert scheduled.view is None
+    waiting = v1_tasks._get_chat_task_sync(tid, principal)
+    assert (waiting.status, waiting.control_state) == ("paused", "paused")
+    assert waiting.output == "partial"
+
+    # The sweeper dispatches the resume: still waiting.
+    assert run_auto_resume_tick(now=utc_now() + timedelta(seconds=10)).dispatched == 1
+    assert v1_tasks._load_task_info_snapshot(tid, principal).view is None
+    assert v1_tasks._get_chat_task_sync(tid, principal).status == "paused"
+
+    # A run that keeps dying with its host stops at the total cap; only then
+    # does the caller's wait end.
+    capped, capped_principal = _sdk_task(factory, reason="shutdown", total=20)
+    assert run_auto_resume_tick().gave_up == 1
+    stopped = v1_tasks._get_chat_task_sync(capped, capped_principal)
+    assert (stopped.status, stopped.control_state) == ("failed", "failed")
+    assert stopped.error is not None and "(reason: shutdown)" in stopped.error
 
 
 @pytest.mark.parametrize("mode", ["combined", "shared"])

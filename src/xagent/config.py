@@ -613,8 +613,10 @@ def get_shutdown_handoff_enabled() -> bool:
     effect while :func:`get_task_auto_resume_enabled` is on, and the pause
     itself follows :func:`get_task_infra_failure_pause_enabled` (when that is
     off the run fails as before). A run the shutdown stopped without a usable
-    checkpoint still fails. Channel tasks, status-only (SDK) tasks and the
-    sources automatic recovery excludes still fail immediately.
+    checkpoint still fails, and so do the tasks automatic recovery excludes (the
+    a2a, external, widget and shared-link sources, previews, and channel tasks
+    of a combined host); every other kind is handed off, SDK tasks and
+    shared-execution channel tasks included.
 
     Priority:
         1. XAGENT_SHUTDOWN_HANDOFF_ENABLED environment variable

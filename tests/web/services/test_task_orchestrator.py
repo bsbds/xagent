@@ -4626,13 +4626,11 @@ async def test_user_cancel_during_shutdown_still_settles(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["sdk", "a2a", "widget", "shared_link"])
+@pytest.mark.parametrize("source", ["a2a", "widget", "shared_link"])
 async def test_shutdown_cancel_settles_sources_auto_recovery_excludes(
     db_session, monkeypatch, source
 ) -> None:
-    """Callers that own their stop protocol, and SDK callers that only read
-    the status (automatic recovery would resume an SDK task after a crash),
-    still get a terminal state now."""
+    """Callers that own their stop protocol still get a terminal state now."""
     user, task, payload, lease = _shutdown_handoff_fixture(
         db_session,
         monkeypatch,
@@ -4666,16 +4664,19 @@ async def test_shutdown_cancel_settles_external_task_with_visitor_message(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancel_settles_channel_task(db_session, monkeypatch) -> None:
-    """Channel tasks keep failing at shutdown, even where automatic recovery
-    would resume them (shared execution)."""
-    monkeypatch.setattr(
-        "xagent.web.services.task_auto_recovery.get_shared_task_execution_enabled",
-        lambda: True,
-    )
+async def test_shutdown_cancel_hands_off_an_sdk_task(db_session, monkeypatch) -> None:
+    """An SDK caller keeps waiting on a PAUSED task whose resume is scheduled,
+    so its run is handed off like any other eligible one."""
     user, task, payload, lease = _shutdown_handoff_fixture(
-        db_session, monkeypatch, turn_id="turn-shutdown-channel"
+        db_session, monkeypatch, turn_id="turn-shutdown-sdk", source="sdk"
     )
+
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+
+    assert _settlement_interruption(settle) is InterruptionReason.SHUTDOWN
+
+
+def _channel_task(db_session, task: Task, user: User) -> None:
     channel = UserChannel(
         user_id=user.id, channel_type="slack", channel_name="ops", config={}
     )
@@ -4684,9 +4685,42 @@ async def test_shutdown_cancel_settles_channel_task(db_session, monkeypatch) -> 
     task.channel_id = int(channel.id)
     db_session.commit()
 
-    settle = await _run_cancelled_turn(task, user, payload, lease)
-    assert _settlement_interruption(settle) is None
 
+@pytest.mark.asyncio
+async def test_shutdown_cancel_hands_off_a_shared_channel_task(
+    db_session, monkeypatch
+) -> None:
+    """Under shared execution a channel reply is held while the resume is
+    scheduled, so the run is handed off like any other eligible one."""
+    monkeypatch.setattr(
+        "xagent.web.services.task_auto_recovery.get_shared_task_execution_enabled",
+        lambda: True,
+    )
+    user, task, payload, lease = _shutdown_handoff_fixture(
+        db_session, monkeypatch, turn_id="turn-shutdown-channel"
+    )
+    _channel_task(db_session, task, user)
+
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+
+    assert _settlement_interruption(settle) is InterruptionReason.SHUTDOWN
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancel_settles_an_inline_channel_task(
+    db_session, monkeypatch
+) -> None:
+    """A combined host runs a channel task inline in the bot, which has no
+    durable way to deliver a resumed answer: automatic recovery excludes it, so
+    it fails now."""
+    user, task, payload, lease = _shutdown_handoff_fixture(
+        db_session, monkeypatch, turn_id="turn-shutdown-channel-inline"
+    )
+    _channel_task(db_session, task, user)
+
+    settle = await _run_cancelled_turn(task, user, payload, lease)
+
+    assert _settlement_interruption(settle) is None
     _assert_settled_cancelled(db_session, task)
 
 

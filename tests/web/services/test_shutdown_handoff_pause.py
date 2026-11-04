@@ -209,11 +209,11 @@ async def test_shutdown_cancel_without_a_usable_checkpoint_still_fails(canonical
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancel_of_a_status_only_task_fails_despite_a_checkpoint(
-    canonical,
-):
-    """Ineligible for the handoff: an SDK caller reads nothing but the status
-    and would not see the resume, so it gets its terminal state now."""
+async def test_shutdown_cancel_of_an_sdk_task_is_handed_off_like_any_other(canonical):
+    """SDK callers read only the status, but a PAUSED task with a scheduled
+    resume reads as non-terminal (``status_only_terminal_view`` reports
+    ``failed`` only once automatic resume stops), and with no backoff the
+    resume is seconds away: SDK tasks are paused and resumed like the rest."""
     factory, _tid = canonical
     ids = _projected_task(factory, source="sdk")
     lease = _prepare_run(factory, ids)
@@ -221,9 +221,9 @@ async def test_shutdown_cancel_of_a_status_only_task_fails_despite_a_checkpoint(
     await _shutdown_cancel_turn(ids, lease, source="sdk")
 
     task, row, _events = _state(factory, ids["task"])
-    assert task.status == TaskStatus.FAILED
+    assert task.status == TaskStatus.PAUSED
     assert task.runner_id is None
-    assert row is None or row.state != "scheduled"
+    assert (row.reason, row.state) == ("shutdown", "scheduled")
 
 
 @pytest.mark.asyncio
