@@ -27,7 +27,9 @@ from tests.e2e.shared_execution_harness import (
     model_calls,
     model_faults,
     recovery_state,
+    restart_hosts,
     set_model_fault,
+    stop_hosts,
     task_state,
     wait_for,
 )
@@ -205,6 +207,48 @@ def test_sdk_task_resumes_after_its_worker_is_killed(shared_app):
         1,
     )
     assert events == ["interrupted", "scheduled", "auto_resumed"]
+    assert len(auto_resume_commands(task_id)) == 1
+
+
+# --------------------------------------------------------------------------
+# A clean backend stop hands the SDK run to the replacement hosts (opt-in)
+# --------------------------------------------------------------------------
+
+
+def test_graceful_stop_with_handoff_keeps_an_sdk_caller_waiting(shared_app):
+    """A release stops the hosts cleanly while an SDK run is on the model.
+
+    With ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` the stop pauses the run with the
+    ``shutdown`` reason and schedules its resume; the caller reading after the
+    release sees a paused task, never a failed one, and ends on the resumed
+    run's answer.
+    """
+    app = shared_app
+    restart_hosts(app, "web", "worker", XAGENT_SHUTDOWN_HANDOFF_ENABLED="true")
+    task_id, run_id, headers = create_sdk_task(app, "e2e:gate")
+    wait_for(lambda: (app.root / "model-entered").exists(), app, "model call")
+
+    stop_hosts(app)
+
+    # Settled by the stop itself, before any replacement host exists.
+    state = task_state(task_id)
+    assert (state["status"], state["runner_id"]) == ("paused", None)
+    row, _events = recovery_state(task_id)
+    assert (row["reason"], row["state"]) == ("shutdown", "scheduled")
+
+    app.start_all("web", "worker")
+    (app.root / "model-release").touch()
+
+    view, seen = poll_until_final(app, task_id, headers)
+    assert "failed" not in seen, seen
+    assert view["status"] == "completed", view
+    assert ANSWER in (view["output"] or ""), view
+    assert view["error"] is None, view
+    app.wait_task(task_id, run_id=run_id, timeout=SETTLE_TIMEOUT)
+    row, events = recovery_state(task_id)
+    assert (row["reason"], row["run_id"]) == ("shutdown", run_id)
+    assert (row["total_resumes"], row["no_progress_resumes"]) == (1, 0)
+    assert events[:3] == ["interrupted", "scheduled", "auto_resumed"]
     assert len(auto_resume_commands(task_id)) == 1
 
 

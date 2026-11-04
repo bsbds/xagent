@@ -30,6 +30,7 @@ from tests.e2e.shared_execution_harness import (
     model_calls,
     recovery_state,
     restart_hosts,
+    stop_hosts,
     task_state,
     wait_for,
 )
@@ -251,15 +252,23 @@ async def test_killed_channel_run_resumes_and_answers_its_channel(shared_app, in
 
 
 # --------------------------------------------------------------------------
-# E9a-restart: worker, web host AND ingress die together (a release)
+# E9a-restart: worker and web host die, the ingress is replaced (a release)
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_channel_run_survives_worker_web_and_ingress_restart(
+async def test_channel_run_survives_worker_web_restart_and_ingress_replacement(
     shared_app, ingress, monkeypatch
 ):
     """Nothing of the ingress's memory is needed to deliver the answer.
+
+    Scope: the worker and the web host are real processes, SIGKILLed and
+    respawned. The ingress is this test process, so its "restart" is in-process:
+    the bot, its in-flight turn and the event bridge are dropped and rebuilt
+    (new host id, empty origin registry), then one pass of the production
+    recovery function (``recover_channel_results``) delivers from the database.
+    That proves delivery needs only durable state, not that a restarted ingress
+    process starts its recovery loop (``FeishuChannel.start``) or reconnects.
 
     M1 is accepted and its worker is gated on the model. Then the worker, the
     web host (lease recovery and the auto-resume sweeper) and the ingress
@@ -356,21 +365,27 @@ async def test_channel_run_survives_worker_web_and_ingress_restart(
 
 
 @pytest.mark.asyncio
-async def test_graceful_backend_stop_does_not_hand_a_channel_run_to_auto_resume(
+async def test_graceful_backend_stop_hands_a_channel_run_to_auto_resume(
     shared_app, ingress, monkeypatch
 ):
-    """Characterization (recovery spike): a clean stop, unlike a SIGKILL.
+    """A clean stop, unlike a SIGKILL, settles the run itself.
 
-    ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` hands cancelled runs to lease
-    recovery, but ``shutdown_handoff_eligible`` excludes channel tasks
-    ("until their resumed reply is proven"), so a release that cancels the
-    worker settles the run immediately instead of resuming it.
+    With ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` the stop cancels the worker's run
+    and settles it PAUSED with the ``shutdown`` reason and its resume
+    scheduled, before any replacement host exists. The channel reply is held
+    through the pause, the replacement hosts resume the same run, and the
+    answer reaches the channel once.
     """
     from xagent.web.services import shared_channel_execution
 
     app = shared_app
+    # The ingress stays up through the release; it must not give up waiting
+    # and send its "still being processed" notice before the answer.
     monkeypatch.setattr(
         shared_channel_execution, "get_task_reply_wait_timeout_seconds", lambda: 120
+    )
+    await asyncio.to_thread(
+        restart_hosts, app, "web", "worker", XAGENT_SHUTDOWN_HANDOFF_ENABLED="true"
     )
     waiting = asyncio.create_task(_send(ingress, "e2e:gate", "m1"))
     await asyncio.to_thread(
@@ -384,26 +399,59 @@ async def test_graceful_backend_stop_does_not_hand_a_channel_run_to_auto_resume(
     waiting.cancel()
     await asyncio.gather(waiting, return_exceptions=True)
 
-    await asyncio.to_thread(
-        restart_hosts,
-        app,
-        "web",
-        "worker",
-        XAGENT_SHUTDOWN_HANDOFF_ENABLED="true",
-    )
-    (app.root / "model-release").touch()
-    await asyncio.sleep(25)
+    await asyncio.to_thread(stop_hosts, app)
 
+    # Settled by the stop itself: paused, nothing holding its lease, its
+    # reply still owed (held, not failed).
     state = task_state(task_id)
+    assert (state["status"], state["run_id"], state["runner_id"]) == (
+        "paused",
+        run_id,
+        None,
+    )
     row, events = recovery_state(task_id)
+    assert row is not None
+    assert (row["reason"], row["state"], row["run_id"]) == (
+        "shutdown",
+        "scheduled",
+        run_id,
+    )
+    # The reader sees the paused run with its resume scheduled and holds the
+    # reply: no answer yet, and the reply is not settled as "stopped".
+    await _deliver_round(ingress)
     (start,) = _starts(task_id)
-    # Settled by the stop itself: failed, no recovery row, nothing resumed.
-    assert (state["status"], state["run_id"]) == ("failed", run_id)
-    assert (row, events) == (None, [])
-    assert auto_resume_commands(task_id) == []
-    # Its reply is still owed; the channel will be told the run failed.
     assert start["delivery"] == "pending"
     assert start["channel_result"] is None
+    assert _count(ingress.sent, INTERRUPTED_USER_MESSAGE) == 0
+    assert _count(ingress.sent, ANSWER) == 0
+
+    await asyncio.to_thread(app.start_all, "web", "worker")
+    (app.root / "model-release").touch()
+    delivering = asyncio.create_task(
+        _deliver_until_done(ingress, task_id, app, timeout=SETTLE_TIMEOUT + 30)
+    )
+    settled = await asyncio.to_thread(app.wait_task, task_id, timeout=SETTLE_TIMEOUT)
+    await delivering
+
+    assert settled["run_id"] == run_id
+    assert ANSWER in (settled["output"] or "")
+    row, events = recovery_state(task_id)
+    assert row is not None
+    assert (row["reason"], row["run_id"]) == ("shutdown", run_id)
+    assert (row["total_resumes"], row["no_progress_resumes"]) == (1, 0)
+    assert events[:3] == ["interrupted", "scheduled", "auto_resumed"]
+    assert len(auto_resume_commands(task_id)) == 1
+    (start,) = _starts(task_id)
+    assert start["run_id"] == run_id
+    assert start["channel_result"]["status"] == "completed"
+    assert start["delivery"] == "delivered"
+    # Delivered exactly once, never as "stopped" or "still being processed".
+    assert _count(ingress.sent, ANSWER) == 1
+    assert _count(ingress.sent, INTERRUPTED_USER_MESSAGE) == 0
+    assert _count(ingress.sent, PROCESSING) == 0
+    # The routing call and the stopped gated call, then the resumed call from
+    # the checkpoint: nothing ran twice.
+    assert len(model_calls(app)) == 3
 
 
 # --------------------------------------------------------------------------

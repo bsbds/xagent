@@ -31,6 +31,7 @@ from tests.e2e.shared_execution_harness import (
     recovery_state,
     restart_hosts,
     start_task,
+    stop_hosts,
     task_state,
     wait_for,
     ws_url,
@@ -99,26 +100,46 @@ def test_killed_combined_host_run_resumes_automatically(shared_app):
 
 
 # --------------------------------------------------------------------------
-# E1'': a clean backend stop hands the run to lease recovery (opt-in)
+# E1'': a clean backend stop hands the run to another process (opt-in)
 # --------------------------------------------------------------------------
 
 
-def test_graceful_stop_with_handoff_resumes_a_normal_task_after_the_lease(shared_app):
-    """Characterization (recovery spike): the release path of a normal task.
+def test_graceful_stop_with_handoff_pauses_at_once_and_resumes_a_normal_task(
+    shared_app,
+):
+    """The release path of a normal task, through real hosts stopped cleanly.
 
-    With ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` a clean stop cancels the run but
-    keeps its lease: only the lease TTL (10s here, 60s by default) later
-    pauses it, and the replacement hosts resume the same run. Without the
-    switch the same stop fails the run at once.
+    With ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` a clean stop cancels the run and
+    settles it PAUSED with the ``shutdown`` reason, its lease released and the
+    resume scheduled: the stop itself leaves that behind, before any
+    replacement host exists, instead of leaving the lease to expire (10s here,
+    60s by default). The replacement hosts then resume the same run, and the
+    shutdown is not counted as a resume without progress.
     """
     app = shared_app
     restart_hosts(app, "web", "worker", XAGENT_SHUTDOWN_HANDOFF_ENABLED="true")
     task_id = start_task(app)
     run_id = task_state(task_id)["run_id"]
-    stopped_at = time.monotonic()
 
-    # The old hosts stop cleanly; replacements start on the same database.
-    restart_hosts(app, "web", "worker", XAGENT_SHUTDOWN_HANDOFF_ENABLED="true")
+    stop_hosts(app)
+
+    # Settled by the stop itself, with nothing left holding the lease.
+    state = task_state(task_id)
+    assert (state["status"], state["run_id"], state["runner_id"]) == (
+        "paused",
+        run_id,
+        None,
+    )
+    row, events = recovery_state(task_id)
+    assert row is not None
+    assert (row["reason"], row["state"], row["run_id"]) == (
+        "shutdown",
+        "scheduled",
+        run_id,
+    )
+    assert events == ["interrupted", "scheduled"]
+
+    app.start_all("web", "worker")
     (app.root / "model-release").touch()
 
     settled = app.wait_task(task_id, timeout=SETTLE_TIMEOUT)
@@ -126,10 +147,10 @@ def test_graceful_stop_with_handoff_resumes_a_normal_task_after_the_lease(shared
     assert "Shared E2E answer" in (settled["output"] or "")
     row, events = recovery_state(task_id)
     assert row is not None
-    assert (row["reason"], row["run_id"]) == ("lease_expired", run_id)
+    assert (row["reason"], row["run_id"]) == ("shutdown", run_id)
+    assert (row["total_resumes"], row["no_progress_resumes"]) == (1, 0)
     assert events[:3] == ["interrupted", "scheduled", "auto_resumed"]
-    # Not seconds: the lease had to expire first.
-    assert time.monotonic() - stopped_at >= 10
+    assert len(auto_resume_commands(task_id)) == 1
 
 
 def test_graceful_stop_without_handoff_fails_a_normal_task_at_once(shared_app):

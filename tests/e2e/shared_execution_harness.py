@@ -606,14 +606,20 @@ def receive_event(ws, event_type):
 SETTLE_TIMEOUT = 60
 
 
-def restart_hosts(app, *roles: str, **environment: str) -> None:
-    """Replace every host, with ``environment`` applied to the new ones."""
+def stop_hosts(app, **environment: str) -> None:
+    """Stop every host cleanly, with ``environment`` applied to later starts."""
 
     app.close()
     app.processes.clear()
     app.pipes.clear()
     app.client = None
     app.environment.update(environment)
+
+
+def restart_hosts(app, *roles: str, **environment: str) -> None:
+    """Replace every host, with ``environment`` applied to the new ones."""
+
+    stop_hosts(app, **environment)
     app.start_all(*roles)
 
 
