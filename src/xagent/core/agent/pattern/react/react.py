@@ -909,10 +909,6 @@ class ReActPattern(AgentPattern):
                 result=waiting_result,
             )
             return waiting_result
-        # First, before memory enrichment can append to the context or any
-        # checkpoint is written: the interrupted results must sit right behind
-        # the assistant message that issued the calls.
-        self._close_pending_calls_that_may_have_started(context)
 
         if self.reasoning_mode == ReActReasoningMode.REASONING_ACTION:
             self.status = "failed"
@@ -932,6 +928,10 @@ class ReActPattern(AgentPattern):
             return result
 
         try:
+            # First, before memory enrichment can append to the context or any
+            # checkpoint is written: the interrupted results must sit right
+            # behind the assistant message that issued the calls.
+            await self._close_pending_calls_that_may_have_started(context, runtime)
             task_text = self._task_text(context)
             memory_text = self._memory_text(context, execution_text=task_text)
             self._memory_store = kwargs.get("memory_store")
@@ -4979,7 +4979,9 @@ class ReActPattern(AgentPattern):
                 result=result,
             )
 
-    def _close_pending_calls_that_may_have_started(self, context: Any) -> None:
+    async def _close_pending_calls_that_may_have_started(
+        self, context: Any, runtime: PatternRuntime
+    ) -> None:
         """Close, instead of replaying, calls a restart may have cut off mid-run.
 
         ``load_state`` records that the restored plan may already have started
@@ -4991,12 +4993,20 @@ class ReActPattern(AgentPattern):
         the same way: the model checks the state of the world rather than
         trusting a plan made before the restart.
 
+        Each closed call also gets the trace end event of an interrupted tool
+        (``on_tool_cancelled``). The crashed run recorded the call's start and
+        never its end, and the history view pairs the two by invocation or
+        tool call id, so without it the call would show as running through the
+        whole replan. No start event is sent, as for any call that does not
+        run (a start is where a tool invocation is metered), so a call the
+        crash never reached ends up with an end event that has no start.
+
         The turn's tool round counts as finished, as it does after a normal
-        pass, so the loop continues with the next iteration. Nothing is
-        checkpointed here, and need not be: the next checkpoint is written by
-        this pattern's own ``get_state``, which carries neither the plan nor
-        the mark, and a crash before it resumes from the old checkpoint, which
-        is marked again and closed the same way.
+        pass, so the loop continues with the next iteration. No checkpoint is
+        written here, and none is needed: the next one is written by this
+        pattern's own ``get_state``, which carries neither the plan nor the
+        mark, and a crash before it resumes from the old checkpoint, which is
+        marked again and closed the same way.
         """
 
         if not self._pending_calls_may_have_started:
@@ -5011,6 +5021,9 @@ class ReActPattern(AgentPattern):
             len(self.pending_tool_calls),
             [call.get("name") for call in self.pending_tool_calls],
         )
+        # The same identity the replay path gives its calls, so a legacy call
+        # with no id has one id in the envelope, the result and the ledger.
+        self._prepare_pending_tool_calls()
         # Replay guarantees the assistant message these results answer (a
         # legacy checkpoint may lack it); so must closing.
         self._ensure_pending_tool_call_envelope(context)
@@ -5022,6 +5035,10 @@ class ReActPattern(AgentPattern):
             reason=INTERRUPTED_TOOL_CALL_ERROR,
             status="interrupted",
         )
+        for tool_call in interrupted_calls:
+            await runtime.on_tool_cancelled(
+                tool_call=tool_call, reason=INTERRUPTED_TOOL_CALL_ERROR
+            )
         self.current_iteration += 1
 
     def _refuse_forced_answer_read(
@@ -5349,14 +5366,7 @@ class ReActPattern(AgentPattern):
         # explicit ``None`` values and retain provider-id fallback semantics.
         # Every downstream path therefore uses the same prepared objects while
         # caller/checkpoint-owned dictionaries remain untouched.
-        reserved_ids: set[str] = set()
-        self.pending_tool_calls = [
-            self._prepare_tool_call_identity(
-                tool_call,
-                reserved_ids=reserved_ids,
-            )
-            for tool_call in self.pending_tool_calls
-        ]
+        self._prepare_pending_tool_calls()
         if not self.user_interaction_enabled:
             disabled_index = self._disabled_control_tool_index(
                 self.pending_tool_calls,
@@ -6341,6 +6351,19 @@ class ReActPattern(AgentPattern):
                 prior_succeeded=record.status == "completed",
             )
         return None
+
+    def _prepare_pending_tool_calls(self) -> None:
+        """Give every pending call its normalized identity (see
+        ``_prepare_tool_call_identity``), reserving fallback provider ids
+        across the whole list so legacy id-less calls cannot collide."""
+        reserved_ids: set[str] = set()
+        self.pending_tool_calls = [
+            self._prepare_tool_call_identity(
+                tool_call,
+                reserved_ids=reserved_ids,
+            )
+            for tool_call in self.pending_tool_calls
+        ]
 
     def _prepare_tool_call_identity(
         self,

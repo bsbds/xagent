@@ -32,6 +32,7 @@ from xagent.core.agent import (
 from xagent.core.agent.checkpoint import TOOL_CALLS_MAY_HAVE_STARTED_KEY
 from xagent.core.agent.pattern.react.react import INTERRUPTED_TOOL_CALL_ERROR
 from xagent.core.agent.runtime import load_pattern_checkpoint
+from xagent.core.agent.trace import TraceAction, TraceCategory, TraceScope
 
 
 class _Args(BaseModel):
@@ -371,3 +372,88 @@ async def test_the_runners_tail_edit_does_not_hide_a_started_call() -> None:
     _, result, _, _ = await _resume(tail, tools, [_DONE])
     assert result["success"] is True
     assert [tool.calls for tool in tools] == [[], []]
+
+
+class _EventTracer:
+    """Keeps every trace event the runtime emits through it."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[Any, dict[str, Any]]] = []
+
+    async def trace_event(self, event_type: Any, **kwargs: Any) -> str:
+        self.events.append((event_type, kwargs))
+        return f"event-{len(self.events)}"
+
+    def tool_events(self, action: TraceAction) -> list[dict[str, Any]]:
+        return [
+            kwargs["data"]
+            for event_type, kwargs in self.events
+            if event_type.category == TraceCategory.TOOL
+            and event_type.scope == TraceScope.ACTION
+            and event_type.action == action
+        ]
+
+
+@pytest.mark.asyncio
+async def test_each_closed_call_ends_its_trace_and_none_is_started_or_metered() -> None:
+    # The crashed run recorded the calls' starts; the history view pairs an end
+    # to a start by invocation id, so each closed call needs one or it would
+    # show as running through the replan.
+    checkpoint = await _crash_at("before_tool", [_Tool("alpha"), _Tool("beta")])
+    tracer = _EventTracer()
+    pattern = _pattern()
+    load_pattern_checkpoint(pattern, checkpoint, close_started_tool_calls=True)
+
+    await pattern.run(
+        context=ExecutionContext.from_dict(checkpoint["context"]),
+        tools=[_Tool("alpha"), _Tool("beta")],
+        llm=_LLM([_DONE]),
+        runtime=PatternRuntime(tracer=tracer),
+    )
+
+    ends = tracer.tool_events(TraceAction.END)
+    assert [(e["tool_call_id"], e["tool_name"]) for e in ends] == [
+        ("call_alpha", "alpha"),
+        ("call_beta", "beta"),
+    ]
+    assert all(e["interrupted"] is True and e["success"] is False for e in ends)
+    assert all(e["interrupt_reason"] == INTERRUPTED_TOOL_CALL_ERROR for e in ends)
+    # The same invocation identity the crashed run started them under.
+    [alpha, beta] = checkpoint["pattern_state"]["pending_tool_calls"]
+    assert [e["invocation_id"] for e in ends] == [
+        alpha["invocation_id"],
+        beta["invocation_id"],
+    ]
+    assert tracer.tool_events(TraceAction.START) == []
+    assert tracer.tool_events(TraceAction.ERROR) == []
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_call_without_an_id_gets_one_id_everywhere() -> None:
+    # A pre-identity checkpoint lists a call with no id. The replay path
+    # normalizes it before anything uses it; closing must too, or the
+    # envelope, the result and the ledger would each carry something else.
+    context = _context()
+    pattern = _pattern()
+    pattern.load_state(
+        {
+            "current_iteration": 0,
+            "pending_tool_calls": [{"name": "alpha", "args": {"value": "go"}}],
+            TOOL_CALLS_MAY_HAVE_STARTED_KEY: True,
+        }
+    )
+    llm = _LLM([_DONE])
+
+    result = await pattern.run(
+        context=context, tools=[_Tool("alpha")], llm=llm, runtime=PatternRuntime()
+    )
+
+    assert result["success"] is True
+    [call_id] = list(pattern.tool_call_id_index)
+    assert call_id.startswith("tool_call_")
+    assert pattern._record_for_tool_call_id(call_id).status == "interrupted"
+    messages = llm.calls[0]["messages"]
+    [assistant] = [m for m in messages if m.get("tool_calls")]
+    assert [c["id"] for c in assistant["tool_calls"]] == [call_id]
+    [tool_message] = [m for m in messages if m["role"] == "tool"]
+    assert tool_message["tool_call_id"] == call_id
