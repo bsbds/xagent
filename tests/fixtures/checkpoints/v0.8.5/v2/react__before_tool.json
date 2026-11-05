@@ -4,17 +4,17 @@
  "root_execution_id": "compat-exec",
  "execution_id": "compat-exec",
  "sequence": null,
- "status": "thinking",
- "label": "before_llm",
+ "status": "acting",
+ "label": "before_tool",
  "saved_at": "2026-01-01T00:00:01+00:00",
  "snapshot": {
   "type": "checkpoint",
-  "label": "before_llm",
+  "label": "before_tool",
   "execution_id": "compat-exec",
   "pattern": "ReActPattern",
   "pattern_state": {
    "reasoning_mode": "tool_calling",
-   "status": "thinking",
+   "status": "acting",
    "current_iteration": 0,
    "iteration_limit_delivery_attempted": false,
    "max_iterations": 6,
@@ -35,8 +35,50 @@
    "pending_tool_interaction_responses": [],
    "task_text": "Do the work.",
    "memory_input_text": "Do the work.",
-   "last_response": null,
-   "pending_tool_calls": [],
+   "last_response": {
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "call_task_9_9",
+      "function": {
+       "name": "record",
+       "arguments": "{\"value\": \"task-1\"}"
+      }
+     },
+     {
+      "id": "call_task_9_8",
+      "function": {
+       "name": "record",
+       "arguments": "{\"value\": \"task-2\"}"
+      }
+     }
+    ],
+    "done": false
+   },
+   "pending_tool_calls": [
+    {
+     "id": "call_task_9_9",
+     "invocation_id": "fffffffffffffffffffffffffffffffe",
+     "issued_at": 1767225602.0,
+     "name": "record",
+     "args": {
+      "value": "task-1"
+     },
+     "assistant_message_id": "ffffffff-ffff-4fff-bfff-fffffffffffd",
+     "tool_attempt_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
+    },
+    {
+     "id": "call_task_9_8",
+     "invocation_id": "fffffffffffffffffffffffffffffffb",
+     "issued_at": 1767225603.0,
+     "name": "record",
+     "args": {
+      "value": "task-2"
+     },
+     "assistant_message_id": "ffffffff-ffff-4fff-bfff-fffffffffffd",
+     "tool_attempt_id": "ffffffff-ffff-4fff-bfff-fffffffffffa"
+    }
+   ],
    "pending_tool_call_content": {},
    "tool_ledger": {},
    "tool_call_id_index": {}
@@ -61,11 +103,39 @@
     {
      "role": "user",
      "content": "Do the work.",
-     "timestamp": "2026-01-01T00:00:02+00:00",
+     "timestamp": "2026-01-01T00:00:04+00:00",
      "metadata": {
-      "turn_id": "00000000-0000-4000-8000-000000000001"
+      "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffff9"
      },
      "tool_calls": null,
+     "tool_call_id": null,
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "timestamp": "2026-01-01T00:00:05+00:00",
+     "metadata": {},
+     "tool_calls": [
+      {
+       "id": "call_task_9_9",
+       "type": "function",
+       "function": {
+        "name": "record",
+        "arguments": "{\"value\": \"task-1\"}"
+       }
+      },
+      {
+       "id": "call_task_9_8",
+       "type": "function",
+       "function": {
+        "name": "record",
+        "arguments": "{\"value\": \"task-2\"}"
+       }
+      }
+     ],
      "tool_call_id": null,
      "hidden": false,
      "output_tokens": null,
@@ -78,7 +148,7 @@
     "task": "Do the work.",
     "_accepted_user_turn_ids": [
      [
-      "00000000-0000-4000-8000-000000000001",
+      "ffffffff-ffff-4fff-bfff-fffffffffff9",
       "2048027dc7ced3c3a0a4db24725f20b9"
      ]
     ],
@@ -91,7 +161,7 @@
    },
    "execution_budget": null,
    "evidence_marker_writer": 1,
-   "created_at": "2026-01-01T00:00:03+00:00",
+   "created_at": "2026-01-01T00:00:06+00:00",
    "llm_calls": [],
    "compact_config": {
     "enabled": true,
@@ -106,7 +176,19 @@
    "memory_session_id": null,
    "memory_snapshot": null
   },
-  "status": "thinking",
-  "metadata": {}
+  "status": "acting",
+  "metadata": {
+   "tool_call": {
+    "id": "call_task_9_9",
+    "invocation_id": "fffffffffffffffffffffffffffffffe",
+    "issued_at": 1767225602.0,
+    "name": "record",
+    "args": {
+     "value": "task-1"
+    },
+    "assistant_message_id": "ffffffff-ffff-4fff-bfff-fffffffffffd",
+    "tool_attempt_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
+   }
+  }
  }
 }

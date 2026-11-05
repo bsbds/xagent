@@ -55,7 +55,7 @@
      "content": "Do the work.",
      "timestamp": "2026-01-01T00:00:02+00:00",
      "metadata": {
-      "turn_id": "00000000-0000-4000-8000-000000000001"
+      "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffe"
      },
      "tool_calls": null,
      "tool_call_id": null,
@@ -70,7 +70,7 @@
     "task": "Do the work.",
     "_accepted_user_turn_ids": [
      [
-      "00000000-0000-4000-8000-000000000001",
+      "ffffffff-ffff-4fff-bfff-fffffffffffe",
       "2048027dc7ced3c3a0a4db24725f20b9"
      ]
     ],
@@ -131,7 +131,7 @@
         "content": "Do the work.",
         "timestamp": "2026-01-01T00:00:02+00:00",
         "metadata": {
-         "turn_id": "00000000-0000-4000-8000-000000000001"
+         "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffe"
         },
         "tool_calls": null,
         "tool_call_id": null,
@@ -146,7 +146,7 @@
        "task": "Do the work.",
        "_accepted_user_turn_ids": [
         [
-         "00000000-0000-4000-8000-000000000001",
+         "ffffffff-ffff-4fff-bfff-fffffffffffe",
          "2048027dc7ced3c3a0a4db24725f20b9"
         ]
        ],
@@ -231,7 +231,7 @@
         "content": "Do the work.",
         "timestamp": "2026-01-01T00:00:02+00:00",
         "metadata": {
-         "turn_id": "00000000-0000-4000-8000-000000000001"
+         "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffe"
         },
         "tool_calls": null,
         "tool_call_id": null,
@@ -246,7 +246,7 @@
        "task": "Do the work.",
        "_accepted_user_turn_ids": [
         [
-         "00000000-0000-4000-8000-000000000001",
+         "ffffffff-ffff-4fff-bfff-fffffffffffe",
          "2048027dc7ced3c3a0a4db24725f20b9"
         ]
        ],

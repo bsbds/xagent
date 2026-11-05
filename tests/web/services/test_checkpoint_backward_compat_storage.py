@@ -10,18 +10,21 @@ the real readers, for both storages:
   validates the recovery envelope and the attempt identity of every pending tool
   call before it hands a checkpoint to the runner.
 
-A checkpoint a reader refuses is a task that cannot resume after a release.
+A checkpoint a reader refuses is a task that cannot resume after a release. Key
+order is compared too: PostgreSQL JSONB re-sorts keys, and the core test replays
+that order into the restore path (``jsonb_order``).
 See the core test's docstring for when to regenerate or drop fixtures.
 """
 
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from tests.shared.checkpoint_compat import FIXTURE_ROOT
+from tests.shared.checkpoint_compat import FIXTURE_ROOT, jsonb_order
 from tests.web.services.task_database_shared import engine as engine_fixture
 from tests.web.services.task_database_shared import task_id as task_id_fixture
 from xagent.core.agent.checkpoint import CHECKPOINT_EVENT_TYPE, TraceCheckpointStore
@@ -34,6 +37,20 @@ engine = engine_fixture
 task_id = task_id_fixture
 
 FIXTURES = sorted(FIXTURE_ROOT.glob("*/*/*.json"))
+
+
+def ledger_orders(node: Any, path: str = "") -> dict[str, list[str]]:
+    """The key order of every tool ledger in a payload, by where it sits."""
+    found: dict[str, list[str]] = {}
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "tool_ledger" and isinstance(value, dict):
+                found[f"{path}/{key}"] = list(value)
+            found.update(ledger_orders(value, f"{path}/{key}"))
+    elif isinstance(node, list):
+        for value in node:
+            found.update(ledger_orders(value, f"{path}[]"))
+    return found
 
 
 @pytest.mark.parametrize("storage", ["v1", "v2"])
@@ -80,3 +97,15 @@ async def test_previous_release_checkpoints_read_back(
             execution_id
         )
         assert restored == envelope["snapshot"], path
+        # Key order is part of the contract, so it is compared, not left to
+        # ``==``. PostgreSQL JSONB re-sorts object keys, so a resumed run on it
+        # reads dicts in that order; ``jsonb_order`` is the model of that which
+        # the core test feeds into the restore path, and this proves the model
+        # against the real database.
+        if engine.dialect.name == "postgresql":
+            expected = jsonb_order(envelope["snapshot"], storage)
+            assert json.dumps(restored) == json.dumps(expected), path
+        elif storage == "v1":
+            # What v1 storage promises on every dialect: the tool ledger, whose
+            # order carries call order, comes back as written.
+            assert ledger_orders(restored) == ledger_orders(envelope["snapshot"]), path

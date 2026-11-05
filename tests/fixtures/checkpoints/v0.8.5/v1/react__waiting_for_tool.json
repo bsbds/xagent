@@ -1,0 +1,362 @@
+{
+ "checkpoint_type": "agent_execution_checkpoint",
+ "snapshot_schema_version": 1,
+ "root_execution_id": "compat-exec",
+ "execution_id": "compat-exec",
+ "sequence": null,
+ "status": "waiting_for_user",
+ "label": "waiting_for_user",
+ "saved_at": "2026-01-01T00:00:01+00:00",
+ "snapshot": {
+  "type": "checkpoint",
+  "label": "waiting_for_user",
+  "execution_id": "compat-exec",
+  "pattern": "ReActPattern",
+  "pattern_state": {
+   "reasoning_mode": "tool_calling",
+   "status": "waiting_for_user",
+   "current_iteration": 0,
+   "iteration_limit_delivery_attempted": false,
+   "max_iterations": 6,
+   "finalize_after_tool_result": false,
+   "tool_parallel_enabled": true,
+   "tool_max_concurrency": 3,
+   "repeated_tool_decision_after_consecutive_tool_calls": 4,
+   "repeated_tool_decision_after_consecutive_work_tool_calls": 10,
+   "force_final_answer_next": false,
+   "forced_answer_reads_used": 0,
+   "forced_answer_reads_rejected": 0,
+   "forced_answer_read_open": false,
+   "forced_answer_extra_iterations": 0,
+   "settlement_final_answer_fence": false,
+   "settlement_fence_turn_id": null,
+   "repeated_tool_decision": null,
+   "waiting_for_user_request": {
+    "event_id": "ffffffff-ffff-4fff-bfff-fffffffffffe",
+    "kind": "tool_waiting_for_user",
+    "requests": [
+     {
+      "tool_call_id": "call_task_9_9",
+      "invocation_id": "fffffffffffffffffffffffffffffffd",
+      "tool_name": "approve",
+      "interaction_id": "approval-1",
+      "message": "Approve the booking?",
+      "message_type": "question",
+      "interactions": [
+       {
+        "type": "confirm",
+        "field": "approved",
+        "label": "Approve?"
+       },
+       {
+        "type": "select_one",
+        "field": "city",
+        "label": "City",
+        "options": [
+         {
+          "label": "Lisbon",
+          "value": "lisbon"
+         },
+         {
+          "label": "Porto",
+          "value": "porto"
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "message": "Approve the booking?",
+    "message_type": "question",
+    "interactions": [
+     {
+      "type": "confirm",
+      "field": "approved",
+      "label": "Approve?"
+     },
+     {
+      "type": "select_one",
+      "field": "city",
+      "label": "City",
+      "options": [
+       {
+        "label": "Lisbon",
+        "value": "lisbon"
+       },
+       {
+        "label": "Porto",
+        "value": "porto"
+       }
+      ]
+     }
+    ],
+    "task_text": "Book a trip.",
+    "message_count": 3
+   },
+   "pending_tool_interaction_responses": [],
+   "task_text": "Book a trip.",
+   "memory_input_text": "Book a trip.",
+   "last_response": {
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "call_task_9_9",
+      "function": {
+       "name": "approve",
+       "arguments": "{\"value\": \"task-1\"}"
+      }
+     }
+    ],
+    "done": false
+   },
+   "pending_tool_calls": [],
+   "pending_tool_call_content": {},
+   "tool_ledger": {
+    "fffffffffffffffffffffffffffffffd": {
+     "tool_call_id": "call_task_9_9",
+     "invocation_id": "fffffffffffffffffffffffffffffffd",
+     "tool_name": "approve",
+     "args": {
+      "value": "task-1"
+     },
+     "args_hash": "459a8799a331aacf8f4497749946bfed11fdcee9ef5bc6be04a596ca86f6cb5d",
+     "status": "waiting_for_user",
+     "result": {
+      "status": "waiting_for_user",
+      "message": "Approve the booking?",
+      "interaction_id": "approval-1",
+      "interactions": [
+       {
+        "type": "confirm",
+        "field": "approved",
+        "label": "Approve?"
+       },
+       {
+        "type": "select_one",
+        "field": "city",
+        "label": "City",
+        "options": [
+         {
+          "label": "Lisbon",
+          "value": "lisbon"
+         },
+         {
+          "label": "Porto",
+          "value": "porto"
+         }
+        ]
+       }
+      ]
+     },
+     "error": null,
+     "settlement_status": null,
+     "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc",
+     "settlement_turn_id": null,
+     "settlement_trace_pending": false,
+     "step_id": "react_fffffffb",
+     "issued_at": 1767225602.0,
+     "tool_attempt_id": null,
+     "assistant_message_id": null
+    }
+   },
+   "tool_call_id_index": {
+    "call_task_9_9": "fffffffffffffffffffffffffffffffd"
+   }
+  },
+  "context": {
+   "execution_id": "compat-exec",
+   "user_id": null,
+   "session_id": null,
+   "components": {
+    "workspace": {
+     "workspace_id": null,
+     "workspace_path": null,
+     "cwd": null,
+     "state": {}
+    },
+    "memory": {
+     "session_id": null,
+     "snapshot": null
+    }
+   },
+   "messages": [
+    {
+     "role": "user",
+     "content": "Book a trip.",
+     "timestamp": "2026-01-01T00:00:03+00:00",
+     "metadata": {
+      "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
+     },
+     "tool_calls": null,
+     "tool_call_id": null,
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "timestamp": "2026-01-01T00:00:04+00:00",
+     "metadata": {},
+     "tool_calls": [
+      {
+       "id": "call_task_9_9",
+       "type": "function",
+       "function": {
+        "name": "approve",
+        "arguments": "{\"value\": \"task-1\"}"
+       }
+      }
+     ],
+     "tool_call_id": null,
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    },
+    {
+     "role": "tool",
+     "content": "Tool approve returned: {'status': 'waiting_for_user', 'message': 'Approve the booking?', 'interaction_id': 'approval-1', 'interactions': [{'type': 'confirm', 'field': 'approved', 'label': 'Approve?'}, {'type': 'select_one', 'field': 'city', 'label': 'City', 'options': [{'label': 'Lisbon', 'value': 'lisbon'}, {'label': 'Porto', 'value': 'porto'}]}]}",
+     "timestamp": "2026-01-01T00:00:05+00:00",
+     "metadata": {
+      "tool_name": "approve",
+      "raw_result": {
+       "status": "waiting_for_user",
+       "message": "Approve the booking?",
+       "interaction_id": "approval-1",
+       "interactions": [
+        {
+         "type": "confirm",
+         "field": "approved",
+         "label": "Approve?"
+        },
+        {
+         "type": "select_one",
+         "field": "city",
+         "label": "City",
+         "options": [
+          {
+           "label": "Lisbon",
+           "value": "lisbon"
+          },
+          {
+           "label": "Porto",
+           "value": "porto"
+          }
+         ]
+        }
+       ]
+      },
+      "workspace_id": null,
+      "workspace_path": null,
+      "cwd": null,
+      "memory_session_id": null,
+      "invocation_id": "fffffffffffffffffffffffffffffffd"
+     },
+     "tool_calls": null,
+     "tool_call_id": "call_task_9_9",
+     "hidden": false,
+     "output_tokens": null,
+     "context_refs": []
+    }
+   ],
+   "system_prompt": null,
+   "metadata": {
+    "tool_evidence_removed": false,
+    "task": "Book a trip.",
+    "_accepted_user_turn_ids": [
+     [
+      "ffffffff-ffff-4fff-bfff-fffffffffffc",
+      "5ebaf208b7d98869c2e8f58d8b7d78cd"
+     ]
+    ],
+    "_xagent_top_level_user_request": {
+     "execution_text": "Book a trip.",
+     "language_text": "Book a trip.",
+     "display_state": "missing"
+    },
+    "image_edit_unavailable": false
+   },
+   "execution_budget": null,
+   "evidence_marker_writer": 1,
+   "created_at": "2026-01-01T00:00:06+00:00",
+   "llm_calls": [],
+   "compact_config": {
+    "enabled": true,
+    "threshold": 32000,
+    "threshold_source": "default",
+    "max_messages": 20
+   },
+   "workspace_id": null,
+   "workspace_path": null,
+   "cwd": null,
+   "workspace_state": {},
+   "memory_session_id": null,
+   "memory_snapshot": null
+  },
+  "status": "waiting_for_user",
+  "metadata": {
+   "waiting_for_user_request": {
+    "event_id": "ffffffff-ffff-4fff-bfff-fffffffffffe",
+    "kind": "tool_waiting_for_user",
+    "requests": [
+     {
+      "tool_call_id": "call_task_9_9",
+      "invocation_id": "fffffffffffffffffffffffffffffffd",
+      "tool_name": "approve",
+      "interaction_id": "approval-1",
+      "message": "Approve the booking?",
+      "message_type": "question",
+      "interactions": [
+       {
+        "type": "confirm",
+        "field": "approved",
+        "label": "Approve?"
+       },
+       {
+        "type": "select_one",
+        "field": "city",
+        "label": "City",
+        "options": [
+         {
+          "label": "Lisbon",
+          "value": "lisbon"
+         },
+         {
+          "label": "Porto",
+          "value": "porto"
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "message": "Approve the booking?",
+    "message_type": "question",
+    "interactions": [
+     {
+      "type": "confirm",
+      "field": "approved",
+      "label": "Approve?"
+     },
+     {
+      "type": "select_one",
+      "field": "city",
+      "label": "City",
+      "options": [
+       {
+        "label": "Lisbon",
+        "value": "lisbon"
+       },
+       {
+        "label": "Porto",
+        "value": "porto"
+       }
+      ]
+     }
+    ],
+    "task_text": "Book a trip.",
+    "message_count": 3
+   }
+  }
+ }
+}

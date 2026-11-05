@@ -34,14 +34,16 @@
      {
       "id": "beta",
       "task": "Collect beta",
-      "dependencies": [],
+      "dependencies": [
+       "alpha"
+      ],
       "description": null,
       "termination_condition": null,
       "completion_evidence": null,
       "tool_names": [
        "record"
       ],
-      "status": "running",
+      "status": "pending",
       "result": null,
       "error": null,
       "failure_code": null
@@ -76,14 +78,14 @@
      "content": "",
      "tool_calls": [
       {
-       "id": "call_alpha_0_0",
+       "id": "call_alpha_9_9",
        "function": {
         "name": "record",
         "arguments": "{\"value\": \"alpha-1\"}"
        }
       },
       {
-       "id": "call_alpha_0_1",
+       "id": "call_alpha_9_8",
        "function": {
         "name": "record",
         "arguments": "{\"value\": \"alpha-2\"}"
@@ -94,8 +96,8 @@
     },
     "pending_tool_calls": [
      {
-      "id": "call_alpha_0_1",
-      "invocation_id": "00000000000000000000000000000001",
+      "id": "call_alpha_9_8",
+      "invocation_id": "fffffffffffffffffffffffffffffffe",
       "issued_at": 1767225602.0,
       "name": "record",
       "args": {
@@ -105,9 +107,9 @@
     ],
     "pending_tool_call_content": {},
     "tool_ledger": {
-     "00000000000000000000000000000002": {
-      "tool_call_id": "call_alpha_0_0",
-      "invocation_id": "00000000000000000000000000000002",
+     "fffffffffffffffffffffffffffffffd": {
+      "tool_call_id": "call_alpha_9_9",
+      "invocation_id": "fffffffffffffffffffffffffffffffd",
       "tool_name": "record",
       "args": {
        "value": "alpha-1"
@@ -123,21 +125,21 @@
       },
       "error": null,
       "settlement_status": null,
-      "turn_id": "00000000-0000-4000-8000-000000000003",
+      "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc",
       "settlement_turn_id": null,
       "settlement_trace_pending": false,
       "step_id": "alpha",
-      "issued_at": 1767225602.0,
+      "issued_at": 1767225603.0,
       "tool_attempt_id": null,
       "assistant_message_id": null
      }
     },
     "tool_call_id_index": {
-     "call_alpha_0_0": "00000000000000000000000000000002"
+     "call_alpha_9_9": "fffffffffffffffffffffffffffffffd"
     }
    },
    "active_step_context": {
-    "execution_id": "compat-exec_child_00000004",
+    "execution_id": "compat-exec_child_fffffffb",
     "user_id": null,
     "session_id": null,
     "components": {
@@ -156,9 +158,9 @@
      {
       "role": "user",
       "content": "Do the work.",
-      "timestamp": "2026-01-01T00:00:03+00:00",
+      "timestamp": "2026-01-01T00:00:04+00:00",
       "metadata": {
-       "turn_id": "00000000-0000-4000-8000-000000000003"
+       "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
       },
       "tool_calls": null,
       "tool_call_id": null,
@@ -169,7 +171,7 @@
      {
       "role": "user",
       "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: alpha\nCurrent DAG step title: Collect alpha\nCurrent DAG step description: Collect alpha\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-      "timestamp": "2026-01-01T00:00:04+00:00",
+      "timestamp": "2026-01-01T00:00:05+00:00",
       "metadata": {
        "kind": "dag_step_instruction",
        "dag_step_id": "alpha",
@@ -184,11 +186,11 @@
      {
       "role": "assistant",
       "content": "",
-      "timestamp": "2026-01-01T00:00:05+00:00",
+      "timestamp": "2026-01-01T00:00:06+00:00",
       "metadata": {},
       "tool_calls": [
        {
-        "id": "call_alpha_0_0",
+        "id": "call_alpha_9_9",
         "type": "function",
         "function": {
          "name": "record",
@@ -196,7 +198,7 @@
         }
        },
        {
-        "id": "call_alpha_0_1",
+        "id": "call_alpha_9_8",
         "type": "function",
         "function": {
          "name": "record",
@@ -212,7 +214,7 @@
      {
       "role": "tool",
       "content": "Tool record returned: {'success': True, 'tool': 'record', 'args': {'value': 'alpha-1'}}",
-      "timestamp": "2026-01-01T00:00:06+00:00",
+      "timestamp": "2026-01-01T00:00:07+00:00",
       "metadata": {
        "tool_name": "record",
        "raw_result": {
@@ -226,10 +228,10 @@
        "workspace_path": null,
        "cwd": null,
        "memory_session_id": null,
-       "invocation_id": "00000000000000000000000000000002"
+       "invocation_id": "fffffffffffffffffffffffffffffffd"
       },
       "tool_calls": null,
-      "tool_call_id": "call_alpha_0_0",
+      "tool_call_id": "call_alpha_9_9",
       "hidden": false,
       "output_tokens": null,
       "context_refs": []
@@ -256,7 +258,7 @@
     },
     "execution_budget": null,
     "evidence_marker_writer": 1,
-    "created_at": "2026-01-01T00:00:07+00:00",
+    "created_at": "2026-01-01T00:00:08+00:00",
     "llm_calls": [],
     "compact_config": {
      "enabled": true,
@@ -272,8 +274,7 @@
     "memory_snapshot": null
    },
    "active_step_ids": [
-    "alpha",
-    "beta"
+    "alpha"
    ],
    "active_step_pattern_states": {
     "alpha": {
@@ -303,14 +304,14 @@
       "content": "",
       "tool_calls": [
        {
-        "id": "call_alpha_0_0",
+        "id": "call_alpha_9_9",
         "function": {
          "name": "record",
          "arguments": "{\"value\": \"alpha-1\"}"
         }
        },
        {
-        "id": "call_alpha_0_1",
+        "id": "call_alpha_9_8",
         "function": {
          "name": "record",
          "arguments": "{\"value\": \"alpha-2\"}"
@@ -321,8 +322,8 @@
      },
      "pending_tool_calls": [
       {
-       "id": "call_alpha_0_1",
-       "invocation_id": "00000000000000000000000000000001",
+       "id": "call_alpha_9_8",
+       "invocation_id": "fffffffffffffffffffffffffffffffe",
        "issued_at": 1767225602.0,
        "name": "record",
        "args": {
@@ -332,9 +333,9 @@
      ],
      "pending_tool_call_content": {},
      "tool_ledger": {
-      "00000000000000000000000000000002": {
-       "tool_call_id": "call_alpha_0_0",
-       "invocation_id": "00000000000000000000000000000002",
+      "fffffffffffffffffffffffffffffffd": {
+       "tool_call_id": "call_alpha_9_9",
+       "invocation_id": "fffffffffffffffffffffffffffffffd",
        "tool_name": "record",
        "args": {
         "value": "alpha-1"
@@ -350,90 +351,23 @@
        },
        "error": null,
        "settlement_status": null,
-       "turn_id": "00000000-0000-4000-8000-000000000003",
+       "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc",
        "settlement_turn_id": null,
        "settlement_trace_pending": false,
        "step_id": "alpha",
-       "issued_at": 1767225602.0,
+       "issued_at": 1767225603.0,
        "tool_attempt_id": null,
        "assistant_message_id": null
       }
      },
      "tool_call_id_index": {
-      "call_alpha_0_0": "00000000000000000000000000000002"
+      "call_alpha_9_9": "fffffffffffffffffffffffffffffffd"
      }
-    },
-    "beta": {
-     "reasoning_mode": "tool_calling",
-     "status": "acting",
-     "current_iteration": 0,
-     "iteration_limit_delivery_attempted": false,
-     "max_iterations": 200,
-     "finalize_after_tool_result": false,
-     "tool_parallel_enabled": false,
-     "tool_max_concurrency": 3,
-     "repeated_tool_decision_after_consecutive_tool_calls": 4,
-     "repeated_tool_decision_after_consecutive_work_tool_calls": 10,
-     "force_final_answer_next": false,
-     "forced_answer_reads_used": 0,
-     "forced_answer_reads_rejected": 0,
-     "forced_answer_read_open": false,
-     "forced_answer_extra_iterations": 0,
-     "settlement_final_answer_fence": false,
-     "settlement_fence_turn_id": null,
-     "repeated_tool_decision": null,
-     "waiting_for_user_request": null,
-     "pending_tool_interaction_responses": [],
-     "task_text": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: beta\nCurrent DAG step title: Collect beta\nCurrent DAG step description: Collect beta\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-     "memory_input_text": "Do the work.",
-     "last_response": {
-      "content": "",
-      "tool_calls": [
-       {
-        "id": "call_beta_0_0",
-        "function": {
-         "name": "record",
-         "arguments": "{\"value\": \"beta-1\"}"
-        }
-       },
-       {
-        "id": "call_beta_0_1",
-        "function": {
-         "name": "record",
-         "arguments": "{\"value\": \"beta-2\"}"
-        }
-       }
-      ],
-      "done": false
-     },
-     "pending_tool_calls": [
-      {
-       "id": "call_beta_0_0",
-       "invocation_id": "00000000000000000000000000000005",
-       "issued_at": 1767225608.0,
-       "name": "record",
-       "args": {
-        "value": "beta-1"
-       }
-      },
-      {
-       "id": "call_beta_0_1",
-       "invocation_id": "00000000000000000000000000000006",
-       "issued_at": 1767225608.0,
-       "name": "record",
-       "args": {
-        "value": "beta-2"
-       }
-      }
-     ],
-     "pending_tool_call_content": {},
-     "tool_ledger": {},
-     "tool_call_id_index": {}
     }
    },
    "active_step_contexts": {
     "alpha": {
-     "execution_id": "compat-exec_child_00000004",
+     "execution_id": "compat-exec_child_fffffffb",
      "user_id": null,
      "session_id": null,
      "components": {
@@ -452,9 +386,9 @@
       {
        "role": "user",
        "content": "Do the work.",
-       "timestamp": "2026-01-01T00:00:03+00:00",
+       "timestamp": "2026-01-01T00:00:04+00:00",
        "metadata": {
-        "turn_id": "00000000-0000-4000-8000-000000000003"
+        "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
        },
        "tool_calls": null,
        "tool_call_id": null,
@@ -465,7 +399,7 @@
       {
        "role": "user",
        "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: alpha\nCurrent DAG step title: Collect alpha\nCurrent DAG step description: Collect alpha\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-       "timestamp": "2026-01-01T00:00:04+00:00",
+       "timestamp": "2026-01-01T00:00:05+00:00",
        "metadata": {
         "kind": "dag_step_instruction",
         "dag_step_id": "alpha",
@@ -480,11 +414,11 @@
       {
        "role": "assistant",
        "content": "",
-       "timestamp": "2026-01-01T00:00:05+00:00",
+       "timestamp": "2026-01-01T00:00:06+00:00",
        "metadata": {},
        "tool_calls": [
         {
-         "id": "call_alpha_0_0",
+         "id": "call_alpha_9_9",
          "type": "function",
          "function": {
           "name": "record",
@@ -492,7 +426,7 @@
          }
         },
         {
-         "id": "call_alpha_0_1",
+         "id": "call_alpha_9_8",
          "type": "function",
          "function": {
           "name": "record",
@@ -508,7 +442,7 @@
       {
        "role": "tool",
        "content": "Tool record returned: {'success': True, 'tool': 'record', 'args': {'value': 'alpha-1'}}",
-       "timestamp": "2026-01-01T00:00:06+00:00",
+       "timestamp": "2026-01-01T00:00:07+00:00",
        "metadata": {
         "tool_name": "record",
         "raw_result": {
@@ -522,10 +456,10 @@
         "workspace_path": null,
         "cwd": null,
         "memory_session_id": null,
-        "invocation_id": "00000000000000000000000000000002"
+        "invocation_id": "fffffffffffffffffffffffffffffffd"
        },
        "tool_calls": null,
-       "tool_call_id": "call_alpha_0_0",
+       "tool_call_id": "call_alpha_9_9",
        "hidden": false,
        "output_tokens": null,
        "context_refs": []
@@ -552,117 +486,7 @@
      },
      "execution_budget": null,
      "evidence_marker_writer": 1,
-     "created_at": "2026-01-01T00:00:07+00:00",
-     "llm_calls": [],
-     "compact_config": {
-      "enabled": true,
-      "threshold": 32000,
-      "threshold_source": "default",
-      "max_messages": 20
-     },
-     "workspace_id": null,
-     "workspace_path": null,
-     "cwd": null,
-     "workspace_state": {},
-     "memory_session_id": null,
-     "memory_snapshot": null
-    },
-    "beta": {
-     "execution_id": "compat-exec_child_00000007",
-     "user_id": null,
-     "session_id": null,
-     "components": {
-      "workspace": {
-       "workspace_id": null,
-       "workspace_path": null,
-       "cwd": null,
-       "state": {}
-      },
-      "memory": {
-       "session_id": null,
-       "snapshot": null
-      }
-     },
-     "messages": [
-      {
-       "role": "user",
-       "content": "Do the work.",
-       "timestamp": "2026-01-01T00:00:03+00:00",
-       "metadata": {
-        "turn_id": "00000000-0000-4000-8000-000000000003"
-       },
-       "tool_calls": null,
-       "tool_call_id": null,
-       "hidden": false,
-       "output_tokens": null,
-       "context_refs": []
-      },
-      {
-       "role": "user",
-       "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: beta\nCurrent DAG step title: Collect beta\nCurrent DAG step description: Collect beta\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-       "timestamp": "2026-01-01T00:00:09+00:00",
-       "metadata": {
-        "kind": "dag_step_instruction",
-        "dag_step_id": "beta",
-        "dag_completion_evidence": ""
-       },
-       "tool_calls": null,
-       "tool_call_id": null,
-       "hidden": false,
-       "output_tokens": null,
-       "context_refs": []
-      },
-      {
-       "role": "assistant",
-       "content": "",
-       "timestamp": "2026-01-01T00:00:10+00:00",
-       "metadata": {},
-       "tool_calls": [
-        {
-         "id": "call_beta_0_0",
-         "type": "function",
-         "function": {
-          "name": "record",
-          "arguments": "{\"value\": \"beta-1\"}"
-         }
-        },
-        {
-         "id": "call_beta_0_1",
-         "type": "function",
-         "function": {
-          "name": "record",
-          "arguments": "{\"value\": \"beta-2\"}"
-         }
-        }
-       ],
-       "tool_call_id": null,
-       "hidden": false,
-       "output_tokens": null,
-       "context_refs": []
-      }
-     ],
-     "system_prompt": null,
-     "metadata": {
-      "tool_evidence_removed": false,
-      "task": "Do the work.",
-      "_xagent_top_level_user_request": {
-       "execution_text": "Do the work.",
-       "language_text": "Do the work.",
-       "display_state": "missing"
-      },
-      "dag_step_id": "beta",
-      "dag_step_name": "Collect beta",
-      "dag_step_description": "Collect beta",
-      "dag_dependencies": [],
-      "dag_tool_names": [
-       "record"
-      ],
-      "output_language": "",
-      "image_edit_unavailable": false
-     },
-     "execution_budget": null,
-     "evidence_marker_writer": 1,
-     "created_at": "2026-01-01T00:00:11+00:00",
+     "created_at": "2026-01-01T00:00:08+00:00",
      "llm_calls": [],
      "compact_config": {
       "enabled": true,
@@ -709,9 +533,9 @@
     {
      "role": "user",
      "content": "Do the work.",
-     "timestamp": "2026-01-01T00:00:03+00:00",
+     "timestamp": "2026-01-01T00:00:04+00:00",
      "metadata": {
-      "turn_id": "00000000-0000-4000-8000-000000000003"
+      "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
      },
      "tool_calls": null,
      "tool_call_id": null,
@@ -726,7 +550,7 @@
     "task": "Do the work.",
     "_accepted_user_turn_ids": [
      [
-      "00000000-0000-4000-8000-000000000003",
+      "ffffffff-ffff-4fff-bfff-fffffffffffc",
       "2048027dc7ced3c3a0a4db24725f20b9"
      ]
     ],
@@ -738,7 +562,7 @@
    },
    "execution_budget": null,
    "evidence_marker_writer": 1,
-   "created_at": "2026-01-01T00:00:12+00:00",
+   "created_at": "2026-01-01T00:00:09+00:00",
    "llm_calls": [],
    "compact_config": {
     "enabled": true,
@@ -758,9 +582,9 @@
    "active_step_id": "alpha",
    "child_label": "after_tool",
    "tool_call": {
-    "id": "call_alpha_0_0",
-    "invocation_id": "00000000000000000000000000000002",
-    "issued_at": 1767225602.0,
+    "id": "call_alpha_9_9",
+    "invocation_id": "fffffffffffffffffffffffffffffffd",
+    "issued_at": 1767225610.0,
     "name": "record",
     "args": {
      "value": "alpha-1"
@@ -797,9 +621,9 @@
        {
         "role": "user",
         "content": "Do the work.",
-        "timestamp": "2026-01-01T00:00:03+00:00",
+        "timestamp": "2026-01-01T00:00:04+00:00",
         "metadata": {
-         "turn_id": "00000000-0000-4000-8000-000000000003"
+         "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
         },
         "tool_calls": null,
         "tool_call_id": null,
@@ -814,7 +638,7 @@
        "task": "Do the work.",
        "_accepted_user_turn_ids": [
         [
-         "00000000-0000-4000-8000-000000000003",
+         "ffffffff-ffff-4fff-bfff-fffffffffffc",
          "2048027dc7ced3c3a0a4db24725f20b9"
         ]
        ],
@@ -826,7 +650,7 @@
       },
       "execution_budget": null,
       "evidence_marker_writer": 1,
-      "created_at": "2026-01-01T00:00:12+00:00",
+      "created_at": "2026-01-01T00:00:09+00:00",
       "llm_calls": [],
       "compact_config": {
        "enabled": true,
@@ -863,14 +687,16 @@
         {
          "id": "beta",
          "task": "Collect beta",
-         "dependencies": [],
+         "dependencies": [
+          "alpha"
+         ],
          "description": null,
          "termination_condition": null,
          "completion_evidence": null,
          "tool_names": [
           "record"
          ],
-         "status": "running",
+         "status": "pending",
          "result": null,
          "error": null,
          "failure_code": null
@@ -905,14 +731,14 @@
         "content": "",
         "tool_calls": [
          {
-          "id": "call_alpha_0_0",
+          "id": "call_alpha_9_9",
           "function": {
            "name": "record",
            "arguments": "{\"value\": \"alpha-1\"}"
           }
          },
          {
-          "id": "call_alpha_0_1",
+          "id": "call_alpha_9_8",
           "function": {
            "name": "record",
            "arguments": "{\"value\": \"alpha-2\"}"
@@ -923,8 +749,8 @@
        },
        "pending_tool_calls": [
         {
-         "id": "call_alpha_0_1",
-         "invocation_id": "00000000000000000000000000000001",
+         "id": "call_alpha_9_8",
+         "invocation_id": "fffffffffffffffffffffffffffffffe",
          "issued_at": 1767225602.0,
          "name": "record",
          "args": {
@@ -934,9 +760,9 @@
        ],
        "pending_tool_call_content": {},
        "tool_ledger": {
-        "00000000000000000000000000000002": {
-         "tool_call_id": "call_alpha_0_0",
-         "invocation_id": "00000000000000000000000000000002",
+        "fffffffffffffffffffffffffffffffd": {
+         "tool_call_id": "call_alpha_9_9",
+         "invocation_id": "fffffffffffffffffffffffffffffffd",
          "tool_name": "record",
          "args": {
           "value": "alpha-1"
@@ -952,21 +778,21 @@
          },
          "error": null,
          "settlement_status": null,
-         "turn_id": "00000000-0000-4000-8000-000000000003",
+         "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc",
          "settlement_turn_id": null,
          "settlement_trace_pending": false,
          "step_id": "alpha",
-         "issued_at": 1767225602.0,
+         "issued_at": 1767225603.0,
          "tool_attempt_id": null,
          "assistant_message_id": null
         }
        },
        "tool_call_id_index": {
-        "call_alpha_0_0": "00000000000000000000000000000002"
+        "call_alpha_9_9": "fffffffffffffffffffffffffffffffd"
        }
       },
       "active_step_context": {
-       "execution_id": "compat-exec_child_00000004",
+       "execution_id": "compat-exec_child_fffffffb",
        "user_id": null,
        "session_id": null,
        "components": {
@@ -985,9 +811,9 @@
         {
          "role": "user",
          "content": "Do the work.",
-         "timestamp": "2026-01-01T00:00:03+00:00",
+         "timestamp": "2026-01-01T00:00:04+00:00",
          "metadata": {
-          "turn_id": "00000000-0000-4000-8000-000000000003"
+          "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
          },
          "tool_calls": null,
          "tool_call_id": null,
@@ -998,7 +824,7 @@
         {
          "role": "user",
          "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: alpha\nCurrent DAG step title: Collect alpha\nCurrent DAG step description: Collect alpha\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-         "timestamp": "2026-01-01T00:00:04+00:00",
+         "timestamp": "2026-01-01T00:00:05+00:00",
          "metadata": {
           "kind": "dag_step_instruction",
           "dag_step_id": "alpha",
@@ -1013,11 +839,11 @@
         {
          "role": "assistant",
          "content": "",
-         "timestamp": "2026-01-01T00:00:05+00:00",
+         "timestamp": "2026-01-01T00:00:06+00:00",
          "metadata": {},
          "tool_calls": [
           {
-           "id": "call_alpha_0_0",
+           "id": "call_alpha_9_9",
            "type": "function",
            "function": {
             "name": "record",
@@ -1025,7 +851,7 @@
            }
           },
           {
-           "id": "call_alpha_0_1",
+           "id": "call_alpha_9_8",
            "type": "function",
            "function": {
             "name": "record",
@@ -1041,7 +867,7 @@
         {
          "role": "tool",
          "content": "Tool record returned: {'success': True, 'tool': 'record', 'args': {'value': 'alpha-1'}}",
-         "timestamp": "2026-01-01T00:00:06+00:00",
+         "timestamp": "2026-01-01T00:00:07+00:00",
          "metadata": {
           "tool_name": "record",
           "raw_result": {
@@ -1055,10 +881,10 @@
           "workspace_path": null,
           "cwd": null,
           "memory_session_id": null,
-          "invocation_id": "00000000000000000000000000000002"
+          "invocation_id": "fffffffffffffffffffffffffffffffd"
          },
          "tool_calls": null,
-         "tool_call_id": "call_alpha_0_0",
+         "tool_call_id": "call_alpha_9_9",
          "hidden": false,
          "output_tokens": null,
          "context_refs": []
@@ -1085,7 +911,7 @@
        },
        "execution_budget": null,
        "evidence_marker_writer": 1,
-       "created_at": "2026-01-01T00:00:07+00:00",
+       "created_at": "2026-01-01T00:00:08+00:00",
        "llm_calls": [],
        "compact_config": {
         "enabled": true,
@@ -1101,8 +927,7 @@
        "memory_snapshot": null
       },
       "active_step_ids": [
-       "alpha",
-       "beta"
+       "alpha"
       ],
       "active_step_pattern_states": {
        "alpha": {
@@ -1132,14 +957,14 @@
          "content": "",
          "tool_calls": [
           {
-           "id": "call_alpha_0_0",
+           "id": "call_alpha_9_9",
            "function": {
             "name": "record",
             "arguments": "{\"value\": \"alpha-1\"}"
            }
           },
           {
-           "id": "call_alpha_0_1",
+           "id": "call_alpha_9_8",
            "function": {
             "name": "record",
             "arguments": "{\"value\": \"alpha-2\"}"
@@ -1150,8 +975,8 @@
         },
         "pending_tool_calls": [
          {
-          "id": "call_alpha_0_1",
-          "invocation_id": "00000000000000000000000000000001",
+          "id": "call_alpha_9_8",
+          "invocation_id": "fffffffffffffffffffffffffffffffe",
           "issued_at": 1767225602.0,
           "name": "record",
           "args": {
@@ -1161,9 +986,9 @@
         ],
         "pending_tool_call_content": {},
         "tool_ledger": {
-         "00000000000000000000000000000002": {
-          "tool_call_id": "call_alpha_0_0",
-          "invocation_id": "00000000000000000000000000000002",
+         "fffffffffffffffffffffffffffffffd": {
+          "tool_call_id": "call_alpha_9_9",
+          "invocation_id": "fffffffffffffffffffffffffffffffd",
           "tool_name": "record",
           "args": {
            "value": "alpha-1"
@@ -1179,90 +1004,23 @@
           },
           "error": null,
           "settlement_status": null,
-          "turn_id": "00000000-0000-4000-8000-000000000003",
+          "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc",
           "settlement_turn_id": null,
           "settlement_trace_pending": false,
           "step_id": "alpha",
-          "issued_at": 1767225602.0,
+          "issued_at": 1767225603.0,
           "tool_attempt_id": null,
           "assistant_message_id": null
          }
         },
         "tool_call_id_index": {
-         "call_alpha_0_0": "00000000000000000000000000000002"
+         "call_alpha_9_9": "fffffffffffffffffffffffffffffffd"
         }
-       },
-       "beta": {
-        "reasoning_mode": "tool_calling",
-        "status": "acting",
-        "current_iteration": 0,
-        "iteration_limit_delivery_attempted": false,
-        "max_iterations": 200,
-        "finalize_after_tool_result": false,
-        "tool_parallel_enabled": false,
-        "tool_max_concurrency": 3,
-        "repeated_tool_decision_after_consecutive_tool_calls": 4,
-        "repeated_tool_decision_after_consecutive_work_tool_calls": 10,
-        "force_final_answer_next": false,
-        "forced_answer_reads_used": 0,
-        "forced_answer_reads_rejected": 0,
-        "forced_answer_read_open": false,
-        "forced_answer_extra_iterations": 0,
-        "settlement_final_answer_fence": false,
-        "settlement_fence_turn_id": null,
-        "repeated_tool_decision": null,
-        "waiting_for_user_request": null,
-        "pending_tool_interaction_responses": [],
-        "task_text": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: beta\nCurrent DAG step title: Collect beta\nCurrent DAG step description: Collect beta\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-        "memory_input_text": "Do the work.",
-        "last_response": {
-         "content": "",
-         "tool_calls": [
-          {
-           "id": "call_beta_0_0",
-           "function": {
-            "name": "record",
-            "arguments": "{\"value\": \"beta-1\"}"
-           }
-          },
-          {
-           "id": "call_beta_0_1",
-           "function": {
-            "name": "record",
-            "arguments": "{\"value\": \"beta-2\"}"
-           }
-          }
-         ],
-         "done": false
-        },
-        "pending_tool_calls": [
-         {
-          "id": "call_beta_0_0",
-          "invocation_id": "00000000000000000000000000000005",
-          "issued_at": 1767225608.0,
-          "name": "record",
-          "args": {
-           "value": "beta-1"
-          }
-         },
-         {
-          "id": "call_beta_0_1",
-          "invocation_id": "00000000000000000000000000000006",
-          "issued_at": 1767225608.0,
-          "name": "record",
-          "args": {
-           "value": "beta-2"
-          }
-         }
-        ],
-        "pending_tool_call_content": {},
-        "tool_ledger": {},
-        "tool_call_id_index": {}
        }
       },
       "active_step_contexts": {
        "alpha": {
-        "execution_id": "compat-exec_child_00000004",
+        "execution_id": "compat-exec_child_fffffffb",
         "user_id": null,
         "session_id": null,
         "components": {
@@ -1281,9 +1039,9 @@
          {
           "role": "user",
           "content": "Do the work.",
-          "timestamp": "2026-01-01T00:00:03+00:00",
+          "timestamp": "2026-01-01T00:00:04+00:00",
           "metadata": {
-           "turn_id": "00000000-0000-4000-8000-000000000003"
+           "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
           },
           "tool_calls": null,
           "tool_call_id": null,
@@ -1294,7 +1052,7 @@
          {
           "role": "user",
           "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: alpha\nCurrent DAG step title: Collect alpha\nCurrent DAG step description: Collect alpha\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-          "timestamp": "2026-01-01T00:00:04+00:00",
+          "timestamp": "2026-01-01T00:00:05+00:00",
           "metadata": {
            "kind": "dag_step_instruction",
            "dag_step_id": "alpha",
@@ -1309,11 +1067,11 @@
          {
           "role": "assistant",
           "content": "",
-          "timestamp": "2026-01-01T00:00:05+00:00",
+          "timestamp": "2026-01-01T00:00:06+00:00",
           "metadata": {},
           "tool_calls": [
            {
-            "id": "call_alpha_0_0",
+            "id": "call_alpha_9_9",
             "type": "function",
             "function": {
              "name": "record",
@@ -1321,7 +1079,7 @@
             }
            },
            {
-            "id": "call_alpha_0_1",
+            "id": "call_alpha_9_8",
             "type": "function",
             "function": {
              "name": "record",
@@ -1337,7 +1095,7 @@
          {
           "role": "tool",
           "content": "Tool record returned: {'success': True, 'tool': 'record', 'args': {'value': 'alpha-1'}}",
-          "timestamp": "2026-01-01T00:00:06+00:00",
+          "timestamp": "2026-01-01T00:00:07+00:00",
           "metadata": {
            "tool_name": "record",
            "raw_result": {
@@ -1351,10 +1109,10 @@
            "workspace_path": null,
            "cwd": null,
            "memory_session_id": null,
-           "invocation_id": "00000000000000000000000000000002"
+           "invocation_id": "fffffffffffffffffffffffffffffffd"
           },
           "tool_calls": null,
-          "tool_call_id": "call_alpha_0_0",
+          "tool_call_id": "call_alpha_9_9",
           "hidden": false,
           "output_tokens": null,
           "context_refs": []
@@ -1381,117 +1139,7 @@
         },
         "execution_budget": null,
         "evidence_marker_writer": 1,
-        "created_at": "2026-01-01T00:00:07+00:00",
-        "llm_calls": [],
-        "compact_config": {
-         "enabled": true,
-         "threshold": 32000,
-         "threshold_source": "default",
-         "max_messages": 20
-        },
-        "workspace_id": null,
-        "workspace_path": null,
-        "cwd": null,
-        "workspace_state": {},
-        "memory_session_id": null,
-        "memory_snapshot": null
-       },
-       "beta": {
-        "execution_id": "compat-exec_child_00000007",
-        "user_id": null,
-        "session_id": null,
-        "components": {
-         "workspace": {
-          "workspace_id": null,
-          "workspace_path": null,
-          "cwd": null,
-          "state": {}
-         },
-         "memory": {
-          "session_id": null,
-          "snapshot": null
-         }
-        },
-        "messages": [
-         {
-          "role": "user",
-          "content": "Do the work.",
-          "timestamp": "2026-01-01T00:00:03+00:00",
-          "metadata": {
-           "turn_id": "00000000-0000-4000-8000-000000000003"
-          },
-          "tool_calls": null,
-          "tool_call_id": null,
-          "hidden": false,
-          "output_tokens": null,
-          "context_refs": []
-         },
-         {
-          "role": "user",
-          "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: beta\nCurrent DAG step title: Collect beta\nCurrent DAG step description: Collect beta\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-          "timestamp": "2026-01-01T00:00:09+00:00",
-          "metadata": {
-           "kind": "dag_step_instruction",
-           "dag_step_id": "beta",
-           "dag_completion_evidence": ""
-          },
-          "tool_calls": null,
-          "tool_call_id": null,
-          "hidden": false,
-          "output_tokens": null,
-          "context_refs": []
-         },
-         {
-          "role": "assistant",
-          "content": "",
-          "timestamp": "2026-01-01T00:00:10+00:00",
-          "metadata": {},
-          "tool_calls": [
-           {
-            "id": "call_beta_0_0",
-            "type": "function",
-            "function": {
-             "name": "record",
-             "arguments": "{\"value\": \"beta-1\"}"
-            }
-           },
-           {
-            "id": "call_beta_0_1",
-            "type": "function",
-            "function": {
-             "name": "record",
-             "arguments": "{\"value\": \"beta-2\"}"
-            }
-           }
-          ],
-          "tool_call_id": null,
-          "hidden": false,
-          "output_tokens": null,
-          "context_refs": []
-         }
-        ],
-        "system_prompt": null,
-        "metadata": {
-         "tool_evidence_removed": false,
-         "task": "Do the work.",
-         "_xagent_top_level_user_request": {
-          "execution_text": "Do the work.",
-          "language_text": "Do the work.",
-          "display_state": "missing"
-         },
-         "dag_step_id": "beta",
-         "dag_step_name": "Collect beta",
-         "dag_step_description": "Collect beta",
-         "dag_dependencies": [],
-         "dag_tool_names": [
-          "record"
-         ],
-         "output_language": "",
-         "image_edit_unavailable": false
-        },
-        "execution_budget": null,
-        "evidence_marker_writer": 1,
-        "created_at": "2026-01-01T00:00:11+00:00",
+        "created_at": "2026-01-01T00:00:08+00:00",
         "llm_calls": [],
         "compact_config": {
          "enabled": true,
@@ -1519,16 +1167,14 @@
       "max_completion_replans": 3
      },
      "children": [
-      "compat-exec:dag_step:alpha",
-      "compat-exec:dag_step:beta"
+      "compat-exec:dag_step:alpha"
      ],
      "active_child_id": "compat-exec:dag_step:alpha",
      "tool_calls": {},
      "metadata": {
       "active_step_id": "alpha",
       "active_step_ids": [
-       "alpha",
-       "beta"
+       "alpha"
       ],
       "plan_step_count": 2
      }
@@ -1540,7 +1186,7 @@
      "pattern_type": "react",
      "status": "running",
      "context": {
-      "execution_id": "compat-exec_child_00000004",
+      "execution_id": "compat-exec_child_fffffffb",
       "user_id": null,
       "session_id": null,
       "components": {
@@ -1559,9 +1205,9 @@
        {
         "role": "user",
         "content": "Do the work.",
-        "timestamp": "2026-01-01T00:00:03+00:00",
+        "timestamp": "2026-01-01T00:00:04+00:00",
         "metadata": {
-         "turn_id": "00000000-0000-4000-8000-000000000003"
+         "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
         },
         "tool_calls": null,
         "tool_call_id": null,
@@ -1572,7 +1218,7 @@
        {
         "role": "user",
         "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: alpha\nCurrent DAG step title: Collect alpha\nCurrent DAG step description: Collect alpha\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-        "timestamp": "2026-01-01T00:00:04+00:00",
+        "timestamp": "2026-01-01T00:00:05+00:00",
         "metadata": {
          "kind": "dag_step_instruction",
          "dag_step_id": "alpha",
@@ -1587,11 +1233,11 @@
        {
         "role": "assistant",
         "content": "",
-        "timestamp": "2026-01-01T00:00:05+00:00",
+        "timestamp": "2026-01-01T00:00:06+00:00",
         "metadata": {},
         "tool_calls": [
          {
-          "id": "call_alpha_0_0",
+          "id": "call_alpha_9_9",
           "type": "function",
           "function": {
            "name": "record",
@@ -1599,7 +1245,7 @@
           }
          },
          {
-          "id": "call_alpha_0_1",
+          "id": "call_alpha_9_8",
           "type": "function",
           "function": {
            "name": "record",
@@ -1615,7 +1261,7 @@
        {
         "role": "tool",
         "content": "Tool record returned: {'success': True, 'tool': 'record', 'args': {'value': 'alpha-1'}}",
-        "timestamp": "2026-01-01T00:00:06+00:00",
+        "timestamp": "2026-01-01T00:00:07+00:00",
         "metadata": {
          "tool_name": "record",
          "raw_result": {
@@ -1629,10 +1275,10 @@
          "workspace_path": null,
          "cwd": null,
          "memory_session_id": null,
-         "invocation_id": "00000000000000000000000000000002"
+         "invocation_id": "fffffffffffffffffffffffffffffffd"
         },
         "tool_calls": null,
-        "tool_call_id": "call_alpha_0_0",
+        "tool_call_id": "call_alpha_9_9",
         "hidden": false,
         "output_tokens": null,
         "context_refs": []
@@ -1659,7 +1305,7 @@
       },
       "execution_budget": null,
       "evidence_marker_writer": 1,
-      "created_at": "2026-01-01T00:00:07+00:00",
+      "created_at": "2026-01-01T00:00:08+00:00",
       "llm_calls": [],
       "compact_config": {
        "enabled": true,
@@ -1701,14 +1347,14 @@
        "content": "",
        "tool_calls": [
         {
-         "id": "call_alpha_0_0",
+         "id": "call_alpha_9_9",
          "function": {
           "name": "record",
           "arguments": "{\"value\": \"alpha-1\"}"
          }
         },
         {
-         "id": "call_alpha_0_1",
+         "id": "call_alpha_9_8",
          "function": {
           "name": "record",
           "arguments": "{\"value\": \"alpha-2\"}"
@@ -1719,8 +1365,8 @@
       },
       "pending_tool_calls": [
        {
-        "id": "call_alpha_0_1",
-        "invocation_id": "00000000000000000000000000000001",
+        "id": "call_alpha_9_8",
+        "invocation_id": "fffffffffffffffffffffffffffffffe",
         "issued_at": 1767225602.0,
         "name": "record",
         "args": {
@@ -1730,9 +1376,9 @@
       ],
       "pending_tool_call_content": {},
       "tool_ledger": {
-       "00000000000000000000000000000002": {
-        "tool_call_id": "call_alpha_0_0",
-        "invocation_id": "00000000000000000000000000000002",
+       "fffffffffffffffffffffffffffffffd": {
+        "tool_call_id": "call_alpha_9_9",
+        "invocation_id": "fffffffffffffffffffffffffffffffd",
         "tool_name": "record",
         "args": {
          "value": "alpha-1"
@@ -1748,17 +1394,17 @@
         },
         "error": null,
         "settlement_status": null,
-        "turn_id": "00000000-0000-4000-8000-000000000003",
+        "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc",
         "settlement_turn_id": null,
         "settlement_trace_pending": false,
         "step_id": "alpha",
-        "issued_at": 1767225602.0,
+        "issued_at": 1767225603.0,
         "tool_attempt_id": null,
         "assistant_message_id": null
        }
       },
       "tool_call_id_index": {
-       "call_alpha_0_0": "00000000000000000000000000000002"
+       "call_alpha_9_9": "fffffffffffffffffffffffffffffffd"
       }
      },
      "children": [],
@@ -1767,209 +1413,18 @@
      "metadata": {
       "dag_step_id": "alpha"
      }
-    },
-    "compat-exec:dag_step:beta": {
-     "frame_id": "compat-exec:dag_step:beta",
-     "parent_frame_id": "compat-exec:dag",
-     "root_execution_id": "compat-exec",
-     "pattern_type": "react",
-     "status": "running",
-     "context": {
-      "execution_id": "compat-exec_child_00000007",
-      "user_id": null,
-      "session_id": null,
-      "components": {
-       "workspace": {
-        "workspace_id": null,
-        "workspace_path": null,
-        "cwd": null,
-        "state": {}
-       },
-       "memory": {
-        "session_id": null,
-        "snapshot": null
-       }
-      },
-      "messages": [
-       {
-        "role": "user",
-        "content": "Do the work.",
-        "timestamp": "2026-01-01T00:00:03+00:00",
-        "metadata": {
-         "turn_id": "00000000-0000-4000-8000-000000000003"
-        },
-        "tool_calls": null,
-        "tool_call_id": null,
-        "hidden": false,
-        "output_tokens": null,
-        "context_refs": []
-       },
-       {
-        "role": "user",
-        "content": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: beta\nCurrent DAG step title: Collect beta\nCurrent DAG step description: Collect beta\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-        "timestamp": "2026-01-01T00:00:09+00:00",
-        "metadata": {
-         "kind": "dag_step_instruction",
-         "dag_step_id": "beta",
-         "dag_completion_evidence": ""
-        },
-        "tool_calls": null,
-        "tool_call_id": null,
-        "hidden": false,
-        "output_tokens": null,
-        "context_refs": []
-       },
-       {
-        "role": "assistant",
-        "content": "",
-        "timestamp": "2026-01-01T00:00:10+00:00",
-        "metadata": {},
-        "tool_calls": [
-         {
-          "id": "call_beta_0_0",
-          "type": "function",
-          "function": {
-           "name": "record",
-           "arguments": "{\"value\": \"beta-1\"}"
-          }
-         },
-         {
-          "id": "call_beta_0_1",
-          "type": "function",
-          "function": {
-           "name": "record",
-           "arguments": "{\"value\": \"beta-2\"}"
-          }
-         }
-        ],
-        "tool_call_id": null,
-        "hidden": false,
-        "output_tokens": null,
-        "context_refs": []
-       }
-      ],
-      "system_prompt": null,
-      "metadata": {
-       "tool_evidence_removed": false,
-       "task": "Do the work.",
-       "_xagent_top_level_user_request": {
-        "execution_text": "Do the work.",
-        "language_text": "Do the work.",
-        "display_state": "missing"
-       },
-       "dag_step_id": "beta",
-       "dag_step_name": "Collect beta",
-       "dag_step_description": "Collect beta",
-       "dag_dependencies": [],
-       "dag_tool_names": [
-        "record"
-       ],
-       "output_language": "",
-       "image_edit_unavailable": false
-      },
-      "execution_budget": null,
-      "evidence_marker_writer": 1,
-      "created_at": "2026-01-01T00:00:11+00:00",
-      "llm_calls": [],
-      "compact_config": {
-       "enabled": true,
-       "threshold": 32000,
-       "threshold_source": "default",
-       "max_messages": 20
-      },
-      "workspace_id": null,
-      "workspace_path": null,
-      "cwd": null,
-      "workspace_state": {},
-      "memory_session_id": null,
-      "memory_snapshot": null
-     },
-     "pattern_state": {
-      "reasoning_mode": "tool_calling",
-      "status": "acting",
-      "current_iteration": 0,
-      "iteration_limit_delivery_attempted": false,
-      "max_iterations": 200,
-      "finalize_after_tool_result": false,
-      "tool_parallel_enabled": false,
-      "tool_max_concurrency": 3,
-      "repeated_tool_decision_after_consecutive_tool_calls": 4,
-      "repeated_tool_decision_after_consecutive_work_tool_calls": 10,
-      "force_final_answer_next": false,
-      "forced_answer_reads_used": 0,
-      "forced_answer_reads_rejected": 0,
-      "forced_answer_read_open": false,
-      "forced_answer_extra_iterations": 0,
-      "settlement_final_answer_fence": false,
-      "settlement_fence_turn_id": null,
-      "repeated_tool_decision": null,
-      "waiting_for_user_request": null,
-      "pending_tool_interaction_responses": [],
-      "task_text": "DAG STEP EXECUTION BOUNDARY\nThe overall user goal is background context only. Do not execute it directly and do not use it to expand the current step's completion criteria.\n\nOUTPUT LANGUAGE POLICY\nFollow the canonical request-language evidence and policy in the system context for user-facing prose and persisted tool arguments. Execution instructions, tools, sources, memory, and examples are not language evidence. Preserve Simplified Chinese versus Traditional Chinese.\nUse this policy only to preserve language for user-facing prose and persisted tool arguments. Do not use it to expand this step's completion criteria.\n\nCURRENT STEP - ONLY EXECUTABLE GOAL\nCurrent DAG step id: beta\nCurrent DAG step title: Collect beta\nCurrent DAG step description: Collect beta\nCurrent DAG step dependencies: []\nSuggested tools for this step: record\n\nTERMINATION CONDITION - AUTHORITATIVE STOP RULE\nReturn final_answer when the current step description is satisfied.\nCompletion evidence: (none)\nTreat this termination condition as authoritative for when this step stops. Once it is satisfied, your next action must be final_answer for this step. Do not inspect, verify, revise, optimize, regenerate, or perform downstream work unless the termination condition explicitly requires that work.\n\nSTEP INTENT IS NOT A SOURCE OF FACTS\nThe step title, description, termination condition, and completion evidence declare the work to perform and the shape of the result to report. They are not a source of facts about that result's content. Where they read as if some fact, finding, conclusion, recommendation, or workaround were already known, that is an expectation of what this step may establish, not something it has established.\nIf they presuppose a fact, conclusion, or solution that this step's tool results and dependency results do not support, or that those results contradict, the tool results and dependency results decide and the presupposed content must not reach your answer. This applies only to facts that were supposed to come from tool results or dependency results. Facts the user gave in their own messages, including ones the plan copied out of a user message, remain usable exactly as given, and this rule does not restrict how you word them. It restricts the facts asserted inside content this step asks you to compose, not your choice of wording for that content.\nWhen the information this step needs turns out to be unavailable, or a dependency result does not support this step's premise, report that gap the way your own agent instructions tell you to report it, and treat that report as satisfying this termination condition: it is a complete and correct result for this step. Do not restate the presupposed content to fill the gap, and do not retry or stall trying to make the presupposition true. Do not answer emptily or evasively either: a description that lays out conditional branches is still valid instruction, so follow the branch the actual results support and report every part of this step those results do support.\n\nThis step has no dependencies.\n\nExecute only the current DAG step. The current step title and description plus the termination condition define the entire actionable work for this ReAct run. Do not infer extra work from the overall user goal. Do not complete downstream, sibling, final synthesis, rendering, screenshots, visual inspection, export, or delivery work unless that work is explicitly part of this current step description. If the current step creates an artifact that a later step will render, inspect, export, or deliver, stop after creating that artifact and report it as this step's result. Treat the suggested tools as the primary tool scope for this step. Prefer those tools and avoid other tools unless this current step cannot be completed or recovered without them. If no suggested tools are listed, do not call tools unless the step clearly cannot be completed from the provided context and dependency results. When this step is done, return a final answer for this step only.",
-      "memory_input_text": "Do the work.",
-      "last_response": {
-       "content": "",
-       "tool_calls": [
-        {
-         "id": "call_beta_0_0",
-         "function": {
-          "name": "record",
-          "arguments": "{\"value\": \"beta-1\"}"
-         }
-        },
-        {
-         "id": "call_beta_0_1",
-         "function": {
-          "name": "record",
-          "arguments": "{\"value\": \"beta-2\"}"
-         }
-        }
-       ],
-       "done": false
-      },
-      "pending_tool_calls": [
-       {
-        "id": "call_beta_0_0",
-        "invocation_id": "00000000000000000000000000000005",
-        "issued_at": 1767225608.0,
-        "name": "record",
-        "args": {
-         "value": "beta-1"
-        }
-       },
-       {
-        "id": "call_beta_0_1",
-        "invocation_id": "00000000000000000000000000000006",
-        "issued_at": 1767225608.0,
-        "name": "record",
-        "args": {
-         "value": "beta-2"
-        }
-       }
-      ],
-      "pending_tool_call_content": {},
-      "tool_ledger": {},
-      "tool_call_id_index": {}
-     },
-     "children": [],
-     "active_child_id": null,
-     "tool_calls": {},
-     "metadata": {
-      "dag_step_id": "beta"
-     }
     }
    },
    "active_frame_ids": [
     "compat-exec:dag",
-    "compat-exec:dag_step:alpha",
-    "compat-exec:dag_step:beta"
+    "compat-exec:dag_step:alpha"
    ],
    "control_state": {
     "planned_user_message_count": 1,
     "replan_owed_step_ids": [],
     "max_concurrency": 2
    },
-   "updated_at": "2026-01-01T00:00:13+00:00",
+   "updated_at": "2026-01-01T00:00:11+00:00",
    "schema_version": 1
   }
  }

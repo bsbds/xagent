@@ -5,11 +5,11 @@
  "execution_id": "compat-exec",
  "sequence": null,
  "status": "running",
- "label": "auto_child_before_tool",
+ "label": "auto_child_after_llm",
  "saved_at": "2026-01-01T00:00:01+00:00",
  "snapshot": {
   "type": "checkpoint",
-  "label": "auto_child_before_tool",
+  "label": "auto_child_after_llm",
   "execution_id": "compat-exec",
   "pattern": "AutoPattern",
   "pattern_state": {
@@ -56,14 +56,14 @@
      "content": "",
      "tool_calls": [
       {
-       "id": "call_task_0_0",
+       "id": "call_task_9_9",
        "function": {
         "name": "record",
         "arguments": "{\"value\": \"task-1\"}"
        }
       },
       {
-       "id": "call_task_0_1",
+       "id": "call_task_9_8",
        "function": {
         "name": "record",
         "arguments": "{\"value\": \"task-2\"}"
@@ -74,26 +74,22 @@
     },
     "pending_tool_calls": [
      {
-      "id": "call_task_0_0",
-      "invocation_id": "00000000000000000000000000000001",
+      "id": "call_task_9_9",
+      "invocation_id": "fffffffffffffffffffffffffffffffe",
       "issued_at": 1767225602.0,
       "name": "record",
       "args": {
        "value": "task-1"
-      },
-      "assistant_message_id": "00000000-0000-4000-8000-000000000002",
-      "tool_attempt_id": "00000000-0000-4000-8000-000000000003"
+      }
      },
      {
-      "id": "call_task_0_1",
-      "invocation_id": "00000000000000000000000000000004",
-      "issued_at": 1767225602.0,
+      "id": "call_task_9_8",
+      "invocation_id": "fffffffffffffffffffffffffffffffd",
+      "issued_at": 1767225603.0,
       "name": "record",
       "args": {
        "value": "task-2"
-      },
-      "assistant_message_id": "00000000-0000-4000-8000-000000000002",
-      "tool_attempt_id": "00000000-0000-4000-8000-000000000005"
+      }
      }
     ],
     "pending_tool_call_content": {},
@@ -123,9 +119,9 @@
     {
      "role": "user",
      "content": "Do the work.",
-     "timestamp": "2026-01-01T00:00:03+00:00",
+     "timestamp": "2026-01-01T00:00:04+00:00",
      "metadata": {
-      "turn_id": "00000000-0000-4000-8000-000000000006"
+      "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
      },
      "tool_calls": null,
      "tool_call_id": null,
@@ -136,11 +132,11 @@
     {
      "role": "assistant",
      "content": "",
-     "timestamp": "2026-01-01T00:00:04+00:00",
+     "timestamp": "2026-01-01T00:00:05+00:00",
      "metadata": {},
      "tool_calls": [
       {
-       "id": "call_task_0_0",
+       "id": "call_task_9_9",
        "type": "function",
        "function": {
         "name": "record",
@@ -148,7 +144,7 @@
        }
       },
       {
-       "id": "call_task_0_1",
+       "id": "call_task_9_8",
        "type": "function",
        "function": {
         "name": "record",
@@ -168,7 +164,7 @@
     "task": "Do the work.",
     "_accepted_user_turn_ids": [
      [
-      "00000000-0000-4000-8000-000000000006",
+      "ffffffff-ffff-4fff-bfff-fffffffffffc",
       "2048027dc7ced3c3a0a4db24725f20b9"
      ]
     ],
@@ -181,7 +177,7 @@
    },
    "execution_budget": null,
    "evidence_marker_writer": 1,
-   "created_at": "2026-01-01T00:00:05+00:00",
+   "created_at": "2026-01-01T00:00:06+00:00",
    "llm_calls": [],
    "compact_config": {
     "enabled": true,
@@ -198,19 +194,8 @@
   },
   "status": "running",
   "metadata": {
-   "child_label": "before_tool",
-   "child_pattern": "ReActPattern",
-   "tool_call": {
-    "id": "call_task_0_0",
-    "invocation_id": "00000000000000000000000000000001",
-    "issued_at": 1767225602.0,
-    "name": "record",
-    "args": {
-     "value": "task-1"
-    },
-    "assistant_message_id": "00000000-0000-4000-8000-000000000002",
-    "tool_attempt_id": "00000000-0000-4000-8000-000000000003"
-   }
+   "child_label": "after_llm",
+   "child_pattern": "ReActPattern"
   },
   "execution_snapshot": {
    "root_execution_id": "compat-exec",
@@ -242,9 +227,9 @@
        {
         "role": "user",
         "content": "Do the work.",
-        "timestamp": "2026-01-01T00:00:03+00:00",
+        "timestamp": "2026-01-01T00:00:04+00:00",
         "metadata": {
-         "turn_id": "00000000-0000-4000-8000-000000000006"
+         "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
         },
         "tool_calls": null,
         "tool_call_id": null,
@@ -255,11 +240,11 @@
        {
         "role": "assistant",
         "content": "",
-        "timestamp": "2026-01-01T00:00:04+00:00",
+        "timestamp": "2026-01-01T00:00:05+00:00",
         "metadata": {},
         "tool_calls": [
          {
-          "id": "call_task_0_0",
+          "id": "call_task_9_9",
           "type": "function",
           "function": {
            "name": "record",
@@ -267,7 +252,7 @@
           }
          },
          {
-          "id": "call_task_0_1",
+          "id": "call_task_9_8",
           "type": "function",
           "function": {
            "name": "record",
@@ -287,7 +272,7 @@
        "task": "Do the work.",
        "_accepted_user_turn_ids": [
         [
-         "00000000-0000-4000-8000-000000000006",
+         "ffffffff-ffff-4fff-bfff-fffffffffffc",
          "2048027dc7ced3c3a0a4db24725f20b9"
         ]
        ],
@@ -300,7 +285,7 @@
       },
       "execution_budget": null,
       "evidence_marker_writer": 1,
-      "created_at": "2026-01-01T00:00:05+00:00",
+      "created_at": "2026-01-01T00:00:06+00:00",
       "llm_calls": [],
       "compact_config": {
        "enabled": true,
@@ -359,14 +344,14 @@
         "content": "",
         "tool_calls": [
          {
-          "id": "call_task_0_0",
+          "id": "call_task_9_9",
           "function": {
            "name": "record",
            "arguments": "{\"value\": \"task-1\"}"
           }
          },
          {
-          "id": "call_task_0_1",
+          "id": "call_task_9_8",
           "function": {
            "name": "record",
            "arguments": "{\"value\": \"task-2\"}"
@@ -377,26 +362,22 @@
        },
        "pending_tool_calls": [
         {
-         "id": "call_task_0_0",
-         "invocation_id": "00000000000000000000000000000001",
+         "id": "call_task_9_9",
+         "invocation_id": "fffffffffffffffffffffffffffffffe",
          "issued_at": 1767225602.0,
          "name": "record",
          "args": {
           "value": "task-1"
-         },
-         "assistant_message_id": "00000000-0000-4000-8000-000000000002",
-         "tool_attempt_id": "00000000-0000-4000-8000-000000000003"
+         }
         },
         {
-         "id": "call_task_0_1",
-         "invocation_id": "00000000000000000000000000000004",
-         "issued_at": 1767225602.0,
+         "id": "call_task_9_8",
+         "invocation_id": "fffffffffffffffffffffffffffffffd",
+         "issued_at": 1767225603.0,
          "name": "record",
          "args": {
           "value": "task-2"
-         },
-         "assistant_message_id": "00000000-0000-4000-8000-000000000002",
-         "tool_attempt_id": "00000000-0000-4000-8000-000000000005"
+         }
         }
        ],
        "pending_tool_call_content": {},
@@ -441,9 +422,9 @@
        {
         "role": "user",
         "content": "Do the work.",
-        "timestamp": "2026-01-01T00:00:03+00:00",
+        "timestamp": "2026-01-01T00:00:04+00:00",
         "metadata": {
-         "turn_id": "00000000-0000-4000-8000-000000000006"
+         "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
         },
         "tool_calls": null,
         "tool_call_id": null,
@@ -454,11 +435,11 @@
        {
         "role": "assistant",
         "content": "",
-        "timestamp": "2026-01-01T00:00:04+00:00",
+        "timestamp": "2026-01-01T00:00:05+00:00",
         "metadata": {},
         "tool_calls": [
          {
-          "id": "call_task_0_0",
+          "id": "call_task_9_9",
           "type": "function",
           "function": {
            "name": "record",
@@ -466,7 +447,7 @@
           }
          },
          {
-          "id": "call_task_0_1",
+          "id": "call_task_9_8",
           "type": "function",
           "function": {
            "name": "record",
@@ -486,7 +467,7 @@
        "task": "Do the work.",
        "_accepted_user_turn_ids": [
         [
-         "00000000-0000-4000-8000-000000000006",
+         "ffffffff-ffff-4fff-bfff-fffffffffffc",
          "2048027dc7ced3c3a0a4db24725f20b9"
         ]
        ],
@@ -499,7 +480,7 @@
       },
       "execution_budget": null,
       "evidence_marker_writer": 1,
-      "created_at": "2026-01-01T00:00:05+00:00",
+      "created_at": "2026-01-01T00:00:06+00:00",
       "llm_calls": [],
       "compact_config": {
        "enabled": true,
@@ -541,14 +522,14 @@
        "content": "",
        "tool_calls": [
         {
-         "id": "call_task_0_0",
+         "id": "call_task_9_9",
          "function": {
           "name": "record",
           "arguments": "{\"value\": \"task-1\"}"
          }
         },
         {
-         "id": "call_task_0_1",
+         "id": "call_task_9_8",
          "function": {
           "name": "record",
           "arguments": "{\"value\": \"task-2\"}"
@@ -559,26 +540,22 @@
       },
       "pending_tool_calls": [
        {
-        "id": "call_task_0_0",
-        "invocation_id": "00000000000000000000000000000001",
+        "id": "call_task_9_9",
+        "invocation_id": "fffffffffffffffffffffffffffffffe",
         "issued_at": 1767225602.0,
         "name": "record",
         "args": {
          "value": "task-1"
-        },
-        "assistant_message_id": "00000000-0000-4000-8000-000000000002",
-        "tool_attempt_id": "00000000-0000-4000-8000-000000000003"
+        }
        },
        {
-        "id": "call_task_0_1",
-        "invocation_id": "00000000000000000000000000000004",
-        "issued_at": 1767225602.0,
+        "id": "call_task_9_8",
+        "invocation_id": "fffffffffffffffffffffffffffffffd",
+        "issued_at": 1767225603.0,
         "name": "record",
         "args": {
          "value": "task-2"
-        },
-        "assistant_message_id": "00000000-0000-4000-8000-000000000002",
-        "tool_attempt_id": "00000000-0000-4000-8000-000000000005"
+        }
        }
       ],
       "pending_tool_call_content": {},
@@ -598,7 +575,7 @@
    "control_state": {
     "selected_pattern": "react"
    },
-   "updated_at": "2026-01-01T00:00:06+00:00",
+   "updated_at": "2026-01-01T00:00:07+00:00",
    "schema_version": 1
   }
  }

@@ -5,11 +5,11 @@
  "execution_id": "compat-exec",
  "sequence": null,
  "status": "acting",
- "label": "after_tool",
+ "label": "after_llm",
  "saved_at": "2026-01-01T00:00:01+00:00",
  "snapshot": {
   "type": "checkpoint",
-  "label": "after_tool",
+  "label": "after_llm",
   "execution_id": "compat-exec",
   "pattern": "ReActPattern",
   "pattern_state": {
@@ -39,14 +39,14 @@
     "content": "",
     "tool_calls": [
      {
-      "id": "call_task_0_0",
+      "id": "call_task_9_9",
       "function": {
        "name": "record",
        "arguments": "{\"value\": \"task-1\"}"
       }
      },
      {
-      "id": "call_task_0_1",
+      "id": "call_task_9_8",
       "function": {
        "name": "record",
        "arguments": "{\"value\": \"task-2\"}"
@@ -57,47 +57,31 @@
    },
    "pending_tool_calls": [
     {
-     "id": "call_task_0_1",
-     "invocation_id": "00000000000000000000000000000001",
+     "id": "call_task_9_9",
+     "invocation_id": "fffffffffffffffffffffffffffffffe",
      "issued_at": 1767225602.0,
      "name": "record",
      "args": {
+      "value": "task-1"
+     },
+     "assistant_message_id": "ffffffff-ffff-4fff-bfff-fffffffffffd",
+     "tool_attempt_id": "ffffffff-ffff-4fff-bfff-fffffffffffc"
+    },
+    {
+     "id": "call_task_9_8",
+     "invocation_id": "fffffffffffffffffffffffffffffffb",
+     "issued_at": 1767225603.0,
+     "name": "record",
+     "args": {
       "value": "task-2"
-     }
+     },
+     "assistant_message_id": "ffffffff-ffff-4fff-bfff-fffffffffffd",
+     "tool_attempt_id": "ffffffff-ffff-4fff-bfff-fffffffffffa"
     }
    ],
    "pending_tool_call_content": {},
-   "tool_ledger": {
-    "00000000000000000000000000000002": {
-     "tool_call_id": "call_task_0_0",
-     "invocation_id": "00000000000000000000000000000002",
-     "tool_name": "record",
-     "args": {
-      "value": "task-1"
-     },
-     "args_hash": "459a8799a331aacf8f4497749946bfed11fdcee9ef5bc6be04a596ca86f6cb5d",
-     "status": "completed",
-     "result": {
-      "success": true,
-      "tool": "record",
-      "args": {
-       "value": "task-1"
-      }
-     },
-     "error": null,
-     "settlement_status": null,
-     "turn_id": "00000000-0000-4000-8000-000000000003",
-     "settlement_turn_id": null,
-     "settlement_trace_pending": false,
-     "step_id": "react_00000004",
-     "issued_at": 1767225602.0,
-     "tool_attempt_id": null,
-     "assistant_message_id": null
-    }
-   },
-   "tool_call_id_index": {
-    "call_task_0_0": "00000000000000000000000000000002"
-   }
+   "tool_ledger": {},
+   "tool_call_id_index": {}
   },
   "context": {
    "execution_id": "compat-exec",
@@ -119,9 +103,9 @@
     {
      "role": "user",
      "content": "Do the work.",
-     "timestamp": "2026-01-01T00:00:03+00:00",
+     "timestamp": "2026-01-01T00:00:04+00:00",
      "metadata": {
-      "turn_id": "00000000-0000-4000-8000-000000000003"
+      "turn_id": "ffffffff-ffff-4fff-bfff-fffffffffff9"
      },
      "tool_calls": null,
      "tool_call_id": null,
@@ -132,11 +116,11 @@
     {
      "role": "assistant",
      "content": "",
-     "timestamp": "2026-01-01T00:00:04+00:00",
+     "timestamp": "2026-01-01T00:00:05+00:00",
      "metadata": {},
      "tool_calls": [
       {
-       "id": "call_task_0_0",
+       "id": "call_task_9_9",
        "type": "function",
        "function": {
         "name": "record",
@@ -144,7 +128,7 @@
        }
       },
       {
-       "id": "call_task_0_1",
+       "id": "call_task_9_8",
        "type": "function",
        "function": {
         "name": "record",
@@ -156,31 +140,6 @@
      "hidden": false,
      "output_tokens": null,
      "context_refs": []
-    },
-    {
-     "role": "tool",
-     "content": "Tool record returned: {'success': True, 'tool': 'record', 'args': {'value': 'task-1'}}",
-     "timestamp": "2026-01-01T00:00:05+00:00",
-     "metadata": {
-      "tool_name": "record",
-      "raw_result": {
-       "success": true,
-       "tool": "record",
-       "args": {
-        "value": "task-1"
-       }
-      },
-      "workspace_id": null,
-      "workspace_path": null,
-      "cwd": null,
-      "memory_session_id": null,
-      "invocation_id": "00000000000000000000000000000002"
-     },
-     "tool_calls": null,
-     "tool_call_id": "call_task_0_0",
-     "hidden": false,
-     "output_tokens": null,
-     "context_refs": []
     }
    ],
    "system_prompt": null,
@@ -189,7 +148,7 @@
     "task": "Do the work.",
     "_accepted_user_turn_ids": [
      [
-      "00000000-0000-4000-8000-000000000003",
+      "ffffffff-ffff-4fff-bfff-fffffffffff9",
       "2048027dc7ced3c3a0a4db24725f20b9"
      ]
     ],
@@ -218,16 +177,6 @@
    "memory_snapshot": null
   },
   "status": "acting",
-  "metadata": {
-   "tool_call": {
-    "id": "call_task_0_0",
-    "invocation_id": "00000000000000000000000000000002",
-    "issued_at": 1767225602.0,
-    "name": "record",
-    "args": {
-     "value": "task-1"
-    }
-   }
-  }
+  "metadata": {}
  }
 }

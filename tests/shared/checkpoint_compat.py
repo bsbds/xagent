@@ -7,26 +7,46 @@ Each file is a checkpoint exactly as the release that produced it persisted it
 stays a faithful sample of that release's wire format no matter how the code
 evolves afterwards. This module owns everything needed to *produce* such a set:
 
-* the fake model, fake tool and in-memory checkpoint backend shared by the
+* the fake model, fake tools and in-memory checkpoint backend shared by the
   generator and the test, so the tools a checkpoint names exist on restore;
 * the scenarios, which drive the real ``AgentRunner`` and patterns (ReAct, DAG,
   Auto) with a scripted model and keep the checkpoints worth freezing;
 * a canonicalizer that replaces uuids and timestamps with stable stand-ins, so
   regenerating from the same code is byte-identical and a regenerated set only
   differs where the checkpoint format really changed;
+* ``jsonb_order``, the model of how PostgreSQL hands a checkpoint back;
 * ``main()``, the generator CLI.
 
-Regenerating (release process)
-------------------------------
-On the commit that becomes release ``<release>`` (e.g. the tag ``v0.9.0``)::
+Adding a release's fixtures (release procedure)
+-----------------------------------------------
+A fixture must be produced by the code of the release it stands for, not by
+``main``, so that it is what that release really wrote. When ``vX.Y.Z`` is
+tagged::
 
-    uv run python -m tests.shared.checkpoint_compat <release>
+    git worktree add /tmp/xagent-vX.Y.Z vX.Y.Z
+    cp tests/shared/checkpoint_compat.py /tmp/xagent-vX.Y.Z/tests/shared/
+    cd /tmp/xagent-vX.Y.Z && uv sync --group dev
+    uv run python -m tests.shared.checkpoint_compat vX.Y.Z
 
-This writes ``tests/fixtures/checkpoints/<release>/`` and refuses to touch a
-release that already has fixtures: a frozen set is the whole point, so the only
-way to change one is to delete it first (``rm -r`` the directory). Commit the
-new directory next to the release. Dropping support for an old release is the
-reverse: delete its directory in the same change that makes the break.
+then copy ``tests/fixtures/checkpoints/vX.Y.Z/`` into a branch off ``main`` and open
+a PR with it. Copy the generator from ``main`` so every release is captured by the
+same scenarios; if the tag's API differs (an import moved, a keyword was added),
+patch the *copy* inside the temporary worktree only, never ``main``'s generator
+and never a fixture by hand, and say so in the PR. The generator refuses to
+overwrite a release that already has fixtures, because a frozen set is the whole
+point.
+
+Which releases stay: every release a deployment can still upgrade from while it
+holds paused tasks, and at least the previous one. Prune the oldest by deleting
+its directory in the PR that ends support for it, with a line in the release
+notes; the break and the deletion belong together. Never delete a directory to
+make a failing test pass: the failure is the signal that a paused task would not
+resume.
+
+Changing this module can fail old fixtures without any production break. They
+name tools (``record``, ``lookup``, ``approve``) and depend on the fake model and
+backend behaving as they did, so only ever *add* to the test doubles and keep
+the names; a rename here fails every retained release at once.
 
 Fixture layout and storage
 --------------------------
@@ -40,13 +60,19 @@ DAG checkpoint is large; the concurrent one covers the multi-step reader).
 Fixture names are ``<structure>__<label>``: ``react``, ``dag`` (sequential
 plan), ``dag_concurrent`` (two steps in flight at once), ``auto_react`` and
 ``auto_dag`` (Auto routing into a child), then the checkpoint label with the
-nesting prefix (``auto_child_``, ``dag_``) stripped.
+nesting prefix (``auto_child_``, ``dag_``) stripped. ``react__waiting_for_user``
+is a form question from the model; ``react__waiting_for_tool`` is a question a
+tool put to the user, answered through the tool's resume callback. Both are
+resumed with a structured (JSON) answer. The web layer's own interaction rows
+(``task_interaction_service``) are database state and are not part of the
+checkpoint: the runner only ever receives the answer as a user message.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import itertools
 import json
 import re
 import shutil
@@ -68,12 +94,14 @@ from xagent.core.agent import (
 from xagent.core.agent.checkpoint import CHECKPOINT_TYPE, TraceCheckpointStore
 from xagent.core.agent.pattern.auto.auto import DECISION_TOOL_NAME
 from xagent.core.agent.pattern.dag.dag import DAG_COMPLETION_TOOL_NAME
+from xagent.core.tools.user_interaction import ToolInteractionSettlement
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "checkpoints"
 STORAGES = ("v1", "v2")
 EXECUTION_ID = "compat-exec"
-# The answer posted to a ``waiting_for_user`` checkpoint before it is resumed.
-USER_ANSWER = "Lisbon"
+# The structured answer posted to a ``waiting_for_user`` checkpoint before it is
+# resumed (a form's fields as JSON, as a client submits them).
+USER_ANSWER = json.dumps({"city": "Lisbon", "approved": True})
 
 Envelope = dict[str, Any]
 
@@ -121,6 +149,52 @@ class CompatTool:
         return {"success": True, "tool": self.metadata.name, "args": dict(args)}
 
 
+class ApprovalTool(CompatTool):
+    """A tool that asks the user a form of its own, then settles on the answer.
+
+    Its question reaches the checkpoint as a tool-originated ``waiting_for_user``
+    request (``kind == "tool_waiting_for_user"``), and because it exposes
+    ``resume_user_interaction`` the user's answer is queued as a pending tool
+    interaction response and delivered to it on resume.
+    """
+
+    def __init__(self, *, probe: Probe | None = None) -> None:
+        super().__init__("approve", probe=probe)
+
+    async def run_json_async(self, args: dict[str, Any]) -> dict[str, Any]:
+        if self._probe is not None:
+            await self._probe.stop("tool", (self.metadata.name, dict(args)))
+        return {
+            "status": "waiting_for_user",
+            "message": "Approve the booking?",
+            "interaction_id": "approval-1",
+            "interactions": [
+                {"type": "confirm", "field": "approved", "label": "Approve?"},
+                {
+                    "type": "select_one",
+                    "field": "city",
+                    "label": "City",
+                    "options": [
+                        {"label": "Lisbon", "value": "lisbon"},
+                        {"label": "Porto", "value": "porto"},
+                    ],
+                },
+            ],
+        }
+
+    async def resume_user_interaction(
+        self, *, interaction_id: str, response: str
+    ) -> ToolInteractionSettlement:
+        return ToolInteractionSettlement(
+            status="succeeded",
+            result={
+                "success": True,
+                "interaction_id": interaction_id,
+                "answer": response,
+            },
+        )
+
+
 class Probe:
     """Stops a restored run at the first LLM call or tool step it reaches.
 
@@ -133,7 +207,8 @@ class Probe:
 
     def __init__(self) -> None:
         self.pause: Callable[[], object] = lambda: None
-        # ``("llm", messages sent)`` or ``("tool", (name, args))``.
+        # ``("llm", (messages sent, tool names offered))`` or
+        # ``("tool", (name, args))``.
         self.reached: tuple[str, Any] | None = None
 
     async def stop(self, kind: str, detail: Any) -> None:
@@ -153,7 +228,8 @@ class ProbeLLM:
         self._probe = probe
 
     async def chat(self, **kwargs: Any) -> Any:
-        await self._probe.stop("llm", list(kwargs["messages"]))
+        tool_names = [tool["function"]["name"] for tool in kwargs.get("tools") or []]
+        await self._probe.stop("llm", (list(kwargs["messages"]), tool_names))
 
 
 class CheckpointBackend:
@@ -214,6 +290,10 @@ class ScriptedLLM:
     A string suffix becomes ``{"value": f"{key}-{suffix}"}`` where ``key`` is the
     first of ``keys`` found in the request (a DAG step's task names its key), so
     concurrent steps call distinguishable tools.
+
+    Provider tool call ids are random, so they sort in any order. Here they sort
+    in *reverse* chronological order, the worst case for anything that rebuilds
+    call order from sorted keys (see ``jsonb_order``).
     """
 
     def __init__(
@@ -264,7 +344,7 @@ class ScriptedLLM:
             return {"content": "done", "done": True}
         calls = [
             {
-                "id": f"call_{key}_{index}_{position}",
+                "id": f"call_{key}_{9 - index}_{9 - position}",
                 "function": {
                     "name": name,
                     "arguments": json.dumps(
@@ -297,7 +377,19 @@ def _tool_response(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
 _SERIAL = [("record", "1"), ("record", "2")]
 _BATCH = [("lookup", "1"), ("lookup", "2")]
-_ASK = [("ask_user_question", {"message": "Which city?", "interactions": []})]
+_ASK = [
+    (
+        "ask_user_question",
+        {
+            "message": "Where to?",
+            "interactions": [
+                {"type": "text_input", "field": "city", "label": "City"},
+                {"type": "confirm", "field": "approved", "label": "Approve?"},
+            ],
+        },
+    )
+]
+_APPROVE = [("approve", "1")]
 
 
 def _steps(*tasks: tuple[str, list[str]]) -> Callable[..., Awaitable[dict[str, Any]]]:
@@ -327,7 +419,11 @@ async def _run(
     agent = Agent(
         name="compat",
         patterns=[pattern],
-        tools=[CompatTool("record"), CompatTool("lookup", read_only=True)],
+        tools=[
+            CompatTool("record"),
+            CompatTool("lookup", read_only=True),
+            ApprovalTool(),
+        ],
         llm=llm,
     )
     runner = AgentRunner(
@@ -346,6 +442,10 @@ async def _react_tools(backend: CheckpointBackend) -> None:
 
 async def _react_waiting(backend: CheckpointBackend) -> None:
     await _run(_react(), ScriptedLLM([_ASK]), backend, task="Plan a trip.")
+
+
+async def _react_tool_waiting(backend: CheckpointBackend) -> None:
+    await _run(_react(), ScriptedLLM([_APPROVE]), backend, task="Book a trip.")
 
 
 async def _dag(backend: CheckpointBackend) -> None:
@@ -390,6 +490,7 @@ async def _auto_dag(backend: CheckpointBackend) -> None:
 SCENARIOS: dict[str, Callable[[CheckpointBackend], Awaitable[None]]] = {
     "react_tools": _react_tools,
     "react_waiting": _react_waiting,
+    "react_tool_waiting": _react_tool_waiting,
     "dag": _dag,
     "dag_concurrent": _dag_concurrent,
     "auto_react": _auto_react,
@@ -427,6 +528,7 @@ CAPTURES: tuple[Capture, ...] = (
     Capture("react__before_tool_batch", "react_tools", "before_tool_batch", v2=True),
     Capture("react__after_tool_batch", "react_tools", "after_tool_batch"),
     Capture("react__waiting_for_user", "react_waiting", "waiting_for_user"),
+    Capture("react__waiting_for_tool", "react_tool_waiting", "waiting_for_user"),
     Capture("dag__after_llm", "dag", "dag_after_llm"),
     Capture("dag__before_tool", "dag", "dag_before_tool"),
     Capture("dag__after_tool", "dag", "dag_after_tool"),
@@ -472,11 +574,17 @@ def canonicalize(envelope: Envelope) -> Envelope:
     """Replace everything that varies between runs with a stable stand-in.
 
     * minted ids (see ``_RANDOM_ID``) and tool ``invocation_id`` values become
-      counters of the same width, numbered by first appearance, in values and in
-      dict keys alike (the tool ledger is keyed by invocation id), so an id is
+      stand-ins of the same width, numbered by first appearance (counting down
+      from the largest value, so older ids sort later), in values and in dict
+      keys alike (the tool ledger is keyed by invocation id), so an id is
       replaced by the same stand-in everywhere it is referenced;
     * every ``*_at`` and ``timestamp`` value becomes a ``2026-01-01`` time (or
-      the matching epoch float), likewise numbered by first appearance.
+      the matching epoch float), numbered by *occurrence*, not by value: whether
+      two real timestamps are equal depends on clock resolution, so numbering
+      by value would not be reproducible. Exact duplicate subtrees (a DAG
+      checkpoint carries each step's context and state two or three times, as
+      the legacy singular fields and in ``execution_snapshot``) keep sharing
+      one stand-in copy, so a duplicate stays identical to its original.
 
     Dict order is never touched: the tool ledger's order is meaningful. Content
     digests, text and counters are left alone because the restore path may
@@ -496,13 +604,16 @@ def canonicalize(envelope: Envelope) -> Envelope:
 
     collect(envelope)
     ids: dict[str, int] = {}
-    times: dict[Any, int] = {}
+    occurrences = itertools.count(1)
 
     def stand_in(raw: str) -> str:
+        # Counting *down* from the largest value: the first id met (the oldest
+        # call) sorts last, the worst case for code that rebuilds order from
+        # sorted keys, as random ids do half the time.
         n = ids.setdefault(raw, len(ids) + 1)
         if len(raw) == 36:
-            return f"00000000-0000-4000-8000-{n:012x}"
-        return f"{n:0{len(raw)}x}"
+            return f"ffffffff-ffff-4fff-bfff-{0xFFFFFFFFFFFF - n:012x}"
+        return f"{16 ** len(raw) - 1 - n:0{len(raw)}x}"
 
     def text(value: str) -> str:
         if value in invocation_ids:
@@ -512,22 +623,54 @@ def canonicalize(envelope: Envelope) -> Envelope:
     def is_time_key(key: str) -> bool:
         return key == "timestamp" or key.endswith("_at")
 
+    seen: dict[tuple[bool, str], Any] = {}
+
     def walk(value: Any, key: str = "") -> Any:
-        if isinstance(value, dict):
-            return {text(k): walk(v, k) for k, v in value.items()}
-        if isinstance(value, list):
-            return [walk(item, key) for item in value]
+        if isinstance(value, (dict, list)):
+            # Only a list's items inherit ``key``, and only a time key matters.
+            fingerprint = (is_time_key(key), json.dumps(value))
+            if fingerprint not in seen:
+                seen[fingerprint] = (
+                    {text(k): walk(v, k) for k, v in value.items()}
+                    if isinstance(value, dict)
+                    else [walk(item, key) for item in value]
+                )
+            return seen[fingerprint]
         if isinstance(value, str) and is_time_key(key):
-            number = times.setdefault(value, len(times) + 1)
-            return (_EPOCH + timedelta(seconds=number)).isoformat()
+            return (_EPOCH + timedelta(seconds=next(occurrences))).isoformat()
         if isinstance(value, float) and is_time_key(key):
-            return _EPOCH.timestamp() + times.setdefault(value, len(times) + 1)
+            return _EPOCH.timestamp() + next(occurrences)
         if isinstance(value, str):
             return text(value)
         return value
 
     result: Envelope = walk(envelope)
     return result
+
+
+def jsonb_order(value: Any, storage: str, key: str = "") -> Any:
+    """``value`` as a resumed run reads it back from PostgreSQL.
+
+    JSONB does not keep object key order: it sorts keys by length, then by bytes.
+    Production checkpoints live in JSONB, so a resumed run reads every dict
+    key-sorted, whatever order the writing process built it in; lists never move.
+    One exception, in ``v1`` storage only: checkpoint encoding stores the tool
+    ledger as an ordered list of records and decodes it back in that order
+    (``trace_message_storage``), so the ledger's own key order survives (its
+    records are still sorted inside). ``v2`` storage inlines the whole snapshot,
+    ledger included. ``tests/web/services/test_checkpoint_backward_compat_storage.py``
+    checks this model against a real PostgreSQL.
+    """
+    if isinstance(value, list):
+        return [jsonb_order(item, storage) for item in value]
+    if not isinstance(value, dict):
+        return value
+    keys = (
+        list(value)
+        if key == "tool_ledger" and storage == "v1"
+        else sorted(value, key=lambda k: (len(k.encode()), k.encode()))
+    )
+    return {k: jsonb_order(value[k], storage, k) for k in keys}
 
 
 def _first_match(envelopes: list[Envelope], capture: Capture) -> Envelope:
