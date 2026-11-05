@@ -22,7 +22,13 @@ import pytest
 from pydantic import BaseModel
 
 from tests.core.agent.crash_resume_harness import Crash, CrashAtCheckpoint
-from xagent.core.agent import ExecutionContext, PatternRuntime, ReActPattern
+from xagent.core.agent import (
+    Agent,
+    AgentRunner,
+    ExecutionContext,
+    PatternRuntime,
+    ReActPattern,
+)
 from xagent.core.agent.checkpoint import TOOL_CALLS_MAY_HAVE_STARTED_KEY
 from xagent.core.agent.pattern.react.react import INTERRUPTED_TOOL_CALL_ERROR
 from xagent.core.agent.runtime import load_pattern_checkpoint
@@ -298,3 +304,70 @@ async def test_the_mark_is_consumed_by_one_run_and_never_written_back() -> None:
     assert pattern._pending_calls_may_have_started is False
     assert replanned_tool.calls == [{"value": "go"}]
     assert pattern._record_for_tool_call_id("call_replanned").status == "completed"
+
+
+class _CapturingTracer:
+    """Keeps every checkpoint the runner persists."""
+
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, Any]] = []
+
+    async def checkpoint(self, **payload: Any) -> None:
+        self.payloads.append(payload)
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_injected_over_a_started_call_does_not_hide_it() -> None:
+    # The user follows up while a write tool runs; the runner re-persists the
+    # last checkpoint under ``user_message_injected`` (then again as
+    # ``user_message_trace_watermark``), and the process dies before the tool
+    # returns. The tool-start fact must survive both rewrites.
+    checkpoint = await _crash_at("before_tool", [_Tool("alpha"), _Tool("beta")])
+    tracer = _CapturingTracer()
+    runner = AgentRunner(agent=Agent(name="inject", patterns=[]), tracer=tracer)
+    context = ExecutionContext.from_dict(checkpoint["context"])
+    context.add_user_message("Also check the docs")
+    await runner._persist_injected_context(
+        execution_id="resume-interrupted",
+        context=context,
+        label="user_message_injected",
+        baseline=checkpoint,
+    )
+    await runner._persist_injected_context(
+        execution_id="resume-interrupted",
+        context=context,
+        label="user_message_trace_watermark",
+        baseline=tracer.payloads[-1],
+    )
+    persisted = tracer.payloads[-1]
+    assert persisted["label"] == "user_message_trace_watermark"
+    tools = [_Tool("alpha"), _Tool("beta")]
+
+    pattern, result, llm, _ = await _resume(persisted, tools, [_DONE])
+
+    assert result["success"] is True
+    assert [tool.calls for tool in tools] == [[], []]
+    assert pattern._record_for_tool_call_id("call_alpha").status == "interrupted"
+    assert pattern._record_for_tool_call_id("call_beta").status == "interrupted"
+    # The follow-up is in the history the model replans from.
+    assert any(
+        m["role"] == "user" and "Also check the docs" in m["content"]
+        for m in llm.calls[0]["messages"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_runners_tail_edit_does_not_hide_a_started_call() -> None:
+    checkpoint = await _crash_at("before_tool", [_Tool("alpha"), _Tool("beta")])
+    runtime = PatternRuntime()
+    runtime.last_checkpoint = checkpoint
+    context = ExecutionContext.from_dict(checkpoint["context"])
+    context.add_assistant_message("An edit made after the last checkpoint")
+
+    tail = await runtime.checkpoint_context_tail("run_end_tail", context=context)
+
+    assert tail is not None and tail["label"] == "run_end_tail"
+    tools = [_Tool("alpha"), _Tool("beta")]
+    _, result, _, _ = await _resume(tail, tools, [_DONE])
+    assert result["success"] is True
+    assert [tool.calls for tool in tools] == [[], []]

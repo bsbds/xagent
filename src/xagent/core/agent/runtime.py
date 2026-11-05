@@ -65,6 +65,7 @@ from .checkpoint import (
     ExecutionEventPersistenceError,
     TraceCheckpointStore,
     mark_possibly_started_tool_calls,
+    rewrite_checkpoint,
 )
 from .context.execution import (
     COMPACT_SUMMARY_FALLBACK_BUDGETS,
@@ -1130,7 +1131,7 @@ class PatternRuntime:
             context_payload = context.to_dict()
             if baseline.get("context") == context_payload:
                 return None
-            payload = {**baseline, "label": label, "context": context_payload}
+            payload = rewrite_checkpoint(baseline, label=label, context=context_payload)
             await self._emit_checkpoint(payload)
             self.last_checkpoint = payload
             self.checkpoints.append(payload)

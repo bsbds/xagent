@@ -21,9 +21,11 @@ from tests.core.agent.concurrency_harness import (
 )
 from xagent.core.agent import PatternRuntime
 from xagent.core.agent.checkpoint import (
+    BASE_LABEL_METADATA_KEY,
     TOOL_CALLS_MAY_HAVE_STARTED_KEY,
     checkpoint_tool_call_in_flight,
     mark_possibly_started_tool_calls,
+    rewrite_checkpoint,
 )
 
 _PENDING = {"pending_tool_calls": [{"id": "call-1", "name": "send", "args": {}}]}
@@ -541,3 +543,62 @@ def test_an_unmarked_state_beside_a_marked_one_follows_its_own_label() -> None:
 )
 def test_marking_tolerates_missing_or_malformed_fields(checkpoint: Any) -> None:
     assert mark_possibly_started_tool_calls(checkpoint) is checkpoint
+
+
+# --- rewrite_checkpoint -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [("before_tool", True), ("before_tool_batch", True), ("after_llm", False)],
+)
+def test_a_rewritten_checkpoint_keeps_the_in_flight_fact_of_its_base(
+    label: str, expected: bool
+) -> None:
+    # A user message injected into the run re-persists the last checkpoint
+    # under a label of its own; the pending calls it carries are still the
+    # base's.
+    base = {"label": label, "pattern_state": copy.deepcopy(_PENDING)}
+
+    rewritten = rewrite_checkpoint(base, label="user_message_injected", context={})
+
+    assert rewritten["label"] == "user_message_injected"
+    assert rewritten["metadata"][BASE_LABEL_METADATA_KEY] == label
+    assert checkpoint_tool_call_in_flight(rewritten) is expected
+    marked = mark_possibly_started_tool_calls(rewritten)
+    assert _marks(marked["pattern_state"]) is expected
+
+
+def test_rewriting_a_rewrite_keeps_the_original_label() -> None:
+    base = {"label": "before_tool", "pattern_state": copy.deepcopy(_PENDING)}
+    first = rewrite_checkpoint(base, label="user_message_injected")
+
+    second = rewrite_checkpoint(first, label="user_message_trace_watermark")
+
+    assert second["metadata"][BASE_LABEL_METADATA_KEY] == "before_tool"
+    assert checkpoint_tool_call_in_flight(second) is True
+
+
+def test_rewrite_keeps_the_base_metadata_and_does_not_modify_the_base() -> None:
+    base = {
+        "label": "dag_before_tool",
+        "metadata": {"active_step_id": "a", "child_label": "before_tool"},
+        "pattern_state": {
+            "plan": {"steps": [{"id": "a"}]},
+            "active_step_pattern_states": {"a": copy.deepcopy(_PENDING)},
+        },
+    }
+    original = copy.deepcopy(base)
+
+    rewritten = rewrite_checkpoint(base, label="user_message_injected", status="x")
+
+    assert base == original
+    assert rewritten["status"] == "x"
+    assert rewritten["metadata"]["active_step_id"] == "a"
+    assert checkpoint_tool_call_in_flight(rewritten) is True
+
+
+def test_rewrite_without_a_base_has_nothing_to_remember() -> None:
+    rewritten = rewrite_checkpoint(None, label="user_message_injected", context={})
+
+    assert rewritten == {"label": "user_message_injected", "context": {}}

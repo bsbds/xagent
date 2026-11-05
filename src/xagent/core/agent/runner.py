@@ -44,6 +44,7 @@ from .checkpoint import (
     ExecutionEventPersistenceError,
     can_read_checkpoints,
     read_latest_checkpoint_payload,
+    rewrite_checkpoint,
 )
 from .context import ContextManager, ExecutionContext
 from .context.execution import (
@@ -2132,14 +2133,15 @@ class AgentRunner:
         if self.tracer is None:
             return
 
-        payload = dict(baseline or {})
-        payload.update(
-            {
-                "type": "checkpoint",
-                "label": label,
-                "execution_id": execution_id,
-                "context": context.to_dict(),
-            }
+        # The baseline's pending tool calls ride along, so its label has to
+        # stay readable: a call that started at its ``before_tool`` must still
+        # count as started after the injection relabels the checkpoint.
+        payload = rewrite_checkpoint(
+            baseline,
+            label=label,
+            type="checkpoint",
+            execution_id=execution_id,
+            context=context.to_dict(),
         )
 
         checkpoint = getattr(self.tracer, "checkpoint", None)

@@ -268,6 +268,38 @@ _CHILD_LABEL_PREFIXES = ("auto_child_", "dag_")
 # checkpoints, which is intended: the mark stays beside the pending calls it
 # describes and is replaced together with them.
 TOOL_CALLS_MAY_HAVE_STARTED_KEY = "tool_calls_may_have_started"
+# ``metadata`` key of a checkpoint that re-persists an earlier checkpoint's
+# state under a label of its own (see :func:`rewrite_checkpoint`): the label of
+# the checkpoint whose pending calls it carries.
+BASE_LABEL_METADATA_KEY = "base_label"
+
+
+def rewrite_checkpoint(
+    base: dict[str, Any] | None, *, label: str, **fields: Any
+) -> dict[str, Any]:
+    """A copy of checkpoint ``base`` stored under ``label`` with ``fields`` replaced.
+
+    For a write that changes only the context (a user message injected into a
+    run, the runner's tail edit at run end) and carries the rest of ``base``
+    over, pending tool calls included. Those calls belong to the checkpoint
+    ``base`` was written as, so that label is kept in
+    ``metadata[BASE_LABEL_METADATA_KEY]``: ``before_tool`` says a call started,
+    and the new label alone would hide it from
+    :func:`checkpoint_tool_call_in_flight`. Rewriting a rewrite keeps the
+    original label.
+    """
+
+    payload = dict(base or {})
+    metadata = payload.get("metadata")
+    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    base_label = metadata.get(BASE_LABEL_METADATA_KEY) or payload.get("label")
+    if isinstance(base_label, str):
+        metadata[BASE_LABEL_METADATA_KEY] = base_label
+    if metadata:
+        payload["metadata"] = metadata
+    payload["label"] = label
+    payload.update(fields)
+    return payload
 
 
 def _innermost_label(label: Any) -> str | None:
@@ -334,8 +366,16 @@ def _possibly_started_react_states(
     writer_step_id = (
         metadata.get("active_step_id") if isinstance(metadata, dict) else None
     )
+    # A rewritten checkpoint's own label is the rewrite's; the state is the
+    # base's.
+    base_label = (
+        metadata.get(BASE_LABEL_METADATA_KEY) if isinstance(metadata, dict) else None
+    )
     writer_started_tools = (
-        _innermost_label(checkpoint.get("label")) in _TOOL_START_LABELS
+        _innermost_label(
+            base_label if isinstance(base_label, str) else checkpoint.get("label")
+        )
+        in _TOOL_START_LABELS
     )
 
     def may_have_started(step_id: str | None, state: dict[str, Any]) -> bool:
@@ -373,6 +413,11 @@ def checkpoint_tool_call_in_flight(checkpoint: dict[str, Any] | None) -> bool:
     message was delivered but before the status checkpoint that follows it
     counts as in flight too. ``final_answer`` writes none: nothing it does is
     visible before its own ``final`` checkpoint, so replaying it is safe.
+
+    A checkpoint that re-persists another's state under a label of its own (a
+    user message injected into the run, the runner's tail edit) is read by the
+    label it keeps in ``metadata[BASE_LABEL_METADATA_KEY]``
+    (:func:`rewrite_checkpoint`), so rewriting cannot hide a started call.
 
     The label belongs to whichever state wrote the checkpoint: the only ReAct
     state outside a DAG (Auto nests one), or the DAG step named by
