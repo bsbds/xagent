@@ -68,10 +68,6 @@ class AutoResumePolicy:
     # Measured from the episode start, not from the latest interruption.
     max_elapsed_seconds: float | None
     jitter_cap_seconds: float
-    # Whether a dispatched resume of this reason adds to the run's
-    # ``no_progress_resumes``. Off for a reason that says nothing about the
-    # run's progress (a planned shutdown).
-    counts_no_progress: bool = True
 
 
 def auto_resume_policy(reason: InterruptionReason | str) -> AutoResumePolicy | None:
@@ -118,19 +114,20 @@ def auto_resume_policy(reason: InterruptionReason | str) -> AutoResumePolicy | N
     if reason == InterruptionReason.SHUTDOWN:
         # A host shutdown released the run on purpose, so another process
         # takes it over at once: no backoff, only a short jitter. It is not a
-        # failure, so it never exhausts the no-progress limit or the
-        # episode's elapsed time (``counts_no_progress`` keeps its resumes out
-        # of the counter too). Only the staleness window and the absolute
-        # per-run cap (``XAGENT_TASK_AUTO_RESUME_MAX_TOTAL_PER_RUN``) apply;
-        # the cap is what stops a run that keeps dying with its host (say a
-        # crash-looping pod that is terminated gracefully every time).
+        # failure, so it has no no-progress or elapsed limit of its own; only
+        # the staleness window and the absolute per-run cap
+        # (``XAGENT_TASK_AUTO_RESUME_MAX_TOTAL_PER_RUN``) apply, and the cap is
+        # what stops a run that keeps dying with its host (say a crash-looping
+        # pod that is terminated gracefully every time). A shutdown in the
+        # middle of another reason's episode starts a new episode (the reason
+        # changed), resetting that episode's no-progress count and elapsed
+        # clock; only ``total_resumes`` carries over.
         return AutoResumePolicy(
             initial_backoff_seconds=0,
             max_backoff_seconds=0,
             max_no_progress=None,
             max_elapsed_seconds=None,
             jitter_cap_seconds=_SHUTDOWN_JITTER_CAP_SECONDS,
-            counts_no_progress=False,
         )
     # user_pause, input_outcome_unknown, unknown_tool_effect and
     # not_recoverable need a human by definition.

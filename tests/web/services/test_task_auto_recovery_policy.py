@@ -122,22 +122,13 @@ def test_model_output_invalid_is_immediate() -> None:
     assert policy.jitter_cap_seconds == 5
 
 
-def test_shutdown_is_immediate_and_never_a_lack_of_progress() -> None:
+def test_shutdown_is_immediate_and_has_no_limit_of_its_own() -> None:
     policy = _policy(R.SHUTDOWN)
     assert [backoff_seconds(policy, n) for n in range(4)] == [0, 0, 0, 0]
     assert policy.jitter_cap_seconds == 5
-    # No limit of its own beyond the window and the absolute per-run cap, and
-    # its dispatches stay out of ``no_progress_resumes``.
+    # No limit of its own beyond the window and the absolute per-run cap.
     assert policy.max_no_progress is None
     assert policy.max_elapsed_seconds is None
-    assert policy.counts_no_progress is False
-    for other in (
-        R.LEASE_EXPIRED,
-        R.PERSISTENCE_FAILURE,
-        R.LLM_UNAVAILABLE,
-        R.MODEL_OUTPUT_INVALID,
-    ):
-        assert _policy(other).counts_no_progress is True
 
 
 @pytest.mark.parametrize(

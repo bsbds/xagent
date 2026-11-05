@@ -99,9 +99,7 @@ class TaskAutoRecovery(Base):  # type: ignore
     episode_started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    # Automatic resumes dispatched since the last observed progress. A resume
-    # of a ``shutdown`` interruption is not counted: a planned shutdown says
-    # nothing about progress.
+    # Automatic resumes dispatched since the last observed progress.
     no_progress_resumes: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
     )

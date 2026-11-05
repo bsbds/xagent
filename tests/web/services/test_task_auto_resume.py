@@ -27,6 +27,7 @@ from sqlalchemy.exc import TimeoutError as SATimeoutError
 from sqlalchemy.orm import Session, sessionmaker
 
 from tests.web.services.task_database_shared import engine as engine_fixture
+from xagent.core.agent.interruption import InterruptionReason
 from xagent.web.models import database
 from xagent.web.models.agent import Agent
 from xagent.web.models.database import Base
@@ -508,12 +509,10 @@ def test_due_row_is_dispatched_as_one_fenced_resume_command(factory, notified):
     assert "total_resumes" not in str(message)
 
 
-def test_a_shutdown_resume_is_not_counted_as_a_resume_without_progress(
-    factory, notified
-):
-    """A planned shutdown says nothing about progress: its dispatch counts
-    toward the run's total, not toward ``no_progress_resumes``, and no number of
-    earlier no-progress resumes exhausts it."""
+def test_a_shutdown_resume_is_never_exhausted_by_no_progress(factory, notified):
+    """A planned shutdown has no no-progress limit: no number of earlier
+    resumes without progress stops it, and its dispatch counts toward the
+    run's total."""
     now = utc_now()
     with factory() as db:
         task_id = _seed(db, now, reason="shutdown", no_progress=50, total=2)
@@ -524,9 +523,50 @@ def test_a_shutdown_resume_is_not_counted_as_a_resume_without_progress(
     assert (report.dispatched, report.staged_commands) == (1, 1)
     row = _row(factory, task_id)
     assert row.state == "dispatched"
-    assert (row.no_progress_resumes, row.total_resumes) == (50, 3)
+    assert row.total_resumes == 3
     (command,) = _commands(factory, task_id)
     assert command.payload["auto_resume"]["reason"] == "shutdown"
+
+
+def test_a_shutdown_in_another_reasons_episode_starts_a_new_episode(factory):
+    """A shutdown that interrupts a run resumed for another reason is a new
+    episode (the reason changed): that episode's no-progress count and elapsed
+    clock reset, and only ``total_resumes`` carries over."""
+    from xagent.web.services.task_auto_recovery import record_interruption_no_commit
+
+    now = utc_now()
+    with factory() as db:
+        task_id = _seed(
+            db,
+            now,
+            state="dispatched",
+            reason="lease_expired",
+            no_progress=2,
+            total=2,
+            interrupted_ago=600,
+            episode_ago=1800,
+            due_in=None,
+        )
+        db.commit()
+
+    with factory() as db:
+        task = db.get(Task, task_id)
+        row = record_interruption_no_commit(
+            db,
+            task=task,
+            reason=InterruptionReason.SHUTDOWN,
+            task_status=TaskStatus.PAUSED,
+            interrupted_at=now,
+            progress_marker=None,
+            gated_by_settlement_switches=True,
+        )
+        assert row is not None
+        db.commit()
+
+    row = _row(factory, task_id)
+    assert (row.reason, row.state) == ("shutdown", "scheduled")
+    assert (row.no_progress_resumes, row.total_resumes) == (0, 2)
+    assert _aware(row.episode_started_at) >= now - timedelta(seconds=1)
 
 
 def test_a_shutdown_resume_still_stops_at_the_total_cap(factory, notified):
