@@ -605,19 +605,26 @@ def get_shutdown_handoff_enabled() -> bool:
     """Whether a shutdown hands eligible running tasks to another process.
 
     Off, a host shutting down cancels its runs and fails them immediately.
-    On, a run the shutdown cancelled (not one a user cancelled) whose task
-    is eligible for automatic recovery is paused with the ``shutdown``
-    interruption reason, its lease released, and an automatic resume is
-    scheduled with no backoff (a few seconds of jitter at most), so another
-    process continues it right away instead of after the lease TTL. Only takes
-    effect while :func:`get_task_auto_resume_enabled` is on, and the pause
-    itself follows :func:`get_task_infra_failure_pause_enabled` (when that is
-    off the run fails as before). A run the shutdown stopped without a usable
-    checkpoint still fails, and so do the tasks automatic recovery excludes (the
-    a2a, external, widget and shared-link sources, previews, and channel tasks
-    of a combined host) and actor-marked tasks (their agent can only be built
-    by a fresh create, so they cannot resume); every other kind is handed off,
-    SDK tasks and shared-execution channel tasks included.
+    On, a run the shutdown cancelled (not one a user cancelled), new or
+    resumed, is settled as paused with the ``shutdown`` interruption reason,
+    its lease released, and an automatic resume is scheduled with no backoff
+    (a few seconds of jitter at most), so another process continues it right
+    away instead of after the lease TTL. A resumed run is handed off again when
+    the host it moved to shuts down too. Only takes effect while
+    :func:`get_task_auto_resume_enabled` is on; it does not depend on
+    :func:`get_task_infra_failure_pause_enabled`.
+
+    The settlement decides per run: a run without a usable checkpoint still
+    fails, and so do the tasks automatic recovery excludes (the a2a, external,
+    widget and shared-link sources, previews, channel tasks of a combined host,
+    and actor-marked tasks, whose agent only a fresh create can build); every
+    other kind is handed off, SDK tasks and shared-execution channel tasks
+    included.
+
+    Roll out in order: enable it only after every host that runs the
+    auto-resume sweeper is on a version that knows the ``shutdown`` reason. An
+    older sweeper has no policy for it and treats the scheduled row as one
+    nothing resumes, leaving the paused run for its user.
 
     Priority:
         1. XAGENT_SHUTDOWN_HANDOFF_ENABLED environment variable
