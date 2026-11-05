@@ -457,3 +457,101 @@ async def test_a_legacy_call_without_an_id_gets_one_id_everywhere() -> None:
     assert [c["id"] for c in assistant["tool_calls"]] == [call_id]
     [tool_message] = [m for m in messages if m["role"] == "tool"]
     assert tool_message["tool_call_id"] == call_id
+
+
+class _FinalWriteFails(PatternRuntime):
+    """The process dies as the ``final`` checkpoint is written: it never lands."""
+
+    async def checkpoint(self, label: str, **kwargs: Any) -> dict[str, Any]:
+        if label == "final":
+            raise Crash("final checkpoint not persisted")
+        return await super().checkpoint(label, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_final_checkpoint_that_never_lands_replays_the_final_answer() -> None:
+    # final_answer writes no ``before_tool``: nothing it does is visible before
+    # its own ``final`` checkpoint. The latest durable checkpoint is therefore
+    # ``after_llm``, and the resume replays the answer instead of closing it as
+    # interrupted and costing the model another turn.
+    final_call = {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_final",
+                "function": {
+                    "name": "final_answer",
+                    "arguments": '{"answer": "All done.", "outcome": "completed"}',
+                },
+            }
+        ],
+    }
+    runtime = _FinalWriteFails()
+    with pytest.raises(Crash):
+        await _pattern().run(
+            context=_context(), tools=[], llm=_LLM([final_call]), runtime=runtime
+        )
+    checkpoint = runtime.last_checkpoint
+    assert checkpoint is not None and checkpoint["label"] == "after_llm"
+    assert "before_tool" not in [cp["label"] for cp in runtime.checkpoints]
+
+    pattern, result, llm, _ = await _resume(checkpoint, [], [])
+
+    assert result["success"] is True
+    assert result["response"] == "All done."
+    assert llm.calls == []
+    assert pattern._record_for_tool_call_id("call_final").status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_message_delivered_before_the_crash_is_not_delivered_again() -> None:
+    # The window the control-call checkpoint closes: the message went out, the
+    # process died before the status checkpoint that follows it.
+    delivered: list[str] = []
+
+    def deliver_then_die(payload: dict[str, Any]) -> None:
+        delivered.append(payload["message"])
+        raise Crash("died after delivery")
+
+    send = {
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_send",
+                "function": {
+                    "name": "send_message",
+                    "arguments": (
+                        '{"message": "Working on it", "message_type": "info", '
+                        '"expect_response": false}'
+                    ),
+                },
+            }
+        ],
+    }
+    runtime = CrashAtCheckpoint("never")
+    runtime.outbound_message_handler = deliver_then_die
+    with pytest.raises(Crash):
+        await _pattern().run(
+            context=_context(), tools=[], llm=_LLM([send]), runtime=runtime
+        )
+    checkpoint = runtime.last_checkpoint
+    assert delivered == ["Working on it"]
+    assert checkpoint is not None and checkpoint["label"] == "before_tool"
+
+    resumed = PatternRuntime()
+    resumed.outbound_message_handler = lambda payload: delivered.append(
+        payload["message"]
+    )
+    pattern = _pattern()
+    load_pattern_checkpoint(pattern, checkpoint, close_started_tool_calls=True)
+    llm = _LLM([_DONE])
+    result = await pattern.run(
+        context=ExecutionContext.from_dict(checkpoint["context"]),
+        tools=[],
+        llm=llm,
+        runtime=resumed,
+    )
+
+    assert result["success"] is True
+    assert delivered == ["Working on it"]
+    assert pattern._record_for_tool_call_id("call_send").status == "interrupted"
