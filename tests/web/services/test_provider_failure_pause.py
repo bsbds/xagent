@@ -601,24 +601,28 @@ def test_settlement_acts_on_provider_and_model_output_failures():
 
 
 ALL_REASONS = {"persistence_failure", "llm_unavailable", "model", "user_pause"}
+# A planned shutdown is not an infrastructure failure: it follows automatic
+# resume alone, never the infra switch.
+SHUTDOWN_REASON = {"shutdown"}
 
 
 @pytest.mark.parametrize(
     ("infra", "auto_resume", "enabled"),
     [
-        ("true", "true", ALL_REASONS),
+        ("true", "true", ALL_REASONS | SHUTDOWN_REASON),
         ("true", "false", ALL_REASONS - {"model"}),
-        ("false", "true", set()),
+        ("false", "true", SHUTDOWN_REASON),
         ("false", "false", set()),
-        (None, "true", ALL_REASONS),
+        (None, "true", ALL_REASONS | SHUTDOWN_REASON),
         (None, "false", set()),
     ],
     ids=["on-on", "on-off", "off-on", "off-off", "default-on", "default-off"],
 )
 def test_settlement_switches_per_reason(monkeypatch, infra, auto_resume, enabled):
-    """The infra switch follows automatic resume when unset, and
+    """The infra switch follows automatic resume when unset;
     model_output_invalid pauses only when an automatic resume will resample
-    it."""
+    it, and shutdown only when one will continue it, whatever the infra
+    switch says."""
     if infra is None:
         monkeypatch.delenv(PAUSE_SWITCH)
     else:
@@ -629,6 +633,7 @@ def test_settlement_switches_per_reason(monkeypatch, infra, auto_resume, enabled
         "llm_unavailable": InterruptionReason.LLM_UNAVAILABLE,
         "model": InterruptionReason.MODEL_OUTPUT_INVALID,
         "user_pause": InterruptionReason.USER_PAUSE,
+        "shutdown": InterruptionReason.SHUTDOWN,
     }
     assert {
         name for name, reason in names.items() if settlement_pause_enabled(reason)

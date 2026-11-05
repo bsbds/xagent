@@ -251,41 +251,6 @@ def auto_recovery_eligibility(db: Session, task: Task) -> AutoRecoveryEligibilit
     return AutoRecoveryEligibility(eligible=True, kind="normal")
 
 
-def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
-    """Whether a run a host shutdown cancelled is handed off to another process.
-
-    Such a run settles as a ``shutdown`` interruption: PAUSED, its lease
-    released, an automatic resume scheduled with no backoff
-    (:func:`~xagent.web.services.task_auto_recovery_policy.auto_resume_policy`),
-    so another process takes it over at once. That only helps a task automatic
-    recovery would resume (:func:`auto_recovery_eligibility`); the others must
-    still fail now so their callers see a terminal state. Nothing is handed off
-    while automatic resume is off, nor for a task that is no longer RUNNING.
-
-    An actor-marked task is ineligible (:func:`auto_recovery_eligibility`): its
-    resume could not start, so the run fails now, and its turn still removes
-    its runtime and workspace as it ends.
-
-    Every other eligible kind is handed off alike, SDK and shared-execution
-    channel tasks included. An SDK caller keeps waiting on the PAUSED task, as
-    it does for any other interruption (``status_only_terminal_view`` reports
-    ``failed`` only once automatic resume stops), and a channel reply is held
-    while the resume is scheduled (``channel_reply_waits_for_auto_resume``);
-    with no backoff either waits seconds, not a lease TTL.
-
-    This is a precondition only: the settlement still decides from the run's
-    checkpoint (:func:`decide_interruption`) whether it can be paused, and
-    fails it otherwise.
-    """
-
-    if not get_task_auto_resume_enabled():
-        return False
-    task = db.get(Task, task_id)
-    if task is None or task.status != TaskStatus.RUNNING:
-        return False
-    return auto_recovery_eligibility(db, task).eligible
-
-
 def record_interruption_no_commit(
     db: Session,
     *,
@@ -374,6 +339,7 @@ def record_interruption_no_commit(
     elif (
         gated_by_settlement_switches
         and _pausable_with_infra_switch(reason, eligibility.kind, task.source)
+        and _pause_follows_infra_switch(reason)
         and not get_task_infra_failure_pause_enabled()
     ):
         state, state_detail = TaskAutoRecoveryState.DISABLED, None
@@ -857,13 +823,15 @@ def record_lease_expiry_interruption_no_commit(
 # pauses for either (it still pauses for a persistence failure).
 #
 # ``shutdown`` is the exception: it classifies no failure or result. The
-# orchestrator passes it when a host shutdown cancelled a run that automatic
-# recovery may resume (:func:`shutdown_handoff_eligible`), so the run is
-# paused and released at once for another process to pick up.
+# scheduler and the resume path pass it when a host shutdown cancelled a run
+# (``task_orchestrator.shutdown_cancel_interruption``); the shared decision
+# then pauses an eligible run and releases its lease at once, for another
+# process to pick up.
 #
 # Every one of them is recorded; ``_pausable_with_infra_switch`` says which
-# of them the infra switch decides (``model_output_invalid`` also needs an
-# automatic resume to resample it).
+# of them can pause (``model_output_invalid`` and ``shutdown`` also need an
+# automatic resume to continue them) and ``_pause_follows_infra_switch`` which
+# of those the infra switch decides.
 SETTLEMENT_INTERRUPTION_REASONS = frozenset(
     {
         InterruptionReason.PERSISTENCE_FAILURE,
@@ -885,41 +853,57 @@ def _pausable_with_infra_switch(
     kind: str | None = None,
     source: Any = None,
 ) -> bool:
-    """Whether ``XAGENT_TASK_INFRA_FAILURE_PAUSE_ENABLED`` decides ``reason``.
+    """Whether settlement can pause a run interrupted for ``reason`` at all.
 
     False for a deferred reason and for a status-only ``source``
     (:data:`_STATUS_ONLY_SOURCES`) while automatic resume is off: nothing
-    would resume their paused run, so the switch does not decide it.
-    ``model_output_invalid`` is not an
-    infrastructure failure: a run paused for it is worth stopping only when
-    an automatic resume will resample it, so it also needs automatic resume
-    on and, when ``kind`` is known, a task kind it schedules
+    would resume their paused run. ``model_output_invalid`` and ``shutdown``
+    are not infrastructure failures: a run paused for either is worth stopping
+    only when an automatic resume will continue it, so they also need
+    automatic resume on and, when ``kind`` is known, a task kind it schedules
     (:func:`auto_resume_schedulable`; every eligible kind today, so that case
     is unreachable and kept as the seam). Otherwise it fails as before.
+
+    Whether ``XAGENT_TASK_INFRA_FAILURE_PAUSE_ENABLED`` also has to be on is
+    :func:`_pause_follows_infra_switch`.
     """
 
     if reason in SETTLEMENT_PAUSE_DEFERRED_REASONS:
         return False
     if is_status_only_source(source) and not get_task_auto_resume_enabled():
         return False
-    if reason is InterruptionReason.MODEL_OUTPUT_INVALID:
+    if reason in (InterruptionReason.MODEL_OUTPUT_INVALID, InterruptionReason.SHUTDOWN):
         return get_task_auto_resume_enabled() and (
             kind is None or auto_resume_schedulable(kind)
         )
     return True
 
 
+def _pause_follows_infra_switch(reason: InterruptionReason) -> bool:
+    """Whether ``XAGENT_TASK_INFRA_FAILURE_PAUSE_ENABLED`` decides ``reason``.
+
+    Every settlement reason but ``shutdown``: a host shutdown is planned, not
+    an infrastructure failure, and ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` is its
+    own opt-in (without it the scheduler never passes the reason), so only
+    automatic resume has to be on.
+    """
+
+    return reason is not InterruptionReason.SHUTDOWN
+
+
 def settlement_pause_enabled(reason: InterruptionReason) -> bool:
     """Whether settlement may pause an eligible run interrupted for ``reason``.
 
     ``XAGENT_TASK_INFRA_FAILURE_PAUSE_ENABLED`` (unset, it follows automatic
-    resume), for a reason that switch decides (``_pausable_with_infra_switch``
-    without a task kind; :func:`decide_interruption` checks the kind once it
-    has read eligibility).
+    resume), for a reason that switch decides (:func:`_pause_follows_infra_switch`;
+    ``shutdown`` follows automatic resume alone), and only where the reason can
+    pause at all (``_pausable_with_infra_switch`` without a task kind;
+    :func:`decide_interruption` checks the kind once it has read eligibility).
     """
 
-    return (
-        _pausable_with_infra_switch(reason) and get_task_infra_failure_pause_enabled()
+    return _pausable_with_infra_switch(reason) and (
+        not _pause_follows_infra_switch(reason)
+        or get_task_infra_failure_pause_enabled()
     )
 
 

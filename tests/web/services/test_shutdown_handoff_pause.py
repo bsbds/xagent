@@ -172,11 +172,10 @@ async def test_shutdown_cancel_pauses_releases_and_schedules_an_immediate_resume
 
 
 @pytest.mark.asyncio
-async def test_the_sweeper_resumes_a_shutdown_pause_without_counting_no_progress(
+async def test_the_sweeper_resumes_a_shutdown_pause_once_it_is_due(
     canonical, engine, monkeypatch
 ):
-    """End to end on the paused row: once it is due the sweeper dispatches it,
-    and that dispatch is a resume but not a resume without progress."""
+    """End to end on the paused row: once it is due the sweeper dispatches it."""
     # Selects the sweeper's PostgreSQL row-lock path or its SQLite CAS path.
     monkeypatch.setattr("xagent.web.models.database._engine", engine)
     factory, _tid = canonical
@@ -190,7 +189,7 @@ async def test_the_sweeper_resumes_a_shutdown_pause_without_counting_no_progress
     assert report.dispatched == 1
     _task, row, _events = _state(factory, ids["task"])
     assert row.state == "dispatched"
-    assert (row.no_progress_resumes, row.total_resumes) == (0, 1)
+    assert row.total_resumes == 1
 
 
 @pytest.mark.asyncio
@@ -252,16 +251,38 @@ async def test_shutdown_cancel_of_an_actor_marked_task_fails_despite_a_checkpoin
     task, row, _events = _state(factory, ids["task"])
     assert task.status == TaskStatus.FAILED
     assert task.runner_id is None
-    assert row is None or row.state != "scheduled"
+    assert (row.reason, row.state, row.state_detail) == (
+        "shutdown",
+        "ineligible",
+        "ineligible:actor_marked",
+    )
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancel_fails_as_before_when_settlement_pausing_is_off(
+async def test_shutdown_cancel_fails_a_task_automatic_recovery_excludes(canonical):
+    """Eligibility is the shared decision's: an a2a task fails now, with the
+    row saying why, though it has a checkpoint."""
+    factory, _tid = canonical
+    ids = _projected_task(factory, source="a2a")
+    lease = _prepare_run(factory, ids)
+
+    await _shutdown_cancel_turn(ids, lease, source="a2a")
+
+    task, row, _events = _state(factory, ids["task"])
+    assert task.status == TaskStatus.FAILED
+    assert (row.reason, row.state, row.state_detail) == (
+        "shutdown",
+        "ineligible",
+        "ineligible:source_a2a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancel_fails_when_automatic_resume_is_off(
     canonical, monkeypatch
 ):
-    """The pause is a settlement pause, so the switch that turns those off
-    (it follows automatic resume when unset) keeps the failure."""
-    monkeypatch.setenv(PAUSE_SWITCH, "false")
+    """Nothing would resume the paused run, so it fails as before."""
+    monkeypatch.setenv(AUTO_RESUME_SWITCH, "false")
     factory, _tid = canonical
     ids = _projected_task(factory)
     lease = _prepare_run(factory, ids)
@@ -271,6 +292,26 @@ async def test_shutdown_cancel_fails_as_before_when_settlement_pausing_is_off(
     task, row, _events = _state(factory, ids["task"])
     assert task.status == TaskStatus.FAILED
     assert row.state != "scheduled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pause_switch", ["false", "true"])
+async def test_shutdown_pause_does_not_follow_the_infra_failure_switch(
+    canonical, monkeypatch, pause_switch
+):
+    """A host shutdown is planned, not an infrastructure failure:
+    ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` is its opt-in, so only automatic resume
+    has to be on, whatever ``XAGENT_TASK_INFRA_FAILURE_PAUSE_ENABLED`` says."""
+    monkeypatch.setenv(PAUSE_SWITCH, pause_switch)
+    factory, _tid = canonical
+    ids = _projected_task(factory)
+    lease = _prepare_run(factory, ids)
+
+    await _shutdown_cancel_turn(ids, lease)
+
+    task, row, _events = _state(factory, ids["task"])
+    assert task.status == TaskStatus.PAUSED
+    assert (row.reason, row.state) == ("shutdown", "scheduled")
 
 
 @pytest.mark.asyncio

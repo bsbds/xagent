@@ -119,7 +119,6 @@ from .task_auto_recovery import (
     interruption_pause_result,
     is_status_only_source,
     settlement_interruption_for_failure,
-    shutdown_handoff_eligible,
 )
 from .task_command_transport import ClaimedTaskCommand
 from .task_execution_controller import (
@@ -946,11 +945,32 @@ def _host_shutdown_in_progress() -> bool:
     return background_task_manager.shutting_down or task_coordinators_closing()
 
 
-def _shutdown_handoff_eligible_sync(task_id: int) -> bool:
-    from ..models.database import get_session_local
+def shutdown_cancel_interruption(
+    cancelled: "asyncio.Task[Any] | None",
+) -> InterruptionReason | None:
+    """The interruption to settle a cancelled run with, when a shutdown did it.
 
-    with get_session_local()() as db:
-        return shutdown_handoff_eligible(db, task_id)
+    ``InterruptionReason.SHUTDOWN`` when ``XAGENT_SHUTDOWN_HANDOFF_ENABLED`` is
+    on and the host's shutdown, not a user (``cancel_task``), cancelled
+    ``cancelled``; ``None`` otherwise. Both runners (a new turn, ``_schedule_bg``,
+    and a resumed run, ``execute_resume_background``) ask it from their
+    cancellation handler, so a run that was handed off once is handed off
+    again when the host it moved to shuts down too.
+
+    It only names the reason. The settlement decides, under the run's row lock,
+    whether the run can be paused for an immediate automatic resume: automatic
+    resume on, a task eligible for it, a recoverable checkpoint. Any other run
+    fails as before.
+    """
+    from .task_execution import background_task_manager
+
+    if (
+        get_shutdown_handoff_enabled()
+        and not background_task_manager.cancel_was_requested(cancelled)
+        and _host_shutdown_in_progress()
+    ):
+        return InterruptionReason.SHUTDOWN
+    return None
 
 
 def _reconcile_finalized_turn_delivery(
@@ -2688,10 +2708,6 @@ def _schedule_bg(
         classify_unknown_tool_effect = False
         settlement_interruption: InterruptionReason | None = None
         defer_settlement_to_ttl_recovery = False
-        # Set when a host shutdown, not a user, cancelled the run; settlement
-        # then checks whether the task can be handed off (paused for an
-        # immediate automatic resume elsewhere) instead of failed.
-        shutdown_handoff_candidate = False
         skip_delivery_reconciliation = False
         # Positive evidence for finalize's delivery target: once
         # ``execute_task_background`` has been invoked, the run may have
@@ -2900,12 +2916,11 @@ def _schedule_bg(
                     client_history_message_type = CLIENT_SAFE_FAILURE_MESSAGE_TYPE
                 else:
                     settlement_error = "task execution cancelled"
-                shutdown_handoff_candidate = (
-                    get_shutdown_handoff_enabled()
-                    and not background_task_manager.cancel_was_requested(
-                        asyncio.current_task()
-                    )
-                    and _host_shutdown_in_progress()
+                # A host shutdown (not a user) pauses an eligible run for an
+                # immediate automatic resume elsewhere instead of failing it;
+                # the settlement below decides.
+                settlement_interruption = shutdown_cancel_interruption(
+                    asyncio.current_task()
                 )
                 raise
             except Exception as setup_or_run_err:
@@ -3060,37 +3075,6 @@ def _schedule_bg(
                         task_id,
                         exc_info=True,
                     )
-
-                if shutdown_handoff_candidate and not defer_settlement_to_ttl_recovery:
-                    # A planned stop, not a failure: settle the run as a
-                    # ``shutdown`` interruption. The settlement pauses it,
-                    # releases the lease and schedules an automatic resume with
-                    # no backoff, so another process continues it at once
-                    # instead of waiting out the lease TTL. Whether the run can
-                    # be paused at all is still the settlement's call (its
-                    # checkpoint); an unrecoverable one fails as before. A task
-                    # automatic recovery would not resume fails now too, so its
-                    # caller sees a terminal state. Any doubt settles as before.
-                    try:
-                        if await run_db_io_cancellation_safe(
-                            lambda: _shutdown_handoff_eligible_sync(task_id)
-                        ):
-                            settlement_interruption = InterruptionReason.SHUTDOWN
-                            logger.info(
-                                "task_id=%s component=shutdown-handoff run "
-                                "cancelled by host shutdown; settling it as paused "
-                                "for an immediate automatic resume",
-                                task_id,
-                            )
-                    except asyncio.CancelledError as exc:
-                        cleanup_cancellation = cleanup_cancellation or exc
-                    except Exception:
-                        logger.warning(
-                            "task %s shutdown handoff check failed; settling "
-                            "the cancelled run as a failure",
-                            task_id,
-                            exc_info=True,
-                        )
 
                 if defer_settlement_to_ttl_recovery:
                     # Lease loss, a pool timeout, an unresolvable checkpoint or
