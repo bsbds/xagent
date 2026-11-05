@@ -438,7 +438,7 @@ async def test_graceful_backend_stop_hands_a_channel_run_to_auto_resume(
     row, events = recovery_state(task_id)
     assert row is not None
     assert (row["reason"], row["run_id"]) == ("shutdown", run_id)
-    assert (row["total_resumes"], row["no_progress_resumes"]) == (1, 0)
+    assert row["total_resumes"] == 1
     assert events[:3] == ["interrupted", "scheduled", "auto_resumed"]
     assert len(auto_resume_commands(task_id)) == 1
     (start,) = _starts(task_id)

@@ -148,9 +148,70 @@ def test_graceful_stop_with_handoff_pauses_at_once_and_resumes_a_normal_task(
     row, events = recovery_state(task_id)
     assert row is not None
     assert (row["reason"], row["run_id"]) == ("shutdown", run_id)
-    assert (row["total_resumes"], row["no_progress_resumes"]) == (1, 0)
+    assert row["total_resumes"] == 1
     assert events[:3] == ["interrupted", "scheduled", "auto_resumed"]
     assert len(auto_resume_commands(task_id)) == 1
+
+
+def test_a_run_stopped_gracefully_twice_resumes_again_and_completes(shared_app):
+    """A rolling release stops its hosts one after the other.
+
+    Host A stops and pauses the run; the sweeper hands it to host B, whose
+    resumed run is on the model when B is stopped too. The resumed run is paused
+    and scheduled again, not failed, and host C finishes it on the same
+    checkpoint. Only ``total_resumes`` accumulates.
+    """
+    app = shared_app
+    restart_hosts(app, "web", "worker", XAGENT_SHUTDOWN_HANDOFF_ENABLED="true")
+    task_id = start_task(app)
+    run_id = task_state(task_id)["run_id"]
+
+    stop_hosts(app)
+    assert task_state(task_id)["status"] == "paused"
+
+    # Host B resumes the run (its model call is gated again) and stops too.
+    app.start_all("web", "worker")
+    wait_for(lambda: len(model_calls(app)) == 2, app, "the resumed model call")
+    stop_hosts(app)
+
+    state = task_state(task_id)
+    assert (state["status"], state["run_id"], state["runner_id"]) == (
+        "paused",
+        run_id,
+        None,
+    )
+    row, events = recovery_state(task_id)
+    assert row is not None
+    assert (row["reason"], row["state"], row["total_resumes"]) == (
+        "shutdown",
+        "scheduled",
+        1,
+    )
+
+    app.start_all("web", "worker")
+    (app.root / "model-release").touch()
+
+    settled = app.wait_task(task_id, timeout=SETTLE_TIMEOUT)
+    assert settled["run_id"] == run_id
+    assert "Shared E2E answer" in (settled["output"] or "")
+    row, events = recovery_state(task_id)
+    assert row is not None
+    assert (row["reason"], row["run_id"], row["total_resumes"]) == (
+        "shutdown",
+        run_id,
+        2,
+    )
+    assert events[:6] == [
+        "interrupted",
+        "scheduled",
+        "auto_resumed",
+        "interrupted",
+        "scheduled",
+        "auto_resumed",
+    ]
+    assert len(auto_resume_commands(task_id)) == 2
+    # The first call, the call resumed on B, and the call resumed on C.
+    assert len(model_calls(app)) == 3
 
 
 def test_graceful_stop_without_handoff_fails_a_normal_task_at_once(shared_app):

@@ -729,21 +729,29 @@ class _FakeTracker:
 
 
 async def _resume_raising(
-    error: BaseException, settle: Any, *, explicit_cancel: bool = False
+    error: BaseException,
+    settle: Any,
+    *,
+    explicit_cancel: bool = False,
+    task_id: int = 42,
+    owner_user_id: int = 1,
+    lease: TaskLease | None = None,
 ) -> tuple[AsyncMock, list[str]]:
     """Drive the resume entry point into its exception branch.
 
     Returns the interruption-pause publisher and the broadcast frame types.
+    ``settle`` replaces the resume's settlement; ``None`` runs the real one on
+    ``lease`` (a real run of ``task_id``). A ``CancelledError`` is expected to
+    leave the entry point, as a cancelled resume does.
     """
 
-    lease = TaskLease(task_id=42, runner_id="runner-a", run_id="run-a")
+    lease = lease or TaskLease(task_id=42, runner_id="runner-a", run_id="run-a")
     heartbeat_task: asyncio.Task[Any] = asyncio.create_task(asyncio.sleep(0))
     agent_service = MagicMock()
     agent_service.resume_execution_by_id = AsyncMock(side_effect=error)
     ws_manager = MagicMock(broadcast_to_task=AsyncMock())
     publish_pause = AsyncMock()
     patches = [
-        patch("xagent.web.services.task_execution._settle_resumed_task_lease", settle),
         patch(
             "xagent.web.services.task_execution.stop_task_lease_heartbeat",
             new=AsyncMock(),
@@ -767,20 +775,31 @@ async def _resume_raising(
             return_value=None,
         ),
     ]
+    if settle is not None:
+        patches.append(
+            patch(
+                "xagent.web.services.task_execution._settle_resumed_task_lease", settle
+            )
+        )
     for item in patches:
         item.start()
     try:
-        await execute_resume_background(
-            task_id=42,
+        resumed = execute_resume_background(
+            task_id=task_id,
             agent_service=agent_service,
-            task_owner_user_id=1,
-            expected_run_id="run-a",
+            task_owner_user_id=owner_user_id,
+            expected_run_id=lease.run_id,
             resolved_execution_scope=None,
             preacquired_lease=lease,
             preacquired_heartbeat_stop=asyncio.Event(),
             preacquired_heartbeat_task=heartbeat_task,
             preacquired_prior_status=TaskStatus.PAUSED,
         )
+        if isinstance(error, asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await resumed
+        else:
+            await resumed
     finally:
         for item in reversed(patches):
             item.stop()

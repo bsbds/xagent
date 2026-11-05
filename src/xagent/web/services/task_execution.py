@@ -4588,6 +4588,14 @@ async def execute_resume_background(
         return
     except asyncio.CancelledError:
         settlement_error = _resume_cancel_settlement_error(trusted_task_source)
+        # A resumed run is handed off like a new one: a run that moved to this
+        # host after another host's shutdown paused it is paused again, for
+        # another resume, when this host shuts down too (a rolling release
+        # stops its hosts one after the other). The settlement below decides;
+        # an explicit cancel there never uses the interruption.
+        from .task_orchestrator import shutdown_cancel_interruption
+
+        settlement_interruption = shutdown_cancel_interruption(asyncio.current_task())
         logger.info(f"V2 resume background task {task_id} cancelled")
         await record_accepted_delivery()
         if delivery_turn_id is not None and not delivery_was_dispatched:

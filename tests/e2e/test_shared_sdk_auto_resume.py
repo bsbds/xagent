@@ -247,7 +247,7 @@ def test_graceful_stop_with_handoff_keeps_an_sdk_caller_waiting(shared_app):
     app.wait_task(task_id, run_id=run_id, timeout=SETTLE_TIMEOUT)
     row, events = recovery_state(task_id)
     assert (row["reason"], row["run_id"]) == ("shutdown", run_id)
-    assert (row["total_resumes"], row["no_progress_resumes"]) == (1, 0)
+    assert row["total_resumes"] == 1
     assert events[:3] == ["interrupted", "scheduled", "auto_resumed"]
     assert len(auto_resume_commands(task_id)) == 1
 

@@ -25,6 +25,7 @@ from tests.web.services.test_persistence_failure_pause import (
     _prepare_run,
     _projected_task,
     _projection,
+    _resume_raising,
     _state,
     canonical,
     engine,
@@ -41,6 +42,7 @@ from xagent.web.services.task_coordinator_service import TaskLease as OwnerLease
 from xagent.web.services.task_coordinator_service import (
     release_task_lease_no_commit as release_owner_lease_no_commit,
 )
+from xagent.web.services.task_execution import _acquire_resume_task_lease
 from xagent.web.services.task_lease_service import TaskLease
 from xagent.web.services.task_orchestrator import (
     TaskTurnPayload,
@@ -371,3 +373,112 @@ async def test_a_shutdown_pause_lets_the_closing_coordinator_release_the_owner_l
         None,
         None,
     )
+
+
+# --------------------------------------------------------------------------
+# A resumed run is handed off like a new one
+# --------------------------------------------------------------------------
+
+
+def _resume_settlement(seen: list[dict[str, Any]]) -> MagicMock:
+    """A resume settlement that records its arguments and reports a pause."""
+
+    def settle(lease, **kwargs):
+        seen.append(kwargs)
+        interruption = kwargs["interruption"]
+        if interruption is not None:
+            report = kwargs["report"]
+            report.paused_for = interruption
+            report.control_state.update(status="paused", run_id=lease.run_id)
+        return True
+
+    return MagicMock(side_effect=settle)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_run_cancelled_by_a_host_shutdown_settles_as_shutdown():
+    """The resume entry point asks for the same decision as a new turn: it is
+    the path of a run moved to this host by an automatic resume, a manual one,
+    an answered question or an injected message."""
+    seen: list[dict[str, Any]] = []
+
+    publish_pause, _frames = await _resume_raising(
+        asyncio.CancelledError(), _resume_settlement(seen)
+    )
+
+    (call,) = seen
+    assert call["interruption"] is InterruptionReason.SHUTDOWN
+    assert call["error_message"] == "resume execution cancelled"
+    publish_pause.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["switch_off", "user_cancel", "not_shutting_down"])
+async def test_a_resumed_run_cancelled_for_another_reason_settles_as_before(
+    monkeypatch, case
+):
+    if case == "switch_off":
+        monkeypatch.setenv(HANDOFF_SWITCH, "false")
+    if case == "not_shutting_down":
+        monkeypatch.setattr(orchestrator, "_host_shutdown_in_progress", lambda: False)
+    seen: list[dict[str, Any]] = []
+
+    publish_pause, _frames = await _resume_raising(
+        asyncio.CancelledError(),
+        _resume_settlement(seen),
+        explicit_cancel=case == "user_cancel",
+    )
+
+    (call,) = seen
+    assert call["interruption"] is None
+    publish_pause.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_run_shut_down_twice_is_resumed_again_and_never_failed(
+    canonical, engine, monkeypatch
+):
+    """A rolling release: host A stops and pauses the run, the sweeper hands it
+    to host B, which is stopped later in the same release. The resumed run is
+    paused and scheduled again instead of failing; only ``total_resumes``
+    carries over."""
+    monkeypatch.setattr("xagent.web.models.database._engine", engine)
+    factory, _tid = canonical
+    ids = _projected_task(factory)
+    lease = _prepare_run(factory, ids)
+
+    # Host A stops.
+    await _shutdown_cancel_turn(ids, lease)
+    _task, row, _events = _state(factory, ids["task"])
+    assert (row.reason, row.state, row.total_resumes) == ("shutdown", "scheduled", 0)
+
+    # The sweeper hands the run to host B.
+    assert run_auto_resume_tick(now=_utc(row.next_attempt_at)).dispatched == 1
+    resume_lease = _acquire_resume_task_lease(
+        ids["task"], ids["user"], lease.run_id, refuse_terminal_status=True
+    )
+    assert resume_lease is not None and resume_lease.run_id == lease.run_id
+
+    # Host B stops while it runs the resumed run.
+    await _resume_raising(
+        asyncio.CancelledError(),
+        None,
+        task_id=ids["task"],
+        owner_user_id=ids["user"],
+        lease=resume_lease,
+    )
+
+    task, row, events = _state(factory, ids["task"])
+    assert task.status == TaskStatus.PAUSED
+    assert (task.runner_id, task.lease_expires_at) == (None, None)
+    assert (row.reason, row.state, row.run_id) == (
+        "shutdown",
+        "scheduled",
+        lease.run_id,
+    )
+    assert row.total_resumes == 1
+    assert [e.event for e in events].count("auto_resumed") == 1
+    # Due at once, so host C takes it over right away.
+    assert run_auto_resume_tick(now=_utc(row.next_attempt_at)).dispatched == 1
+    _task, row, _events = _state(factory, ids["task"])
+    assert (row.state, row.total_resumes) == ("dispatched", 2)
