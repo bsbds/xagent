@@ -59,6 +59,9 @@ from xagent.web.services.task_lease_service import (
     CheckpointRecoveryVerdict,
     utc_now,
 )
+from xagent.web.services.task_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
+)
 from xagent.web.services.trace_message_storage import (
     encode_checkpoint_data_for_storage,
 )
@@ -651,6 +654,14 @@ def _workforce_run(db: Session, user: User, *, is_preview: bool) -> int:
         ("workforce_missing", "ineligible:workforce_run_missing"),
         ("internal_invisible", "ineligible:preview"),
         ("channel_combined", "ineligible:channel_inline"),
+        # Only a trusted fresh CREATE can build an actor-marked agent, so no
+        # resume of one can start, whatever kind it otherwise is.
+        ("actor_marked", "ineligible:actor_marked"),
+        ("actor_marked_workforce", "ineligible:actor_marked"),
+        ("actor_marked_trigger", "ineligible:actor_marked"),
+        ("actor_marked_channel_shared", "ineligible:actor_marked"),
+        # The source rule is first: Toby's external tasks keep their reason.
+        ("actor_marked_external", "ineligible:source_external"),
     ],
 )
 def test_ineligible_tasks_recover_unchanged_and_record_why(
@@ -673,6 +684,20 @@ def test_ineligible_tasks_recover_unchanged_and_record_why(
             fields["agent_config"] = {"workforce_run_id": 987654321}
         elif case == "internal_invisible":
             fields["is_visible"] = False
+        elif case.startswith("actor_marked"):
+            marker = {MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True}
+            fields["agent_config"] = marker
+            if case == "actor_marked_workforce":
+                fields["agent_config"] = {
+                    **marker,
+                    "workforce_run_id": _workforce_run(db, user, is_preview=False),
+                }
+            elif case == "actor_marked_trigger":
+                fields["source"] = "trigger"
+            elif case == "actor_marked_channel_shared":
+                fields["channel_id"] = _channel(db, user)
+            elif case == "actor_marked_external":
+                fields["source"] = "external"
         else:
             fields["channel_id"] = _channel(db, user)
         task_id = int(_task(db, user, **fields).id)

@@ -117,6 +117,9 @@ from xagent.web.services.task_orchestrator import (
     publish_settlement_pause,
     settle_task_lease_isolated,
 )
+from xagent.web.services.task_runtime import (
+    MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY,
+)
 from xagent.web.services.task_settlement_report import SettlementReport
 
 canonical = canonical_fixture
@@ -1154,6 +1157,51 @@ async def test_ineligible_task_settles_exactly_as_before(canonical, monkeypatch)
     )
     _task, row, events = _state(factory, gated["task"])
     assert (row.state, row.state_detail) == ("ineligible", "ineligible:source_a2a")
+    assert [e.event for e in events] == ["ineligible"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_resume", ["true", "false"])
+async def test_actor_marked_task_settles_failed_instead_of_pausing(
+    canonical, monkeypatch, auto_resume
+):
+    """No resume of an actor-marked task can start (``get_agent_for_task``
+    builds its agent only for a trusted fresh CREATE), so an interruption does
+    not pause it behind one: it fails, and the row says why."""
+
+    monkeypatch.setenv(AUTO_RESUME_SWITCH, auto_resume)
+    factory, _tid = canonical
+    marked = _projected_task(factory)
+    baseline = _projected_task(factory)
+    marked_lease = _prepare_run(factory, marked)
+    baseline_lease = _prepare_run(factory, baseline)
+    with factory() as db:
+        task = db.get(Task, marked["task"])
+        task.agent_config = {
+            **task.agent_config,
+            MCP_RUNTIME_AUTHORIZATION_POLICY_REQUIRED_KEY: True,
+        }
+        db.commit()
+
+    frames = await _schedule_failing_turn(
+        factory, marked, marked_lease, _persistence_error()
+    )
+    with monkeypatch.context() as m:
+        _without_interruption(m)
+        baseline_frames = await _schedule_failing_turn(
+            factory, baseline, baseline_lease, _persistence_error()
+        )
+
+    projection = _projection(factory, marked, marked_lease)
+    assert projection == _projection(factory, baseline, baseline_lease)
+    assert projection["status"] == TaskStatus.FAILED
+    assert frames == baseline_frames == ["task_error"]
+    _task, row, events = _state(factory, marked["task"])
+    assert (row.reason, row.state, row.state_detail) == (
+        "persistence_failure",
+        "ineligible",
+        "ineligible:actor_marked",
+    )
     assert [e.event for e in events] == ["ineligible"]
 
 

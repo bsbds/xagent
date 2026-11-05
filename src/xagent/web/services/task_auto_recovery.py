@@ -193,19 +193,29 @@ def auto_recovery_eligibility(db: Session, task: Task) -> AutoRecoveryEligibilit
     Rules apply in order and the first match wins:
 
     1. A2A, external, widget and shared-link tasks are ineligible.
-    2. Workforce tasks are eligible unless their run is a preview (or the
+    2. Actor-marked tasks are ineligible, whatever else they are: only a
+       trusted fresh CREATE can build their agent, so no resume can start.
+    3. Workforce tasks are eligible unless their run is a preview (or the
        run row is gone, so it cannot be shown not to be one).
-    3. Trigger tasks are eligible.
-    4. Channel tasks are eligible only under shared execution; a combined
+    4. Trigger tasks are eligible.
+    5. Channel tasks are eligible only under shared execution; a combined
        host runs them inline in the bot, which has no durable way to deliver
        an answer produced by a later resume.
-    5. Hidden internal tasks are previews (agent builder, preview chat).
-    6. Everything else is an eligible normal task.
+    6. Hidden internal tasks are previews (agent builder, preview chat).
+    7. Everything else is an eligible normal task.
     """
 
     source = str(task.source or "internal")
     if source in _INELIGIBLE_SOURCES:
         return _ineligible(f"source_{source}")
+
+    # Before every kind below: a workforce, trigger or channel task can be
+    # actor-marked too, and none of them can be resumed. ``get_agent_for_task``
+    # builds an actor-marked agent only for a trusted fresh CREATE, and every
+    # resume path asks for it without the actor policy, so a resume would fail
+    # at the agent build. Pausing such a run for one only strands it.
+    if mcp_runtime_authorization_policy_required(task.agent_config):
+        return _ineligible("actor_marked")
 
     workforce_run_id = extract_workforce_run_id(task)
     if workforce_run_id is not None:
@@ -252,12 +262,9 @@ def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
     still fail now so their callers see a terminal state. Nothing is handed off
     while automatic resume is off, nor for a task that is no longer RUNNING.
 
-    An actor-marked task (``mcp_runtime_authorization_policy_required``) is
-    never handed off: it is built only from a trusted fresh CREATE, and
-    ``AgentServiceManager.get_agent_for_task`` refuses to reuse or reconstruct
-    it, which every resume path would have to do. Its resume could not start,
-    so the run fails now, and its turn still removes its runtime and workspace
-    as it ends.
+    An actor-marked task is ineligible (:func:`auto_recovery_eligibility`): its
+    resume could not start, so the run fails now, and its turn still removes
+    its runtime and workspace as it ends.
 
     Every other eligible kind is handed off alike, SDK and shared-execution
     channel tasks included. An SDK caller keeps waiting on the PAUSED task, as
@@ -275,8 +282,6 @@ def shutdown_handoff_eligible(db: Session, task_id: int) -> bool:
         return False
     task = db.get(Task, task_id)
     if task is None or task.status != TaskStatus.RUNNING:
-        return False
-    if mcp_runtime_authorization_policy_required(task.agent_config):
         return False
     return auto_recovery_eligibility(db, task).eligible
 
