@@ -52,7 +52,7 @@ services:
       - XAGENT_HOT_PATH_CACHE_ENABLED=${XAGENT_HOT_PATH_CACHE_ENABLED:-true}
       - XAGENT_CELERY_ENABLED=${XAGENT_CELERY_ENABLED:-true}
       - XAGENT_CELERY_BROKER_URL=redis://redis:6379/1
-      - XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS=${XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS:-3600}
+      - XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS=${XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS:-86400}
       # This backend sits behind the single nginx hop above, which sets
       # X-Forwarded-For in append mode. Trust exactly that one hop so every
       # per-IP rate limit (share/widget auth, task-create, run sub-quota,
@@ -87,7 +87,7 @@ services:
   # using up a retry attempt, instead of the worker waiting for them -- hours,
   # for a web ingest -- until Docker kills it. The grace period only has to
   # cover the interrupted jobs unwinding; a job still unwinding when it expires
-  # is recovered by the broker/stale-job sweep and does use up an attempt.
+  # is recovered later by the stale-job sweep and does use up an attempt.
   worker:
     image: xprobe/xagent-backend:0.8.5
     container_name: xagent_worker
@@ -116,7 +116,7 @@ services:
       - XAGENT_HOT_PATH_CACHE_ENABLED=${XAGENT_HOT_PATH_CACHE_ENABLED:-true}
       - XAGENT_CELERY_ENABLED=${XAGENT_CELERY_ENABLED:-true}
       - XAGENT_CELERY_BROKER_URL=redis://redis:6379/1
-      - XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS=${XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS:-3600}
+      - XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS=${XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS:-86400}
       - REMAP_SIGTERM=SIGQUIT
     env_file:
       - .env
@@ -151,7 +151,7 @@ services:
       - XAGENT_REDIS_URL=redis://redis:6379/0
       - XAGENT_CELERY_ENABLED=${XAGENT_CELERY_ENABLED:-true}
       - XAGENT_CELERY_BROKER_URL=redis://redis:6379/1
-      - XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS=${XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS:-3600}
+      - XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS=${XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS:-86400}
     env_file:
       - .env
     volumes:

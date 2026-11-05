@@ -1731,10 +1731,23 @@ def get_celery_result_backend() -> str | None:
 
 
 def get_background_job_visibility_timeout_seconds() -> int:
-    """Return Celery broker visibility timeout for long-running jobs."""
+    """Return Celery broker visibility timeout for long-running jobs.
+
+    Jobs are acknowledged late, so the broker holds a running job's message
+    unacknowledged, and the Redis transport redelivers any message held longer
+    than this -- to another pool child, while the first run is still going. It
+    therefore has to outlast the longest job (KB web ingests run for hours), so
+    the default is a day.
+
+    It is not what recovers a job after a hard worker crash: the scheduler's
+    stale-job sweep requeues the job once it has gone
+    ``get_background_job_stale_seconds`` without a row update, which is far
+    sooner. Planned stops do not wait for it either; the worker hands its
+    running jobs back immediately (see ``jobs.celery_app``).
+    """
     return _get_positive_int_env(
         BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS,
-        3600,
+        86400,
         minimum=60,
     )
 

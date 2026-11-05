@@ -170,6 +170,13 @@ def execute_background_job(self: Any, job_id: str) -> dict[str, Any]:
         if job.status == BackgroundJobStatus.SUCCEEDED.value:
             logger.info("Skipping already completed background job %s", job_id)
             return dict(job.result or {"status": "succeeded"})
+        if job.status == BackgroundJobStatus.FAILED.value:
+            # Nothing re-enqueues a failed job, so a delivery for one is stale: a
+            # message left behind by a worker that died before it acknowledged
+            # it, redelivered only once the long visibility timeout expires, by
+            # which time the stale sweep has long since run the job to its end.
+            logger.info("Skipping already failed background job %s", job_id)
+            return {"status": "failed"}
 
         mark_job_running(db, job)
         claimed_attempt = int(job.attempts)

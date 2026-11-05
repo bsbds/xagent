@@ -5,8 +5,8 @@
 A Celery worker used to wait for every running background job when it received
 SIGTERM, which for a knowledge-base web ingest can be hours; a stop that gave up
 waiting (Docker's SIGKILL after the grace period) left the job to be redelivered
-up to `XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS` later and counted the
-interrupted run as one of its attempts.
+only after the broker visibility timeout and counted the interrupted run as one
+of its attempts.
 
 Start the worker with `REMAP_SIGTERM=SIGQUIT` in its environment, which the
 bundled Compose `worker` service now does (with `stop_grace_period: 60s`), and
@@ -20,7 +20,21 @@ crawls do not resume. A worker started without `REMAP_SIGTERM` keeps the old
 behaviour. Other deployments that run the worker themselves (for example a
 supervisor or another Compose file) must set the variable and give the worker
 time to unwind (about a minute) before any SIGKILL; a job killed before it has
-finished unwinding is still redelivered later and does use an attempt.
+finished unwinding is recovered later and does use an attempt.
+
+`XAGENT_BACKGROUND_JOB_VISIBILITY_TIMEOUT_SECONDS` now defaults to 86400 (a day,
+was 3600). With acks-late jobs the broker holds a running job's message
+unacknowledged, and redelivers it to another pool child once the timeout
+passes: any job that ran longer than about an hour (web ingests run for hours)
+was started a second time beside the first, repeatedly. The timeout must outlast
+the longest job. Planned stops no longer depend on it. After a hard crash (the
+whole worker killed) a job is now recovered by the stale-job sweep once it has
+gone `XAGENT_BACKGROUND_JOB_STALE_SECONDS` (default 2 hours) without a progress
+update, plus up to one sweep interval, instead of after the old hour. A message
+left behind by the crashed worker is redelivered a day later and is dropped if
+the job has finished. Deployments that pin this variable (a `.env` file, or a
+Compose file that sets its own default) keep the old behaviour until it is
+changed.
 
 Verify with `docker compose stop worker` while a job runs: the worker logs
 `Cold shutdown`, `Background job <id> interrupted by a planned worker stop` and

@@ -39,9 +39,12 @@ def create_celery_app() -> Any:
     #
     # * ``task_acks_late`` keeps a running job's message unacknowledged, so the
     #   broker, not the worker, owns it until the job ends. If only the pool
-    #   child dies, ``task_reject_on_worker_lost`` requeues the message at once;
-    #   if the whole worker process is killed, it comes back only after
-    #   ``visibility_timeout``.
+    #   child dies, ``task_reject_on_worker_lost`` requeues the message at once.
+    #   If the whole worker process is killed, the message comes back only after
+    #   ``visibility_timeout`` (a day by default: it must outlast the longest
+    #   job, or the broker redelivers a live job to a second pool child), so
+    #   the stale-job sweep, which requeues a job silent for
+    #   ``XAGENT_BACKGROUND_JOB_STALE_SECONDS``, is what recovers it.
     # * SIGTERM alone starts Celery's warm shutdown: the worker waits for every
     #   running job, however long (KB web ingests run for hours). Starting it
     #   with ``REMAP_SIGTERM=SIGQUIT`` in its environment makes SIGTERM a cold

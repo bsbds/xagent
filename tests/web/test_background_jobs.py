@@ -1858,6 +1858,64 @@ def test_unknown_job_type_fails_fast_without_retry(tmp_path, monkeypatch):
         verify_db.close()
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        BackgroundJobStatus.SUCCEEDED,
+        BackgroundJobStatus.FAILED,
+        BackgroundJobStatus.CANCELLED,
+    ],
+)
+def test_delivery_for_a_terminal_job_does_not_rerun_it(tmp_path, monkeypatch, status):
+    """A message that outlives its job is dropped, whichever way the job ended.
+
+    A worker that dies before acknowledging leaves its message behind; with the
+    long visibility timeout it is redelivered hours later, after the stale sweep
+    has run the job to its end. Re-running a finished job there would redo (and,
+    on the final attempt, roll back) work that is already settled.
+    """
+    from xagent.web.jobs import tasks as tasks_module
+
+    monkeypatch.setenv(CELERY_ENABLED, "false")
+    monkeypatch.delenv(CELERY_BROKER_URL, raising=False)
+
+    job_type = "test.terminal_delivery"
+    SessionLocal = _init_test_db(tmp_path / "jobs-terminal-delivery.db")
+    db = SessionLocal()
+    try:
+        user = _create_user(db, "terminal-delivery")
+        job = create_background_job(
+            db, user_id=int(user.id), job_type=job_type, payload={}, max_attempts=3
+        )
+        setattr(job, "status", status.value)
+        setattr(job, "attempts", 3)
+        db.add(job)
+        db.commit()
+        job_id = str(job.id)
+    finally:
+        db.close()
+
+    handler_calls: list[str] = []
+    tasks_module.register_background_job_handler(
+        job_type, lambda session, received: handler_calls.append(str(received.id)) or {}
+    )
+    try:
+        outcome = tasks_module.execute_background_job.apply(args=[job_id], throw=True)
+    finally:
+        tasks_module._EXTRA_HANDLERS.pop(job_type, None)
+
+    assert outcome.result["status"] == status.value
+    assert handler_calls == []
+    verify_db = SessionLocal()
+    try:
+        refreshed = verify_db.get(BackgroundJob, job_id)
+        assert refreshed is not None
+        assert refreshed.status == status.value
+        assert refreshed.attempts == 3
+    finally:
+        verify_db.close()
+
+
 def test_registered_handler_retryable_error_flows_through_execute_background_job(
     tmp_path, monkeypatch
 ):

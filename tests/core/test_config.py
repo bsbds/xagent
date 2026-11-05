@@ -878,7 +878,13 @@ class TestCeleryBackgroundJobConfig:
         monkeypatch.delenv(BACKGROUND_JOB_MAX_RETRIES, raising=False)
         monkeypatch.delenv(BACKGROUND_JOB_STALE_SECONDS, raising=False)
         monkeypatch.delenv(BACKGROUND_JOB_SWEEP_INTERVAL_SECONDS, raising=False)
-        assert get_background_job_visibility_timeout_seconds() == 3600
+        assert get_background_job_visibility_timeout_seconds() == 86400
+        # The broker must not redeliver a running job before the stale sweep
+        # would requeue it: redelivery runs a second copy beside the first.
+        assert (
+            get_background_job_visibility_timeout_seconds()
+            > get_background_job_stale_seconds()
+        )
         assert get_background_job_max_retries() == 3
         assert get_background_job_stale_seconds() == 7200
         assert get_background_job_sweep_interval_seconds() == 300
